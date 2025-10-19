@@ -19,6 +19,7 @@ classifiers = [
 dependencies = [
     "alpaca-py>=0.43.0",
     "loguru>=0.7.3",
+    "pandas>=2.3.3",
     "platformdirs>=4.3.8",
     "pydantic>=2.12.3",
     "typer>=0.15.4",

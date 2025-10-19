@@ -17,6 +17,7 @@ classifiers = [
     "Programming Language :: Python :: 3 :: Only",
 ]
 dependencies = [
+    "alpaca-py>=0.43.0",
     "loguru>=0.7.3",
     "platformdirs>=4.3.8",
     "pydantic>=2.12.3",

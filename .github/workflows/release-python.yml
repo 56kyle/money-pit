@@ -57,7 +57,7 @@ jobs:
         run: uvx nox -s build-python
 
       - name: Upload built package artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: distribution-packages-${{ needs.get_tag.outputs.tag }}
           path: dist/

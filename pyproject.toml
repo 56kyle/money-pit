@@ -21,6 +21,7 @@ dependencies = [
     "loguru>=0.7.3",
     "numpy>=2.0.2",
     "pandas>=2.3.3",
+    "pandas-stubs>=2.2.2.240807",
     "platformdirs>=4.3.8",
     "pydantic>=2.12.3",
     "typer>=0.15.4",

@@ -1,5 +1,7 @@
 {
-  "_commit": "2f163be8c7ff28302f68abfa5312d3e50bea9eff",
+  "_commit": "e3e4bd38305f544bffe1025111aa2981f1e51714",
+  "_max_python_version_minor_int": 13,
+  "_min_python_version_minor_int": 9,
   "_template": "https://github.com/56kyle/cookiecutter-robust-python",
   "add_rust_extension": false,
   "author": "Kyle Oliver",
@@ -12,6 +14,13 @@
   "min_python_version": "3.9",
   "package_name": "money_pit",
   "project_name": "money-pit",
+  "python_versions": [
+    "3.9",
+    "3.10",
+    "3.11",
+    "3.12",
+    "3.13"
+  ],
   "repository_host": "github.com",
   "repository_path": "56kyle/money-pit",
   "repository_provider": "github",

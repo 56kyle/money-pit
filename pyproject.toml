@@ -23,6 +23,7 @@ classifiers = [
     "Development Status :: 1 - Planning"
 ]
 dependencies = [
+    "alpaca-mcp-server>=2.0.2",
     "alpaca-py>=0.43.0",
     "keyring>=25.7.0",
     "langchain[openai]>=0.3.30",

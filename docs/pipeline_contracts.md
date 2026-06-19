@@ -8,7 +8,7 @@ The pipeline:
 
 ```
 0  orchestration (scheduler + yt-dlp/Whisper + money-pit portfolio CLI)
-1  Transcript Summarizer & Signal Classifier   → transcript_summary.{json,md}
+1  Source adapters (video + others) → SignalSet → aggregator → aggregated_signals.{json,md}
 2  Question Generation                          → initial_questions.{json,md}
 3  Information Retrieval                         → initial_answers.{json,md}
 4  Analysis (seven-step framework)              → analysis.md, action_steps.{json,md}
@@ -46,6 +46,8 @@ that class of drift is exactly what broke 2→3 and 5→6.
 
 **Canonical enums** (used in multiple places):
 
+- **source type:** `narrated_video` | `newsletter` | `rss` | `research_pdf` | `manual_note` (extensible; the video adapter is `narrated_video`)
+- **claim relation** (across sources, §2): `agree` | `disagree`
 - **signal tier:** `high` | `medium` | `low` (and `portfolio` where a question is motivated by a holding rather than a claim)
 - **claim category:** `fundamental` | `technical` | `macro` | `sentiment` | `catalyst`
 - **question category:** `thesis_validation` | `macro_regime` | `current_events` | `portfolio_gap` | `invalidation_conditions`
@@ -60,68 +62,123 @@ that class of drift is exactly what broke 2→3 and 5→6.
 
 ---
 
-## 1. Boundary 0 → 1 — orchestration → Transcript agent
+## 1. Boundary 0 → 1 — orchestration → source adapters
 
-**Producer:** orchestration layer. **Consumer:** Agent 1.
+**Producer:** orchestration layer. **Consumer:** each source adapter.
 
-Agent 1 receives the transcript as a **string in the user message**. It has no filesystem
-access and no path. It returns exactly two fenced blocks (one ```json```, one ```markdown```);
-the orchestration layer writes them to `transcript_summary.json` and `transcript_summary.md`.
-This boundary is already correct in agent_1.md — no change.
+Each adapter receives its source payload from the orchestration layer (the video adapter gets the
+transcript string plus the keyframe/OCR artifacts; a text adapter gets the fetched document). An
+adapter has no filesystem access of its own beyond what it is handed; it returns the `SignalSet`
+(json + markdown), which the orchestration layer writes to `signals/{source_id}.json/.md`. The
+original single-video pathway (Agent 1 returning two fenced blocks from a transcript string) is the
+video adapter's special case of this boundary.
 
 ---
 
-## 2. Boundary 1 → 2 — `transcript_summary.json`
+## 2. Boundary: source adapters → aggregator → A2/A4
 
-**Producer:** Agent 1. **Consumer:** Agent 2.
+**Producers:** one or more **source adapters** (the narrated-video adapter — formerly Agent 1 — plus
+any future newsletter/RSS/PDF/note adapters), then the **aggregator** node. **Consumers:** A2 and A4.
 
-**The fix:** Agent 1 currently nests claims under `signal_classifications.{high,medium,low}`
-with **no claim IDs** and the tier implied by the array. Agent 2 needs a **flat `claims` array
-with a stable `claim_id` and an explicit `tier`** so it can populate `signal_source`. Canonical
-form is the flat array below. (Agent 1's markdown may still group by tier for humans.)
+The signal has always originated as a *classified claim*; the video was merely the only thing that
+produced claims. Genericizing names that boundary: every input becomes a `Source` adapter that emits a
+normalized `SignalSet` of `Claim`s, and an aggregator merges all of a run's `SignalSet`s into one
+`AggregatedSignals` that the rest of the pipeline consumes — source-agnostic. This quarantines the
+hard multimodal video extraction inside one adapter; nothing downstream knows video exists. Start at
+**N = 1** (video adapter only): one source in, one aggregate out, today's behavior unchanged.
+
+### 2.1 `SourceRef` — structured provenance (replaces free-text `source_context`)
+
+Two distinct things, kept separate: the source that **delivered** a claim (`SourceRef`), and the
+source the claim **cites** for its data (`cited_sources`). The on-screen attribution discussed for the
+video adapter (OCR/VLM-extracted chart footers) populates `cited_sources`; a newsletter adapter fills
+it from links, a PDF adapter from footnotes — same field, every adapter.
 
 ```jsonc
 {
-  "slug": "2026-06-18_14-30-00",          // from graph state, echoed for traceability
-  "published_at": "2026-06-18T13:00:00Z", // ISO 8601, or null if no absolute date stated
-  "episode_summary": "2-3 sentence neutral overview.",
-  "claims": [
-    {
-      "claim_id": "S001",                 // sequential S001.., assigned high→medium→low then in order
-      "tier": "high",                     // high | medium | low  (explicit field, not array position)
-      "claim": "One-sentence claim in the agent's own words.",
-      "source_context": "Who said it and in what context.",
-      "category": "fundamental",          // fundamental|technical|macro|sentiment|catalyst
-      "tickers_affected": ["NVDA"],
-      "requires_validation": true         // derived: true for high & medium, false for low
-    }
-  ],
+  "source_id": "yt:dQw4w9WgXcQ",          // unique per source instance
+  "source_type": "narrated_video",        // source-type enum
+  "title": "Daily market wrap — 2026-06-18",
+  "url": "https://…",                     // or null
+  "published_at": "2026-06-18T13:00:00Z", // this source's own date (ISO 8601, or null)
+  "retrieved_at": "2026-06-18T14:30:00Z",
+  "locator": "00:14:32"                    // in-source position: video timestamp / PDF page / null
+}
+```
+
+### 2.2 `Claim` (generalized)
+
+```jsonc
+{
+  "claim_id": "yt:dQw4w9WgXcQ:S001",       // namespaced by source_id (aggregator re-IDs run-global)
+  "tier": "high",                          // high | medium | low (explicit field)
+  "claim": "One-sentence claim in the adapter's own words.",
+  "category": "fundamental",               // fundamental|technical|macro|sentiment|catalyst
+  "tickers_affected": ["NVDA"],
+  "requires_validation": true,             // derived: true for high & medium
+  "source_ref": { "...": "SourceRef above" },   // who delivered it
+  "cited_sources": ["FRED", "company 10-Q"]     // what the claim attributes its data to (may be [])
+}
+```
+
+### 2.3 `SignalSet` — one per adapter → `signals/{source_id}.json`
+
+```jsonc
+{
+  "slug": "2026-06-18_14-30-00",
+  "source_ref": { "...": "SourceRef" },
+  "summary": "2-3 sentence neutral overview of what THIS source covered.",
+  "claims": [ "...Claim..." ],
   "tickers_mentioned": ["NVDA"],
   "sectors_mentioned": ["semiconductors"],
   "macro_themes": ["Fed rate policy"],
-  "has_actionable_content": true          // derived: high or medium non-empty
+  "has_actionable_content": true           // per-source; the run gate is computed at the aggregate
+}
+```
+
+### 2.4 `AggregatedSignals` — the merge → `aggregated_signals.json` (what A2/A4 read)
+
+```jsonc
+{
+  "slug": "2026-06-18_14-30-00",
+  "sources": [ "...SourceRef per included source..." ],
+  "claims": [ "...union of all sources' claims, run-global claim_ids..." ],
+  "corroborations": [
+    { "relation": "agree", "claim_ids": ["yt:…:S001", "news:…:S004"] }   // independent sources, same assertion
+  ],
+  "conflicts": [
+    { "relation": "disagree", "claim_ids": ["yt:…:S002", "rss:…:S009"] }
+  ],
+  "has_actionable_content": true           // run gate: any source has high/medium signal
 }
 ```
 
 Notes:
-- `claim_id` is the join key used by `signal_source` (Boundary 2→3) and carried through to
-  `initial_answers.json` (Boundary 3→4).
-- `requires_validation` and `has_actionable_content` are **deterministic** — see §9; compute
-  them in code post-LLM rather than trusting the model.
-- **Agent 4 also consumes this file.** Three reconciliations: (1) the tier field is `tier` with
-  values `high`/`medium`/`low` — **not** a `classification` field with values `high-signal`/
-  `medium-signal`; fix Agent 4's input description to match. (2) There is **no per-claim
-  timestamp**; the source field is `source_context`. Remove Agent 4's "source timestamp"
-  expectation or add a `source_ts` field to Agent 1's output if you actually need it. (3) This
-  file is Agent 1's immutable output and **still contains `low`-tier claims** — nothing strips
-  them before Agent 4. Agent 4 must filter to `high`/`medium` itself (its Step 1 already does);
-  delete the false premise "low-signal content has already been removed."
+- `claim_id` remains the join key for `signal_source` (§3) and is carried through to
+  `initial_answers.json` (§4). The aggregator owns the run-global namespace.
+- `requires_validation` / `has_actionable_content` are **deterministic** — compute in code (§9).
+- **Corroboration/conflict** is the one new judgment surface: cluster claims by embedding similarity,
+  then a *thin* LLM pass confirms and labels `agree`/`disagree` within a cluster (§9/§11). Independent
+  sources asserting the same claim is genuinely stronger signal — A4 Step 1 uses this as a positive
+  input. **Tier reconciliation** for a corroborated claim: take the max tier across its sources.
+- **`published_at` is now per-`SourceRef`, not a single run value.** Downstream recency (A2's
+  current-events questions) anchors to *the originating claim's* source date — see §3.
+- **A4 consumes `aggregated_signals.json`.** The tier field is `tier` (`high`/`medium`/`low`), not a
+  `classification` string; there is no separate per-claim timestamp (`source_ref.published_at` carries
+  it); and `low`-tier claims are present — A4 filters to `high`/`medium` itself (its Step 1 does this).
+- The **video adapter** is where the multimodal extraction lives (keyframes, OCR/VLM, fused
+  transcript); see the architecture spec. Its complexity is fully contained behind this `SignalSet`
+  contract — it can be stubbed or deferred without touching anything downstream.
 
 ---
 
 ## 3. Boundary 2 → 3 — `initial_questions.json`
 
 **Producer:** Agent 2. **Consumer:** Agent 3.
+
+**A2 now reads `aggregated_signals.json`** (not `transcript_summary.json`) plus `portfolio_snapshot.json`.
+The claim contract is unchanged from A2's perspective — it still consumes claims with `claim_id`/`tier`
+and writes `signal_source` referencing a (now run-global) `claim_id`.
 
 **The fixes:** (a) one canonical `category` enum in snake_case (Agent 2 used Title Case, Agent 3
 used a different 4-value set — neither matched); (b) canonical field names `data_sources` and
@@ -132,7 +189,6 @@ used a different 4-value set — neither matched); (b) canonical field names `da
 {
   "slug": "2026-06-18_14-30-00",
   "generated_at": "2026-06-18T14:31:05Z",
-  "published_at": "2026-06-18T13:00:00Z",   // carried through from transcript_summary
   "signal_summary": {
     "high_signal_count": 0,
     "medium_signal_count": 0,
@@ -144,7 +200,7 @@ used a different 4-value set — neither matched); (b) canonical field names `da
       "id": "Q001",                          // Q + zero-padded, sequential in final order
       "category": "thesis_validation",       // the 5-value canonical enum below
       "question": "Externally-answerable query text.",
-      "signal_source": "S003",               // claim_id from transcript_summary, OR a portfolio
+      "signal_source": "yt:…:S003",          // run-global claim_id, OR a portfolio
                                              // element (ticker/sector/factor), OR "none" (placeholder)
       "signal_tier": "high",                 // high | medium | portfolio
       "rationale": "1-2 sentences: why this must be answered before a decision.",
@@ -163,7 +219,7 @@ used a different 4-value set — neither matched); (b) canonical field names `da
 |---|---|
 | `thesis_validation` | Does data support the specific video claim? |
 | `macro_regime` | PMI, yield curve, credit spreads, real earnings revisions — current regime. |
-| `current_events` | Anything material since `published_at` (embed the datetime in the question). |
+| `current_events` | Anything material since the originating claim's `source_ref.published_at` (embed that datetime in the question; with multiple sources there is no single run-level `published_at`). |
 | `portfolio_gap` | How a signal interacts with the **actual** portfolio (real positions/weights/exposures/cash). |
 | `invalidation_conditions` | Data needed to define what would make the thesis wrong. |
 
@@ -196,13 +252,13 @@ Agent 4 can reconstruct which claim each answer supports without a brittle three
 ```jsonc
 {
   "slug": "2026-06-18_14-30-00",
-  "published_at": "2026-06-18T13:00:00Z",
+  "sources": [ "...SourceRef per source, carried from aggregated_signals..." ],  // replaces single published_at
   "answers": [
     {
       "question_id": "Q001",                 // verbatim from initial_questions
       "question": "Verbatim question text.",
       "category": "thesis_validation",       // carried through
-      "signal_source": "S003",               // carried through (claim_id or portfolio element)
+      "signal_source": "yt:…:S003",          // carried through (run-global claim_id or portfolio element)
       "signal_tier": "high",                 // carried through
       "answer": "Retrieved factual answer, or structured explanation of why not. Never blank, never analytical.",
       "confidence": "high",                  // high|medium|low per §9 confidence rule
@@ -218,7 +274,7 @@ Rules unchanged from agent_3.md: one answer object per input question, in order;
 blank; **no analytical/interpretive language** (that is Agent 4's job); confidence per §9.
 
 **Agent 4 must use the join key.** Agent 4 currently re-matches claims to answers by reading text,
-which violates its own "determinism of method." Have it join `transcript_summary.claims[].claim_id`
+which violates its own "determinism of method." Have it join `aggregated_signals.claims[].claim_id`
 ↔ `initial_answers.answers[].signal_source` and filter macro answers by `category == "macro_regime"`.
 That is the entire reason `signal_source`/`category` are carried through here.
 
@@ -248,8 +304,9 @@ every step `UNMATCHED (schema mismatch)` ⇒ Agent 6 HALTs and emails. These thr
 
 > **`execution_parameters` keys (Agent 4) == Agent 5's literal check == the Alpaca MCP tool input schema (manifest)**
 
-The keys are **not invented by Agent 4** — they come from the real manifest. Pin them here once the
-manifest is final, or have the deterministic post-processor (below) emit them.
+The keys are **not invented by Agent 4** — they come from the official Alpaca MCP order tool's
+input schema (OpenAPI-generated, so it is stable and readable now). Pin `execution_parameters` to it,
+or have the deterministic post-processor (below) emit them from it.
 
 **5d. Agent 4's "no additional keys" rule blocks the fix.** Agent 4's schema says "exactly these
 keys, no additional keys," which forbids adding `execution_parameters`. Relax it: the step object
@@ -561,13 +618,13 @@ structural-enforcement principle. This table is the quick reference.)
 
 | computation | currently in | move to | rule |
 |---|---|---|---|
-| `requires_validation` | Agent 1 (LLM) | code post-process | `tier in {high, medium}` |
-| `has_actionable_content` | Agent 1 (LLM) | code post-process | `len(high) > 0 or len(medium) > 0` |
-| ticker normalization | Agent 1 (LLM) | code post-process | uppercase, strip punctuation, dedupe |
+| `requires_validation` | source adapter (LLM) | code post-process | `tier in {high, medium}` |
+| `has_actionable_content` | source adapter / aggregator (LLM) | code post-process | per-source then run-level: any high/medium |
+| ticker normalization | source adapter (LLM) | code post-process | uppercase, strip punctuation, dedupe |
 | signal counts | Agent 2 (LLM) | code post-process | count by tier |
 | category → tool routing | Agent 3 (LLM) | code lookup table | the routing table in §3 |
 | `confidence` | Agent 3 (LLM) | code from `sources_used` | primary (FRED/EDGAR/Alpaca)→`high`; yfinance/combined/inferred→`medium`; Brave-only/partial/unanswered→`low`; rate by weakest materially-relied source |
-| **Agent 5 checks 1,2,4** (existence + literal schema field match) | Agent 5 (LLM) | **code** | LLM is the *wrong* tool for "never map `share_count`→`quantity`" — code can't make that error |
+| **Agent 5 checks 1,2,4** (existence + literal schema field match) | Agent 5 (LLM) | **code (`jsonschema`)** | MCP `inputSchema` is JSON Schema → `jsonschema.validate()`; LLM is the *wrong* tool for "never map `share_count`→`quantity`" |
 | **Agent 6 determination** | Agent 6 (LLM) | **LangGraph conditional edge** | pure `all(MATCHED) ? PROCEED : HALT`; no model call needed |
 | **Agent 4 EV** | Agent 4 (LLM) | **code post-process** | `EV = Σ(Pᵢ/100 × Rᵢ)`; then apply the ≥ +3.0% gate |
 | **Agent 4 constraint extraction** | Agent 4 (LLM) | **code** | sector headroom to 25% in $ and %, cash %, overlap reductions — all arithmetic from the snapshot |
@@ -575,7 +632,7 @@ structural-enforcement principle. This table is the quick reference.)
 | **Agent 4 `execution_parameters`** | Agent 4 (LLM) | **code post-process** | emit manifest-correct keys from `ticker`/`action_type`/`dollar_amount` — fixes §5b/§5c in one place |
 | factor profile aggregation | (new) | **code** | sum/normalize per-position `factor_tags` into the five-factor profile |
 
-What stays LLM: Agent 1 classification, Agent 2 question authoring, Agent 3 retrieval +
+What stays LLM: source-adapter classification, the aggregator's thin corroboration label, Agent 2 question authoring, Agent 3 retrieval +
 sufficiency judgment, **Agent 4's *judgments* only** (which claims survive each gate, scenario
 probabilities/returns, conviction band, thesis text), and **Agent 5 check 3 only** (behavioral/
 semantic match between a tool's description and an action's intent — code can't judge that).
@@ -592,23 +649,28 @@ code verifies existence and literal schema acceptance.
 
 ## 10. Change list per agent
 
-- **Agent 1** — emit flat `claims[]` with `claim_id` + explicit `tier` (drop the nested
-  `signal_classifications` as the machine schema; keep grouping in markdown only); echo `slug`.
-  Optionally hand off the three deterministic flags to code.
-- **Agent 2** — adopt the 5 snake_case categories; rename output fields to `data_sources` and
-  `rationale`; **also write `initial_questions.md`**; consume the flat `claims[]` / `claim_id`;
+- **Source adapters (was Agent 1)** — become one adapter per source type, each emitting the generic
+  `SignalSet` (§2): flat `claims[]` with run-namespaced `claim_id` + explicit `tier`, structured
+  `source_ref`, and `cited_sources`. The **video adapter** owns the multimodal extraction; lighter
+  adapters are parse-and-classify. Echo `slug`. Hand the deterministic flags to code (§9).
+- **Aggregator (new node)** — union the per-source `SignalSet`s into `aggregated_signals.json`:
+  re-ID claims run-global, compute run-level `has_actionable_content`, reconcile tier (max across a
+  corroboration), and produce `corroborations`/`conflicts` via embedding-cluster + thin-LLM confirm (§9).
+- **Agent 2** — **read `aggregated_signals.json`** (not `transcript_summary.json`); adopt the 5
+  snake_case categories; rename output fields to `data_sources` and `rationale`; **also write
+  `initial_questions.md`**; anchor `current_events` recency to each claim's `source_ref.published_at`;
   validate `portfolio_snapshot.json` against §8; use the five-factor set (§0), not `volatility`.
 - **Agent 3** — read `data_sources` and `rationale`; route on the 5 canonical categories via the
-  §3 table; carry `category`/`signal_source`/`signal_tier` through into `initial_answers.json`;
-  fix illustrative IDs to `Q001` style.
-- **Agent 4** — fix the input descriptions: tier is `tier`=`high`/`medium`/`low` (not
-  `classification`=`high-signal`), there is no per-claim timestamp, and `low` claims are **not**
-  pre-stripped (filter them yourself). Join answers on `claim_id`↔`signal_source` (§4). **Rework
-  `action_steps.json` per §5:** add `step_id`, rename to `instrument`/`action_type`/`description`,
-  add an `execution_parameters` block with manifest-correct keys, and relax "no additional keys."
-  Move EV / sizing / constraint arithmetic and execution-param emission to a deterministic
-  post-processor (§9). Read `total_account_value` and per-position `factor_tags`/`sector`/
-  `unrealized_pl` from the snapshot (§8). Route the empty/halt terminal states per §6a.
+  §3 table; carry `category`/`signal_source`/`signal_tier` through into `initial_answers.json`
+  (top level now carries `sources`, not a single `published_at`); fix illustrative IDs to `Q001` style.
+- **Agent 4** — read `aggregated_signals.json`; tier is `tier`=`high`/`medium`/`low` (not
+  `classification`=`high-signal`); per-claim date is `source_ref.published_at`; `low` claims are **not**
+  pre-stripped (filter them yourself); use `corroborations` as a positive input to Step 1. Join answers
+  on `claim_id`↔`signal_source` (§4). **Rework `action_steps.json` per §5:** add `step_id`, rename to
+  `instrument`/`action_type`/`description`, add an `execution_parameters` block with manifest-correct
+  keys, and relax "no additional keys." Move EV / sizing / constraint arithmetic and execution-param
+  emission to a deterministic post-processor (§9). Read `total_account_value` and per-position
+  `factor_tags`/`sector`/`unrealized_pl` from the snapshot (§8). Route the empty/halt terminal states per §6a.
 - **Agent 5** — wrap output as an **object** with `slug` + `steps[]`; rename `verdict` → `status`;
   keep `tool_sequence`/`gap_description`; write `slug`; keep `validation_status.json` as the
   orchestration-only signal. **Add `compensation_sequence` and the atomic-group compensation-capability
@@ -650,22 +712,31 @@ analysis and the brokerage.
 
 ### Per-agent decomposition
 
-**Agent 1 — Transcript.** *LLM (irreducible):* comprehend the transcript, identify substantive
-claims, assign tier and category, write claims in own words, write the episode summary, extract which
-tickers/sectors/macro-themes were mentioned. *MCP tool:* `resolve_ticker(name_or_symbol)` backed by
-the Alpaca asset list — turns "guess conservatively / omit when unsure" into a lookup, killing the
-Whisper-homophone error mode. *Background functions:* `requires_validation`, `has_actionable_content`,
-ticker normalization, ISO-date parsing of an extracted date string, output schema validation.
+**Source adapters (formerly Agent 1) — one per source type.** Each adapter turns one input into a
+`SignalSet`. The **video adapter** is the heaviest: *LLM (irreducible):* comprehend the (multimodal)
+content, identify substantive claims, assign tier and category, write claims in own words, write the
+source summary, extract tickers/sectors/macro-themes, and fill `cited_sources` from on-screen
+attribution. *MCP tool:* `resolve_ticker(name_or_symbol)` — kills the Whisper-homophone error mode.
+*Background functions:* `requires_validation`, per-source `has_actionable_content`, ticker
+normalization, ISO-date parsing, keyframe sampling + OCR (the deterministic source-attribution layer),
+schema validation. Lighter adapters (newsletter/RSS/PDF) are mostly parse-and-classify and may need
+only a thin LLM for the classification step. **Every adapter emits the same `SignalSet` contract**, so
+the rest of the pipeline never branches on source type.
+
+**Aggregator (new node).** *Background functions:* union the per-source `SignalSet`s, re-ID claims to
+the run-global namespace, compute the run-level `has_actionable_content`, reconcile tier (max across a
+corroborated claim). *LLM (thin, the one new judgment surface):* corroboration/conflict detection —
+embed claims, cluster by cosine similarity (deterministic), and use a *thin* LLM pass only to confirm
+and label `agree`/`disagree` **within** a cluster. Output: `aggregated_signals.json`.
 
 **Agent 2 — Questions.** *LLM (irreducible):* author the *claim-specific* `thesis_validation` and
 `invalidation_conditions` questions anchored to each claim's numeric/mechanistic substance — that's
 the only generative part. *Background functions:* input validation; the insufficient-signal gate
 (driven by `has_actionable_content` — skip the node entirely, no LLM); signal counts; **template
 emission** for the standing questions that are the same every run — the four `macro_regime` questions
-(constant), the per-ticker `current_events` questions (`"Since {published_at}, has {TICKER} filed an
-8-K / guidance revision / material news…"`), and the per-position `portfolio_gap` questions (filled
-from the snapshot); ordering, `Q###` numbering, empty-category placeholders, `answer: null` init,
-`data_sources` assignment from the §3 routing table.
+(constant), the per-ticker `current_events` questions (anchored to each claim's `source_ref.published_at`),
+and the per-position `portfolio_gap` questions (filled from the snapshot); ordering, `Q###` numbering,
+empty-category placeholders, `answer: null` init, `data_sources` assignment from the §3 routing table.
 
 **Agent 3 — Retrieval.** *LLM (irreducible, thin):* only the open-ended questions whose retrieval
 needs relevance judgment (free-text Brave/EDGAR lookups) plus short answer synthesis. *MCP tools:*
@@ -709,13 +780,22 @@ an LLM for prose is optional, not required.
 
 ### Consolidated MCP tool inventory
 
-| server | tools | exposed to | read/write |
-|---|---|---|---|
-| market-data (FRED, EdgarTools, yfinance, Brave) | series/filings/price/search fetchers + `get_macro_regime_indicators()` | Agent 3 (+ A4 post-proc may read cached) | read |
-| Alpaca market-data | current price, bid/ask, recent trades | Agent 3 | read |
-| reference | `resolve_ticker(name_or_symbol)` | Agent 1 | read |
-| Alpaca trading | `place_order`, … | **execution stage only** | write |
-| communication | `send_email(...)` | email stage only | write |
+Almost all integrate; only a small email server is built. The Alpaca read/write split is **toolset
+scoping on the one official server** (`ALPACA_TOOLSETS`), not two servers.
+
+| server | build/integrate | tools | exposed to | read/write |
+|---|---|---|---|---|
+| FRED | integrate (community) | series fetch + economic-snapshot (covers `get_macro_regime_indicators`) | Agent 3 / macro bundle | read |
+| SEC EDGAR | integrate — edgartools built-in MCP | filings, financials, insider, ticker/CIK resolve (covers `resolve_ticker`) | Agent 3 / adapters | read |
+| yfinance | integrate (community) | fundamentals, price history, earnings | Agent 3 | read |
+| Brave | integrate (official) | web search | Agent 3 | read |
+| Alpaca (read scope) | integrate official, `ALPACA_TOOLSETS`=market-data | account snapshot, quotes, trades, assets | snapshot builder, Agent 3 | read |
+| Alpaca (write scope) | integrate official, `ALPACA_TOOLSETS`=trading | place/get order | **execution stage only** | write |
+| communication | **build (small)** FastMCP or smtplib | `send_email(...)` | email stage only | write |
+
+`execution_parameters` field names are pinned to the official Alpaca server's OpenAPI order schema.
+A5's schema-acceptance check is `jsonschema.validate(params, tool.inputSchema)` — MCP `inputSchema`
+is JSON Schema — so only the `action_type→tool` routing + compensation lookup are custom.
 
 ### Consolidated background-function inventory
 

@@ -13,9 +13,10 @@ responsibilities and control flow.
 
 ## 1. Purpose & scope
 
-money-pit is a scheduled pipeline that ingests market-commentary videos from a single YouTube
-channel, extracts and validates investment signals against current data and the owner's actual
-brokerage state, and either **executes** the resulting portfolio actions against a live Alpaca
+money-pit is a scheduled pipeline that ingests market commentary — primarily a narrated YouTube
+channel, with the front end generalized so other sources (newsletters, RSS, research PDFs, notes) can
+feed the same way — extracts and validates investment signals against current data and the owner's
+actual brokerage state, and either **executes** the resulting portfolio actions against a live Alpaca
 account or **halts and notifies** a human. It is a personal, single-owner system. Because its output
 moves real capital, the architecture privileges reproducibility, auditability, and structural safety
 over flexibility.
@@ -93,10 +94,12 @@ it decouples stages so any one can be re-run in isolation against a frozen worki
 
 ```mermaid
 flowchart TD
-    SCH([Scheduler]) --> DL[yt-dlp + Whisper<br/>transcription]
+    SCH([Scheduler]) --> VID[Video source adapter<br/>multimodal · Pydantic AI]
+    SCH -.future.-> SRC[Other source adapters<br/>newsletter / RSS / PDF]
     SCH --> SNAP[Snapshot builder<br/>Alpaca read]
-    DL --> A1[A1 · Transcript agent<br/>Pydantic AI]
-    A1 --> G1{has_actionable_content?}
+    VID --> AGG[Aggregator node<br/>merge · corroborate]
+    SRC -.-> AGG
+    AGG --> G1{has_actionable_content?}
     G1 -- no --> NA([NO_ACTION terminal<br/>quiet / optional digest])
     G1 -- yes --> A2[A2 · Question agent + templating]
     SNAP --> A2
@@ -116,39 +119,52 @@ flowchart TD
     EM --> DET
 ```
 
-The graph is mostly linear with three gates: the **signal gate** after A1 (skip everything if the
-episode has no actionable content), the **terminal-state router** after the post-processor (empty /
-halt / proceed), and the **determination gate** after validation (proceed to execution only if every
-step is independently executable).
+The graph is mostly linear with three gates: the **signal gate** after the aggregator (skip everything
+if no source carried actionable content), the **terminal-state router** after the post-processor (empty
+/ halt / proceed), and the **determination gate** after validation (proceed to execution only if every
+step is independently executable). The front of the pipeline is a set of **source adapters** (the video
+adapter today; newsletter/RSS/PDF adapters are additive) feeding an **aggregator** that merges them
+into one source-agnostic signal set — so everything from A2 onward is unaware of where signal came from.
 
 ---
 
 ## 6. Component catalog
 
 Each component is one of three types: a **Pydantic AI agent** (thin LLM core with a typed output), a
-**node** (deterministic LangGraph function), or an **MCP tool** (callable integration). The four
-agents are the only places an LLM runs.
+**node** (deterministic LangGraph function), or an **MCP tool** (callable integration). The LLM runs
+only in the source-adapter classifiers, the aggregator's thin corroboration pass, and A2–A4.
 
 ### 6.1 Ingestion (nodes)
 
 - **Scheduler** — triggers a run, creates the working directory, seeds graph state with the slug.
-- **Transcription node** — yt-dlp pulls the latest video's audio; Whisper transcribes it to text.
-  Emits the raw transcript string consumed by A1. (Transcription quality is a known error source;
-  A1's `resolve_ticker` tool exists partly to recover from Whisper homophones.)
 - **Snapshot builder node** — calls the Alpaca **read** tools and writes `portfolio_snapshot.json`
   (`PortfolioSnapshot`). Computes the aggregate factor profile from per-position `factor_tags`
   deterministically. This snapshot is the single source of truth for portfolio state for the run.
+- **Per-adapter ingestion** — each source adapter does its own fetch/transcription. The video adapter
+  runs yt-dlp + Whisper **plus** the multimodal layer (scene-change keyframes, OCR/VLM, timestamp-fused
+  transcript) so on-screen sources and spatial references survive into the claims; lighter adapters
+  fetch and parse text. This is where source-specific complexity is contained.
 
-### 6.2 A1 — Transcript agent (Pydantic AI)
+### 6.2 Source adapters + aggregator (the genericized front)
 
-- **Responsibility:** comprehend the transcript; identify substantive claims; assign each a tier and
-  category; restate it in its own words; extract mentioned tickers / sectors / macro themes; write
-  the episode summary.
-- **Output type:** `TranscriptSummaryDraft` (judgment + raw entities only).
-- **Tools:** `resolve_ticker`.
-- **Wrapping node:** adds derived fields (`requires_validation`, `has_actionable_content`),
-  normalizes tickers, parses any stated date to ISO 8601, validates and writes `transcript_summary.json/.md`.
-- **Gate:** if `has_actionable_content` is false, the run routes directly to `NO_ACTION`.
+The pipeline no longer has a single "transcript agent." Signal originates as a classified `Claim`, and
+any input is a `Source` adapter that emits a normalized `SignalSet`. Start at **N = 1** (video adapter
+only); other adapters are purely additive and never touch anything downstream.
+
+- **Source adapter (Pydantic AI + wrapping node), one per source type.** *Responsibility:* turn one
+  input into a `SignalSet` — identify substantive claims, assign tier/category, restate in own words,
+  extract entities, and fill `cited_sources` (on-screen attribution for video; links/footnotes for
+  text). *Output type:* `SignalSetDraft` (judgment + raw entities). *Tools:* `resolve_ticker`.
+  *Wrapping node:* derived flags, ticker normalization, ISO-date parsing, keyframe/OCR source layer
+  (video), schema validation; writes `signals/{source_id}.json`. The **video adapter** is the heavy one;
+  it can be stubbed or deferred without affecting the rest of the system.
+- **Aggregator node.** *Responsibility:* merge all `SignalSet`s into `aggregated_signals.json`.
+  *Deterministic:* union claims, re-ID to the run-global namespace, compute run-level
+  `has_actionable_content`, reconcile tier (max across a corroboration). *Thin LLM (the one new judgment
+  surface):* corroboration/conflict — embed claims, cluster by similarity, and confirm/label
+  `agree`/`disagree` within a cluster. Output type for that step: `ClaimRelations`.
+- **Gate:** if `has_actionable_content` is false across all sources, the run routes directly to
+  `NO_ACTION`.
 
 ### 6.3 A2 — Question agent + templating
 
@@ -157,10 +173,10 @@ agents are the only places an LLM runs.
   `invalidation_conditions` questions. Output type: `list[DraftQuestion]`.
 - **Node part (deterministic):** emits the standing questions that recur every run as templates —
   the four `macro_regime` questions (constant), per-ticker `current_events` questions
-  (parameterized by `published_at`), and per-position `portfolio_gap` questions (filled from the
-  snapshot). Merges all questions, assigns `Q###` IDs and ordering, fills `data_sources` from the
-  routing table, inserts empty-category placeholders, and writes `initial_questions.json/.md`.
-- **Inputs:** `transcript_summary.json`, `portfolio_snapshot.json`.
+  (anchored to each claim's `source_ref.published_at`), and per-position `portfolio_gap` questions
+  (filled from the snapshot). Merges all questions, assigns `Q###` IDs and ordering, fills
+  `data_sources` from the routing table, inserts empty-category placeholders, writes `initial_questions.json/.md`.
+- **Inputs:** `aggregated_signals.json`, `portfolio_snapshot.json`.
 
 ### 6.4 A3 — Retrieval
 
@@ -182,10 +198,12 @@ The system's core, split into a judgment agent and a deterministic compute node.
 
 - **A4 agent (Pydantic AI):** executes the seven-step framework as *judgment only* — Step 1
   supported/contradicted/unverified disposition per claim (after a code join on
-  `claim_id ↔ signal_source`), Step 4 thesis narratives, the Step 5 scenario probabilities and
-  returns, Step 6 invalidation-condition authoring. Output type: `AnalysisJudgment` (surviving
-  theses with scenarios and narratives, dropped-claim records, the macro indicators it read, and an
-  optional halt). It reasons only over the three input files; it has no tools and cannot retrieve.
+  `claim_id ↔ signal_source`, and weighting cross-source `corroborations` as a positive input),
+  Step 4 thesis narratives, the Step 5 scenario probabilities and returns, Step 6
+  invalidation-condition authoring. Output type: `AnalysisJudgment` (surviving theses with scenarios
+  and narratives, dropped-claim records, the macro indicators it read, and an optional halt). Its
+  inputs are `aggregated_signals.json`, `initial_answers.json`, and `portfolio_snapshot.json`; it has
+  no tools and cannot retrieve.
 - **Post-processor (node):** consumes `AnalysisJudgment + PortfolioSnapshot` and produces
   `action_steps.json` (`list[ActionStep]`). It performs every deterministic operation: Step 2 regime
   tagging via a decision table, Step 3 constraint extraction (25% sector cap, cash, overlap), Step 5
@@ -200,9 +218,12 @@ The system's core, split into a judgment agent and a deterministic compute node.
 - **Responsibility:** for each action step, confirm a literal, complete MCP tool sequence exists that
   would execute it exactly as written. Static analysis only; never executes a tool.
 - **Mechanism:** reads the **tool manifest** (introspected from the registered MCP servers) and
-  checks existence (tool present by exact name), schema acceptance (every required parameter present
-  under its *literal* field name — no semantic remapping), and behavioral match via a fixed
-  `action_type → tool` config. With a closed tool set this is entirely deterministic.
+  checks existence (tool present by exact name), schema acceptance, and behavioral match via a fixed
+  `action_type → tool` config. The schema-acceptance check is a **`jsonschema.validate()`** call —
+  an MCP tool's `inputSchema` *is* JSON Schema, so "are the action's params accepted under their
+  literal field names, with required fields present" is a library call, not hand-rolled matching. The
+  custom surface is only the `action_type→tool` routing and the compensation-capability lookup. With a
+  closed tool set this is entirely deterministic.
 - **Output:** `action_steps_validation.json/.md` (per-step `MATCHED`/`UNMATCHED` + gap descriptions)
   and `validation_status.json` (the orchestration completion signal). Written JSON → md → status,
   in that order.
@@ -256,11 +277,12 @@ The system's core, split into a judgment agent and a deterministic compute node.
 ## 7. Data architecture
 
 All artifacts are plain `pydantic.BaseModel`s, validated on write and on read at each boundary. The
-ten working-directory artifacts and their producers/consumers:
+working-directory artifacts and their producers/consumers:
 
 | artifact | producer | consumers |
 |---|---|---|
-| `transcript_summary.json/.md` | A1 + wrap node | A2, A4 |
+| `signals/{source_id}.json/.md` | each source adapter | aggregator |
+| `aggregated_signals.json/.md` | aggregator | A2, A4 |
 | `portfolio_snapshot.json` | snapshot builder | A2, A4 |
 | `initial_questions.json/.md` | A2 | A3 |
 | `initial_answers.json/.md` | A3 | A4 |
@@ -272,35 +294,72 @@ ten working-directory artifacts and their producers/consumers:
 | `execution_journal.json` | execution sub-agent | orchestration (next-run recovery) / audit |
 
 Two-model pattern at LLM boundaries: each agent's typed output is a **draft / judgment** model
-(`TranscriptSummaryDraft`, `list[DraftQuestion]`, `AnswerDraft`, `AnalysisJudgment`), and a node
-converts it into the full **contract** model that lands on disk. The complete field-level schema for
-every model is in `pipeline_contracts.md`; the model inventory (≈25 models + shared enums) is the
-build manifest for the data layer.
+(`SignalSetDraft`, `ClaimRelations`, `list[DraftQuestion]`, `AnswerDraft`, `AnalysisJudgment`), and a
+node converts it into the full **contract** model that lands on disk. The complete field-level schema
+for every model is in `pipeline_contracts.md`; the model inventory (now including `SourceRef`,
+`SignalSet`, `AggregatedSignals`, `ClaimGroup` and the generalized `Claim`) is the build manifest for
+the data layer.
 
 ---
 
 ## 8. MCP tool layer
 
-Three servers are built in-house; four are existing community servers wrapped with typed clients.
-The Alpaca server is split into **read** and **write** scopes exposed through separate clients — the
-central safety boundary of the system.
+Almost everything here is **integrate, not build**. The Alpaca server is official, the data servers
+exist as community packages, and ticker/macro helpers are largely pre-built. The read/write safety
+boundary is achieved by **toolset scoping on the official Alpaca server**, not by writing two servers.
 
 | server | build/integrate | tools | exposed to | scope |
 |---|---|---|---|---|
-| Alpaca (read) | build | `get_account_snapshot`, `get_latest_quote`, `get_recent_trades`, `list_assets` | snapshot builder, A3 | read |
-| Alpaca (write) | build | `place_order`, `get_order` | **execution only** | write |
-| reference | build | `resolve_ticker`, `get_macro_regime_indicators`* | A1, A3 | read |
-| communication | build | `send_email` | notification only | write |
-| FRED | integrate | `get_series` | A3, macro bundle | read |
-| EdgarTools | integrate | `get_filings`, `get_financials`, `get_insider_transactions` | A3 | read |
-| yfinance | integrate | `get_fundamentals`, `get_price_history`, `get_earnings` | A3 | read |
-| Brave | integrate | `web_search` | A3 | read |
+| Alpaca (read scope) | **integrate** official `alpaca-mcp-server`, `ALPACA_TOOLSETS`=market-data | account/snapshot, quotes, trades, assets | snapshot builder, A3 | read |
+| Alpaca (write scope) | **integrate** official `alpaca-mcp-server`, `ALPACA_TOOLSETS`=trading | place/get order | **execution only** | write |
+| FRED | integrate (community) | series fetch + one-call economic snapshot | A3, macro bundle | read |
+| SEC EDGAR | integrate — **the edgartools library's built-in MCP** | filings, financials, insider, ticker/CIK resolve | A3 (+ ticker resolution) | read |
+| yfinance | integrate (community) | fundamentals, price history, earnings | A3 | read |
+| Brave | integrate (official) | web search | A3 | read |
+| communication | **build (small)** via FastMCP, or use `smtplib` directly | `send_email` | notification only | write |
 
-\* `get_macro_regime_indicators` is deterministic and may instead be a plain node over the FRED MCP;
-expose it as a tool only if on-demand or cached access is wanted.
+Notes:
+- **Alpaca read/write split = `ALPACA_TOOLSETS` toolset filtering**, run as two configured instances of
+  the one official server. This replaces the hand-built two-server design and is the structural safety
+  boundary. The official server is OpenAPI-generated, so its order tool's input schema is the source of
+  truth for `execution_parameters` field names (resolves the §15 order-schema risk).
+- **`resolve_ticker`** is not a build: the EDGAR MCP resolves tickers/names/CIKs (incl. renames and
+  near-matches), and Alpaca's asset list covers symbol validation.
+- **`get_macro_regime_indicators`** may already exist as a FRED MCP "economic snapshot" tool; otherwise
+  it is a thin deterministic node over the FRED MCP, not a new server.
+- The **manifest** A5 validates against is introspected from the registered servers, not a tool.
 
-The **manifest** A5 validates against is not a tool — it is introspected from the registered server
-definitions by a background function and passed to the validator.
+### 8a. Build vs. integrate
+
+The point of this section: keep custom code to the domain logic and lean on maintained packages for
+everything mechanical. (License/maintenance vetting deferred for now, per owner.)
+
+**Integrate (servers):** the official Alpaca MCP; community FRED/EDGAR/yfinance/Brave MCPs (EDGAR via
+edgartools itself).
+
+**Use a library, don't hand-roll:**
+
+| mechanical concern | library |
+|---|---|
+| A5 schema-acceptance check (params vs tool `inputSchema`, which *is* JSON Schema) | `jsonschema` |
+| keyframe / scene-change detection (video adapter) | PySceneDetect |
+| word-level transcript timestamps for narration↔frame fusion | WhisperX / faster-whisper |
+| on-screen text / source extraction | Tesseract / PaddleOCR / EasyOCR |
+| corroboration: embeddings + clustering | sentence-transformers (or embedding API) + scikit-learn |
+| scheduling | APScheduler / cron / cloud scheduler |
+| retry / backoff (A3 budget, execution) | tenacity |
+| env / config | pydantic-settings |
+| any custom MCP server (the email one) | FastMCP |
+| optional factor / correlation / risk analytics | quantstats / riskfolio-lib / empyrical |
+
+**Genuinely custom — this is the product, build it:** the signal taxonomy and classification prompts;
+the five-category question framework and templates; the seven-step analysis with its EV/sizing/regime
+*rules* (arithmetic uses numpy/pandas); the Pydantic contracts; the source-adapter → aggregator design;
+the corroboration *semantics* (the thin LLM label); A5's `action_type→tool` routing and
+compensation-capability logic; the transactional/compensation *policy*; the determination gate and
+terminal-state routing; the multimodal fusion *glue*; and the LangGraph wiring. The analysis/validation/
+determination core is not a reinvention of any algo-trading framework — those backtest quantitative
+strategies; this extracts and gates LLM-derived signal.
 
 ---
 
@@ -312,11 +371,13 @@ transforms at a fixed pipeline point; **LLM** only for open-ended language or ge
 
 | concern | placement |
 |---|---|
-| transcript → structured claims, tier/category, entity extraction | **LLM (A1)** |
+| source content → structured claims, tier/category, entity extraction, `cited_sources` | **LLM (source adapter)** |
+| cross-source corroboration: cluster, then confirm/label agree-vs-disagree | node (embed/cluster) + **thin LLM** (label) |
 | claim-specific question authoring | **LLM (A2)** |
 | open-ended retrieval + answer synthesis | **LLM (A3)** |
 | signal disposition, thesis narratives, scenario estimates, invalidation authoring | **LLM (A4)** |
-| derived flags, ticker normalization, date parsing, schema validation | node |
+| derived flags, ticker normalization, date parsing, keyframe/OCR source layer, schema validation | node |
+| claim union, run-global re-ID, tier reconciliation, run-level signal gate | node (aggregator) |
 | standing-question templating, IDs, ordering, routing-table `data_sources` | node |
 | deterministic known-param retrieval, `confidence` derivation, budget control | node |
 | regime tagging, EV + gate, constraint extraction, sizing, exec-param emission | node (post-processor) |
@@ -324,10 +385,12 @@ transforms at a fixed pipeline point; **LLM** only for open-ended language or ge
 | go/no-go determination + terminal-state routing | conditional edge (A6) |
 | order placement, email send | node + write-scoped MCP tool |
 
-Net: **four thin LLM cores** (A1, A2, A3, A4); **A5 and A6 contain no LLM**. The two most
-consequential judgments that *were* model output — macro regime and position sizing — are now
-deterministic, which requires defining the regime decision table and the numeric conviction bands up
-front (see §15).
+Net: the LLM surface is the source adapters' classification, the aggregator's thin corroboration-label
+pass, and the four cores (A2, A3, A4 — plus the per-adapter classifier). **A5 and A6 contain no LLM.**
+The two most consequential judgments that *were* model output — macro regime and position sizing — are
+now deterministic, which requires defining the regime decision table and the numeric conviction bands
+up front (see §15). Genericizing adds exactly one new LLM touch-point (the corroboration label), and it
+is deliberately thin — the clustering that precedes it is deterministic embedding similarity.
 
 ---
 
@@ -338,7 +401,7 @@ no-trade day never looks like a failure:
 
 | terminal state | trigger | action |
 |---|---|---|
-| `NO_ACTION` | A1 signal gate false, or post-processor emits `[]` | stop quietly; optional digest; **no error email**; A5/A6 skipped |
+| `NO_ACTION` | aggregator signal gate false, or post-processor emits `[]` | stop quietly; optional digest; **no error email**; A5/A6 skipped |
 | `ANALYSIS_HALT` | A4 emits a halt object (a step could not be completed) | distinct halt email; A5/A6 skipped |
 | `EXECUTED_CLEAN` | A6 `PROCEED` → all steps executed | orders placed; journal + outcome recorded |
 | `PARTIAL_COMPENSATED` | an atomic group leg failed mid-flight but filled legs were unwound | net no unintended exposure; recorded as success with journal detail |
@@ -397,14 +460,21 @@ which field, which tool), never as a generic failure.
 
 ## 13. Technology stack
 
-- **Orchestration:** LangGraph (graph topology, conditional edges, node state, scheduled trigger).
-- **Agents:** Pydantic AI for the four LLM cores (typed outputs, MCP toolsets as agent tools,
+- **Orchestration:** LangGraph (graph topology, conditional edges, node state, scheduled trigger);
+  APScheduler/cron for scheduling; tenacity for retry/backoff.
+- **Agents:** Pydantic AI for the LLM cores — the source-adapter classifiers, A2, A3, A4, and the aggregator's corroboration pass (typed outputs, MCP toolsets as agent tools,
   dependency injection of working-dir inputs). Confirm exact Pydantic AI parameter names against the
   pinned version.
-- **Data layer:** Pydantic v2 models for all artifacts and tool I/O.
-- **Integrations:** MCP servers — Alpaca (read/write), reference, communication (in-house); FRED,
-  EdgarTools, yfinance, Brave (community).
-- **Ingestion:** yt-dlp + Whisper.
+- **Data layer:** Pydantic v2 for all artifacts/tool I/O; pydantic-settings for config; `jsonschema`
+  for A5's schema-acceptance check.
+- **Integrations (mostly off-the-shelf):** official Alpaca MCP (read/write via `ALPACA_TOOLSETS`
+  scoping); community FRED/yfinance/Brave MCPs; SEC EDGAR via the edgartools built-in MCP; a small
+  FastMCP email server (or smtplib).
+- **Ingestion / multimodal:** yt-dlp; WhisperX (word-level timestamps); PySceneDetect (keyframes);
+  Tesseract/PaddleOCR (on-screen text); a VLM for frame captioning; sentence-transformers +
+  scikit-learn for cross-source corroboration.
+- **Analytics (optional):** quantstats / riskfolio-lib / empyrical for factor/correlation/risk; numpy/
+  pandas for the post-processor arithmetic.
 - **Brokerage:** Alpaca.
 
 ---
@@ -412,19 +482,21 @@ which field, which tool), never as a generic failure.
 ## 14. Configuration & environment
 
 Externalized configuration (not in prompts or code constants): the YouTube channel ID; the owner
-recipient `56kyleoliver@gmail.com`; Alpaca credentials, split into read-scope and write-scope keys so
-the scoping is enforced at the credential level; data-source API keys; the schedule; the sub-agent
-timeout window (owned by the LangGraph node definition, not by any agent); the **regime decision
-table** and **conviction-band thresholds**; and the `action_type → tool` mapping consumed by A5. The
+recipient `56kyleoliver@gmail.com`; Alpaca credentials plus the two `ALPACA_TOOLSETS` values that scope
+the read instance (market-data) and the write instance (trading) — the scoping that enforces the
+read/write safety boundary; data-source API keys; the schedule; the sub-agent timeout window (owned by
+the LangGraph node definition, not by any agent); the **regime decision table** and
+**conviction-band thresholds**; and the `action_type → tool` mapping consumed by A5. The
 working-directory root (`data/daily_show/`) is the only persistent on-disk state.
 
 ---
 
 ## 15. Open decisions & risks
 
-1. **Alpaca order tool schema (blocking).** The `execution_parameters` field names emitted by the
-   post-processor must literally match the real `place_order` input schema, or A5 marks every step
-   `UNMATCHED`. Pin the schema before building the post-processor.
+1. **Alpaca order tool schema (now resolvable, was blocking).** The `execution_parameters` field
+   names must match the official Alpaca MCP order tool's input schema, or A5 marks every step
+   `UNMATCHED`. The official server is OpenAPI-generated, so read that schema and pin
+   `execution_parameters` (and the post-processor's field emission) to it before building the post-processor.
 2. **Regime decision table (design).** The mapping from the four indicators to one of six regime
    tags must be defined explicitly, including the rule that any missing/conflicting indicator →
    `UNCERTAIN`. Auditable, but real upfront work.
@@ -452,19 +524,38 @@ working-directory root (`data/daily_show/`) is the only persistent on-disk state
 12. **Recovery semantics (design).** On a prior `COMPENSATION_FAILED` or crashed run, define exactly
     how next-run reconciliation reads the journal + live positions and decides what, if anything, to
     finish or unwind — versus simply re-planning from current state.
+13. **Run trigger / cadence (orchestration).** With multiple sources, what starts a run — still the
+    video ("new episode" anchors cadence, other sources gathered at run time), a fixed schedule
+    (pull whatever each source has), or any-source arrival? Lean: video stays the anchor at first.
+14. **Corroboration mechanism (design).** The similarity threshold for clustering claims across
+    sources, and how the thin LLM confirm/label step is prompted — the only new judgment surface the
+    genericization adds. Tune to avoid both false merges and missed corroborations.
+15. **Tier reconciliation rule (policy).** Confirmed: max tier across a corroborated claim, with
+    corroboration itself raising A4's Step-1 confidence. Revisit if corroboration proves noisy.
+16. **Adapter trust weighting (policy).** Whether sources carry differing trust (a vetted newsletter
+    vs. an unknown feed) that should weight claims or corroborations. Not needed at N = 1; design the
+    `SourceRef` so a `trust`/`weight` field can be added without a contract break.
 
 ---
 
 ## 16. Suggested build order
 
 1. **Data layer** — all Pydantic models + enums (the contract). Everything else depends on it.
-2. **MCP servers** — Alpaca read/write (scoped), reference, communication; typed wrappers for the
-   four community MCPs. Pin the order-tool schema here (resolves risk #1).
+2. **MCP layer (mostly integrate)** — stand up the official Alpaca MCP as two `ALPACA_TOOLSETS`-scoped
+   instances (read / write); wire the community FRED/yfinance/Brave MCPs and the edgartools EDGAR MCP;
+   build only the small email server (FastMCP or smtplib). Read the Alpaca order tool's OpenAPI schema
+   here and pin `execution_parameters` to it (resolves risk #1).
 3. **Deterministic spine** — snapshot builder, A2/A3 templating + routing, the A4 post-processor,
    A5 validator (incl. the compensation-capability check), A6 edge, terminal-state router, the
    transactional execution loop (idempotency, journal, atomic-group pre-flight + compensation), and
    the email sender. This is a runnable, testable pipeline with stubbed agent outputs and no LLM —
    and it is where the capital-moving logic lives, so test it hardest here, on paper trading.
-4. **LLM cores** — A1, A2, A3, A4 as Pydantic AI agents against the typed boundaries.
-5. **Wire the graph** — assemble in LangGraph, add the scheduler, logging, and the audit checks.
-6. **Dry-run on paper trading** before any live-money execution.
+4. **LLM cores** — A2, A3, A4 and the source-adapter classifier as Pydantic AI agents against the
+   typed boundaries; the aggregator's thin corroboration-label pass.
+5. **Source layer at N = 1** — build the `SignalSet`/aggregator interface and stand up the **video
+   adapter only**. One source in, one aggregate out: behavior is unchanged from a single-source
+   pipeline, but adding a newsletter/RSS/PDF adapter later is purely additive and touches nothing
+   downstream. If the multimodal video work runs long, stub it or stand up a simpler text adapter
+   first — the pipeline no longer depends on the video specifically.
+6. **Wire the graph** — assemble in LangGraph, add the scheduler, logging, and the audit checks.
+7. **Dry-run on paper trading** before any live-money execution.

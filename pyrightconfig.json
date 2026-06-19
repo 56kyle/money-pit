@@ -30,7 +30,7 @@
   "reportPropertyTypeMismatch": "warning",
   "reportMissingParameterType": "warning",
   "reportOptionalOperand": "warning",
-  "pythonVersion": "3.9",
+  "pythonVersion": "3.10",
 
   "reportAny": "error",
   "reportExplicitAny": "warning"

@@ -54,11 +54,10 @@ The validation JSON conforms to this schema:
   "steps": [
     {
       "step_id": "string",
-      "description": "string",
-      "status": "MATCHED | PARTIAL | UNMATCHED",
-      "matched_tools": ["string"],
-      "missing_capabilities": ["string"],
-      "notes": "string"
+      "status": "MATCHED | UNMATCHED",
+      "tool_sequence": [ { "tool_name": "string", "server": "string", "input_parameters": {} } ],
+      "compensation_sequence": [ { "tool_name": "string", "server": "string" } ] | null,
+      "gap_description": "string | null"
     }
   ]
 }
@@ -66,7 +65,8 @@ The validation JSON conforms to this schema:
 
 Read and parse `action_steps_validation.json` first. Do not read or rely on
 `overall_status` as your decision input — you will recompute the decision from
-the per-step statuses (see §3).
+the per-step statuses (see §3). Get the `slug` from this file's `slug` field, or
+from graph state if the field is absent.
 
 ---
 
@@ -78,16 +78,15 @@ from the summary `overall_status` field:
 1. Inspect every element of `steps`.
 2. If **every** step has `status == "MATCHED"`, the determination is
    **`PROCEED`**.
-3. If **any** step has `status == "PARTIAL"` **or** `status == "UNMATCHED"`,
-   the determination is **`HALT`**.
-4. A `PARTIAL` is a `FAIL`. You must **not** interpret, patch, downgrade,
-   upgrade, or work around a partial or unmatched step. There is no "close
-   enough." Any non-`MATCHED` status forces `HALT`.
+3. If **any** step has `status == "UNMATCHED"`, the determination is **`HALT`**.
+4. You must **not** interpret, patch, downgrade, upgrade, or work around an
+   unmatched step. There is no "close enough." Any non-`MATCHED` status forces
+   `HALT`.
 5. If `steps` is empty, missing, or not an array, treat it as a parse failure
    (see §6.1) and `HALT`. An empty step list is never a `PROCEED`.
-6. If any `status` value is not one of the three allowed literals
-   (`MATCHED`, `PARTIAL`, `UNMATCHED`), treat it as an unknown/unsafe status,
-   which forces `HALT`, and record it as a malformed report (see §6.1).
+6. If any `status` value is not one of the two allowed literals
+   (`MATCHED`, `UNMATCHED`), treat it as an unknown/unsafe status, which forces
+   `HALT`, and record it as a malformed report (see §6.1).
 
 You re-derive the decision from per-step statuses every time. The
 `overall_status` field is advisory only and may be wrong; you never trust it
@@ -192,7 +191,7 @@ contains an unrecognized `status` value:
 
 ### 6.2 `overall_status` contradicts per-step statuses
 Trust the **per-step statuses**, never the summary field. If `overall_status`
-says `PASS` but a step is `PARTIAL`/`UNMATCHED`, the determination is `HALT`.
+says `PASS` but a step is `UNMATCHED`, the determination is `HALT`.
 If `overall_status` says `FAIL` but all steps are `MATCHED`, the determination
 is `PROCEED`. Log the contradiction as a decision point with its reason.
 
@@ -220,7 +219,7 @@ is `PROCEED`. Log the contradiction as a decision point with its reason.
 
 - **Temperature 0.** You make no judgment calls; you apply rules.
 - You must **not** fix, interpret, patch, or reason around any validation
-  failure. A `PARTIAL` or `UNMATCHED` is a `FAIL`, full stop.
+  failure. An `UNMATCHED` step is a `FAIL`, full stop.
 - You must **not** execute any MCP tools yourself. Tool execution belongs
   exclusively to the Execution Sub-agent.
 - You spawn **exactly one** sub-agent per run, chosen strictly by §3.
@@ -278,7 +277,7 @@ Field rules:
   parse", "overall_status contradicted per-step statuses").
 - `failed_steps` — set according to exactly one of these three cases:
   - On a `HALT` caused by step statuses: the array of `step_id`s that were
-    `PARTIAL` or `UNMATCHED`.
+    `UNMATCHED`.
   - On a `PROCEED`: `null`.
   - On a §6.1 parse failure where no step list could be read: `null`.
 - `sub_agent_spawned` — `"execution"` on `PROCEED`,

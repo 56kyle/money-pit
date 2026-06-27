@@ -218,7 +218,7 @@ used a different 4-value set — neither matched); (b) canonical field names `da
 | category | meaning |
 |---|---|
 | `thesis_validation` | Does data support the specific video claim? |
-| `macro_regime` | PMI, yield curve, credit spreads, real earnings revisions — current regime. |
+| `macro_regime` | The five regime indicators — yield curve, credit spreads, PMI, earnings revisions, **inflation** — one question per indicator. Together they populate `MacroIndicators` for regime classification. |
 | `current_events` | Anything material since the originating claim's `source_ref.published_at` (embed that datetime in the question; with multiple sources there is no single run-level `published_at`). |
 | `portfolio_gap` | How a signal interacts with the **actual** portfolio (real positions/weights/exposures/cash). |
 | `invalidation_conditions` | Data needed to define what would make the thesis wrong. |
@@ -594,8 +594,8 @@ heavier consumer** and needs more than Agent 2 — three additions/decisions bel
 
 Three reconciliations Agent 4 forces:
 
-1. **`total_account_value` must be explicit.** Agent 4 Step 3 (25% sector cap) and Step 7 (neutral
-   base weight = account ÷ 20) both depend on it. Don't make agents sum positions + cash themselves.
+1. **`total_account_value` must be explicit.** Agent 4 Step 3 (25% sector cap) and Step 7 (fractional
+   Kelly sizing) both depend on it. Don't make agents sum positions + cash themselves.
 2. **Per-position `factor_tags`, not a pre-aggregated profile.** Agent 4 Step 3.2 derives the
    portfolio factor profile *from the tags on each position*. So the snapshot should ship the tags;
    the aggregate `factor_exposure` profile (which Agent 2 references) is then a **derived** value —
@@ -605,6 +605,28 @@ Three reconciliations Agent 4 forces:
    Agent 2 and my earlier draft used `value | momentum | quality | volatility` (four, no growth,
    `volatility` not `low_vol`). Pin the five-factor set from §0 everywhere; `factor_tags` values and
    any derived profile keys draw from it.
+
+---
+
+## 8a. `MacroIndicators` schema — five-indicator struct consumed by A4 post-processor
+
+A4 reads the `macro_regime` answers from `initial_answers.json` and the post-processor assembles
+them into this struct before calling `classify_regime()` (`design_decisions.md §1`). Five indicators;
+any missing/stale series leaves the corresponding field `null`, which triggers `UNCERTAIN`.
+
+```jsonc
+{
+  "yield_curve":        -0.41,   // T10Y2Y spread in percentage points; null if unavailable
+  "credit_spreads":     3.82,    // HY OAS in percentage points; null if unavailable
+  "pmi":                48.7,    // ISM Mfg PMI level; null if unavailable
+  "earnings_revisions": -0.12,   // fwd-EPS revision breadth (fraction, negative = net down); null
+  "inflation":          3.1,     // CPILFESL YoY % or ISM prices-paid index; null if unavailable
+  "as_of":              "2026-06-26"  // date of the most recent data point used
+}
+```
+
+This struct does not land on disk as a named file — it is assembled inline by the post-processor
+from the five `macro_regime` answers in `initial_answers.json` (`data_retrieved` field).
 
 ---
 
@@ -628,13 +650,13 @@ structural-enforcement principle. This table is the quick reference.)
 | **Agent 6 determination** | Agent 6 (LLM) | **LangGraph conditional edge** | pure `all(MATCHED) ? PROCEED : HALT`; no model call needed |
 | **Agent 4 EV** | Agent 4 (LLM) | **code post-process** | `EV = Σ(Pᵢ/100 × Rᵢ)`; then apply the ≥ +3.0% gate |
 | **Agent 4 constraint extraction** | Agent 4 (LLM) | **code** | sector headroom to 25% in $ and %, cash %, overlap reductions — all arithmetic from the snapshot |
-| **Agent 4 position sizing** | Agent 4 (LLM) | **code post-process** | base = equity ÷ 20; × conviction multiplier; clamp to 25%/cash/overlap |
+| **Agent 4 position sizing** | Agent 4 (LLM) | **code post-process** | fractional Kelly: `w = kelly_fraction × h_unverified × h_uncertain × f_kelly`; clamp to `max_position_weight`; then to 25%/cash/overlap headroom. See `design_decisions.md §2`. |
 | **Agent 4 `execution_parameters`** | Agent 4 (LLM) | **code post-process** | emit manifest-correct keys from `ticker`/`action_type`/`dollar_amount` — fixes §5b/§5c in one place |
 | factor profile aggregation | (new) | **code** | sum/normalize per-position `factor_tags` into the five-factor profile |
 
 What stays LLM: source-adapter classification, the aggregator's thin corroboration label, Agent 2 question authoring, Agent 3 retrieval +
 sufficiency judgment, **Agent 4's *judgments* only** (which claims survive each gate, scenario
-probabilities/returns, conviction band, thesis text), and **Agent 5 check 3 only** (behavioral/
+probabilities/returns, conviction level, thesis text), and **Agent 5 check 3 only** (behavioral/
 semantic match between a tool's description and an action's intent — code can't judge that).
 
 The clean shape for **Agent 4** is the same hybrid as Agent 5: the model decides *what* and *how
@@ -659,7 +681,9 @@ code verifies existence and literal schema acceptance.
 - **Agent 2** — **read `aggregated_signals.json`** (not `transcript_summary.json`); adopt the 5
   snake_case categories; rename output fields to `data_sources` and `rationale`; **also write
   `initial_questions.md`**; anchor `current_events` recency to each claim's `source_ref.published_at`;
-  validate `portfolio_snapshot.json` against §8; use the five-factor set (§0), not `volatility`.
+  validate `portfolio_snapshot.json` against §8; use the five-factor set (§0), not `volatility`;
+  emit **five** `macro_regime` questions (one per indicator: yield curve, credit spreads, PMI,
+  earnings revisions, inflation — see §8a).
 - **Agent 3** — read `data_sources` and `rationale`; route on the 5 canonical categories via the
   §3 table; carry `category`/`signal_source`/`signal_tier` through into `initial_answers.json`
   (top level now carries `sources`, not a single `published_at`); fix illustrative IDs to `Q001` style.
@@ -733,16 +757,17 @@ and label `agree`/`disagree` **within** a cluster. Output: `aggregated_signals.j
 `invalidation_conditions` questions anchored to each claim's numeric/mechanistic substance — that's
 the only generative part. *Background functions:* input validation; the insufficient-signal gate
 (driven by `has_actionable_content` — skip the node entirely, no LLM); signal counts; **template
-emission** for the standing questions that are the same every run — the four `macro_regime` questions
-(constant), the per-ticker `current_events` questions (anchored to each claim's `source_ref.published_at`),
+emission** for the standing questions that are the same every run — the **five** `macro_regime`
+questions (one per indicator: yield curve, credit spreads, PMI, earnings revisions, inflation —
+constant), the per-ticker `current_events` questions (anchored to each claim's `source_ref.published_at`),
 and the per-position `portfolio_gap` questions (filled from the snapshot); ordering, `Q###` numbering,
 empty-category placeholders, `answer: null` init, `data_sources` assignment from the §3 routing table.
 
 **Agent 3 — Retrieval.** *LLM (irreducible, thin):* only the open-ended questions whose retrieval
 needs relevance judgment (free-text Brave/EDGAR lookups) plus short answer synthesis. *MCP tools:*
 the existing read-only data sources, **plus** a `get_macro_regime_indicators()` convenience tool that
-bundles the four standard FRED series (yield-curve shape, credit-spread direction, PMI trend, real
-earnings-revision direction) into one deterministic call. *Background functions:* the category→tool
+bundles the five standard series (yield-curve shape, credit-spread direction, PMI trend, real
+earnings-revision direction, inflation — FRED `CPILFESL` or ISM prices-paid) into one deterministic call. *Background functions:* the category→tool
 routing table; **deterministic retrieval** for every question that carries a known tool+params
 (named FRED series, current price, P/E) — fetched by code, no model; `confidence` from `sources_used`;
 call-budget control; output validation. *Structural:* read-only Alpaca is enforced by exposing only
@@ -753,9 +778,9 @@ claim (after a code join on `claim_id`↔`signal_source`); Step 4 thesis narrati
 scenario probabilities and returns; Step 6 invalidation-condition authoring. *Background functions —
 "the post-processor":* Step 2 regime **tagging** as a decision table over the indicators (any
 missing/conflicting → `UNCERTAIN`); Step 3 constraint extraction (sector headroom to 25% in $ and %,
-cash %, overlap reductions); Step 5 `EV = Σ(Pᵢ/100 × Rᵢ)` and the ≥ +3.0% gate; Step 7 base = equity
-÷ 20 × multiplier with constraint clamps; conviction-band selection (use *fixed numeric* EV
-thresholds, not "top of the surviving range"); action mapping (held+bullish → ADD, not-held+bullish →
+cash %, overlap reductions); Step 5 `EV = Σ(Pᵢ/100 × Rᵢ)` and the ≥ +3.0% gate; Step 7
+fractional-Kelly sizing (`w = kelly_fraction × h_unverified × h_uncertain × f_kelly`, clamped to
+`max_position_weight`, then to §3 headroom — see `design_decisions.md §2`); action mapping (held+bullish → ADD, not-held+bullish →
 BUY, held+bearish → TRIM/SELL); probability-sums-to-100 check; **`execution_parameters` emission with
 manifest-correct keys** (this is also the §5b/§5c fix). The model emits judgments; code does every
 multiplication, gate, clamp, and the schema. This is the only way Agent 4's own "identical inputs →

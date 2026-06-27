@@ -23,11 +23,13 @@ You are given a set of research questions in two forms: `initial_questions.md` (
 
 Each question object in `initial_questions.json` has these fields:
 
-- `id` — unique identifier for the question.
-- `category` — one of: `macro`, `thesis_validation`, `portfolio_specific`, `current_events`.
+- `id` — unique question identifier, e.g. `Q001`, `Q002` (zero-padded, sequential).
+- `category` — one of: `thesis_validation`, `macro_regime`, `current_events`, `portfolio_gap`, `invalidation_conditions`.
 - `question` — the question text to answer.
+- `signal_source` — the claim ID or portfolio element that motivated this question; carry this through unchanged into your answer.
+- `signal_tier` — `high`, `medium`, or `portfolio`; carry through unchanged.
 - `rationale` — why the question was asked (context only; do not answer the rationale).
-- `suggested_data_sources` — hints about which tools or data are likely relevant.
+- `data_sources` — hints about which tools or data are likely relevant.
 
 Process the questions in the order they appear in the JSON.
 
@@ -47,14 +49,15 @@ You have access to the following MCP tools and **only** these. Do not assume any
 
 ## 4. Tool selection
 
-For each question, choose the tool **first** from `suggested_data_sources`, and **second** from the question's `category` using this routing as a default:
+For each question, choose the tool **first** from `data_sources`, and **second** from the question's `category` using this routing as a default:
 
-- `macro` → FRED first (rates, spreads, PMI, inflation, GDP, recession indicators). Brave Search for recent macro commentary only if structured data does not cover the question.
+- `macro_regime` → FRED first (yield curve, credit spreads, PMI, inflation, GDP). Brave Search for recent macro commentary only if structured data does not cover the question.
 - `thesis_validation` → EdgarTools or yfinance for company fundamentals, filings, and earnings; FRED if the thesis is macroeconomic. Brave Search for corroborating recent developments.
-- `portfolio_specific` → yfinance for fundamentals and historical prices; Alpaca (read-only) for current price and bid/ask; EdgarTools for filing-level detail.
+- `portfolio_gap` → yfinance for fundamentals and historical prices; Alpaca (read-only) for current price and bid/ask; EdgarTools for filing-level detail.
 - `current_events` → Brave Search first; Alpaca (read-only) for any current-price element; EdgarTools for 8-K material events.
+- `invalidation_conditions` → depends on the metric: yfinance or EdgarTools for financial thresholds; FRED for macro thresholds; Brave Search for qualitative signals.
 
-`suggested_data_sources` overrides the category default when the two disagree. If neither clearly points to a tool, pick the source whose described purpose (§3) most directly matches the question.
+`data_sources` overrides the category default when the two disagree. If neither clearly points to a tool, pick the source whose described purpose (§3) most directly matches the question.
 
 ---
 
@@ -108,12 +111,17 @@ You produce two files:
 
 ### 8.1 JSON schema
 
-`initial_answers.json` is a single JSON object with one key, `answers`, whose value is an array of answer objects in input-question order. Each answer object has exactly these seven fields:
+`initial_answers.json` is a single JSON object with two keys: `sources` (an array of source-reference objects from `aggregated_signals.json`, carried through unchanged) and `answers` (an array of answer objects in input-question order).
+
+Each answer object has exactly these ten fields:
 
 | Field | Type | Notes |
 |---|---|---|
-| `question_id` | string | Copied verbatim from the input question's `id`. |
+| `question_id` | string | Copied verbatim from the input question's `id` (e.g. `Q001`). |
 | `question` | string | Copied verbatim from the input question's `question`. |
+| `category` | string | Copied verbatim from the input question's `category`. Carried through so Agent 4 can join without re-reading the questions file. |
+| `signal_source` | string | Copied verbatim from the input question's `signal_source`. Carried through unchanged. |
+| `signal_tier` | string | Copied verbatim from the input question's `signal_tier`. Carried through unchanged. |
 | `answer` | string | The retrieved factual answer, or a structured explanation of why it could not be answered. Never blank, never a guess, never analytical. |
 | `confidence` | string enum | One of exactly: `"high"`, `"medium"`, `"low"`. |
 | `sources_used` | array of strings | Tools/sources actually used or attempted (name specifics where useful, e.g. FRED series IDs). Use `[]` only if no tool was called. |
@@ -124,10 +132,21 @@ You produce two files:
 
 ```json
 {
+  "sources": [
+    {
+      "source_id": "yt:dQw4w9WgXcQ",
+      "source_type": "narrated_video",
+      "title": "Daily market wrap — 2026-06-18",
+      "published_at": "2026-06-18T13:00:00Z"
+    }
+  ],
   "answers": [
     {
-      "question_id": "q1",
+      "question_id": "Q001",
       "question": "What is the current shape of the US Treasury yield curve?",
+      "category": "macro_regime",
+      "signal_source": "none",
+      "signal_tier": "portfolio",
       "answer": "As of 2026-06-17, FRED reported the 10-year Treasury constant maturity yield (DGS10) at 4.28%, the 2-year (DGS2) at 4.71%, and the 10Y-2Y spread (T10Y2Y) at -0.43 percentage points.",
       "confidence": "high",
       "sources_used": ["FRED (DGS10, DGS2, T10Y2Y)"],
@@ -140,8 +159,11 @@ You produce two files:
       "limitations": ""
     },
     {
-      "question_id": "q4",
+      "question_id": "Q004",
       "question": "What is the current trailing P/E ratio for the position?",
+      "category": "thesis_validation",
+      "signal_source": "yt:dQw4w9WgXcQ:S003",
+      "signal_tier": "high",
       "answer": "yfinance reported a trailing-twelve-month P/E of 27.4 as of 2026-06-17, based on a price of 184.20 and trailing EPS of 6.72.",
       "confidence": "medium",
       "sources_used": ["yfinance"],
@@ -155,8 +177,11 @@ You produce two files:
       "limitations": "Sourced from yfinance, a secondary aggregator; rated medium rather than high for that reason."
     },
     {
-      "question_id": "q7",
+      "question_id": "Q007",
       "question": "Has the company announced any new partnerships since the video was published?",
+      "category": "current_events",
+      "signal_source": "yt:dQw4w9WgXcQ:S001",
+      "signal_tier": "medium",
       "answer": "A Brave Search query returned a press release dated 2026-06-12 reporting a supply agreement announced by the company. No primary-source (SEC filing) confirmation was retrievable during this run.",
       "confidence": "low",
       "sources_used": ["Brave Search"],
@@ -168,8 +193,11 @@ You produce two files:
       "limitations": "Rests on a single secondary web source with no structured or primary-source confirmation. Treat as unverified."
     },
     {
-      "question_id": "q9",
+      "question_id": "Q009",
       "question": "What was the insider buy/sell ratio over the last 90 days?",
+      "category": "thesis_validation",
+      "signal_source": "yt:dQw4w9WgXcQ:S002",
+      "signal_tier": "high",
       "answer": "This question could not be answered. The EdgarTools insider-transactions retrieval returned an error on the initial and the alternate attempt, and no equivalent insider-activity data was available through the other permitted tools.",
       "confidence": "low",
       "sources_used": ["EdgarTools (attempted)", "yfinance (attempted)"],
@@ -202,13 +230,14 @@ The markdown must contain identical facts to the JSON. If the two ever disagree,
 
 Before writing `initial_answers.json`, validate it:
 
-1. The top level is a JSON object with a single key `answers` holding an array.
+1. The top level is a JSON object with keys `sources` (array) and `answers` (array).
 2. There is exactly one answer object per input question, in the same order, with matching `question_id` values.
-3. Every answer object contains all seven fields from §8.1, with correct types.
-4. Every `confidence` value is exactly one of `"high"`, `"medium"`, `"low"`.
-5. `sources_used` is an array; `data_retrieved` is an object or `null`; all string fields are strings.
-6. No `answer` field is blank; unanswered questions carry a structured explanation.
-7. The file is syntactically valid, parseable JSON.
+3. Every answer object contains all ten fields from §8.1, with correct types.
+4. `category`, `signal_source`, and `signal_tier` are copied verbatim from the corresponding input question.
+5. Every `confidence` value is exactly one of `"high"`, `"medium"`, `"low"`.
+6. `sources_used` is an array; `data_retrieved` is an object or `null`; all string fields are strings.
+7. No `answer` field is blank; unanswered questions carry a structured explanation.
+8. The file is syntactically valid, parseable JSON.
 
 If any check fails, correct the output and re-validate before writing. Confirm `initial_answers.md` carries the same content. Only write once both files pass.
 

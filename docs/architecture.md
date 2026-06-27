@@ -1,8 +1,9 @@
 # money-pit — Architecture Specification
 
-**Status:** draft · **Companion document:** `pipeline_contracts.md` (authoritative per-boundary
-schemas) · **Scope:** the scheduled video-to-trade analysis pipeline and its execution/notification
-edges.
+**Status:** draft · **Companion documents:** `pipeline_contracts.md` (authoritative per-boundary
+schemas), `design_decisions.md` (resolved §15 open decisions: regime table, Kelly sizing, snapshot
+semantics, sell translation) · **Scope:** the scheduled video-to-trade analysis pipeline and its
+execution/notification edges.
 
 This document describes *how the system is built and why*. Wire-level schemas live in
 `pipeline_contracts.md`; where this spec and that document overlap, the contract document is
@@ -172,7 +173,8 @@ only); other adapters are purely additive and never touch anything downstream.
 - **LLM part (Pydantic AI):** authors only the *claim-specific* `thesis_validation` and
   `invalidation_conditions` questions. Output type: `list[DraftQuestion]`.
 - **Node part (deterministic):** emits the standing questions that recur every run as templates —
-  the four `macro_regime` questions (constant), per-ticker `current_events` questions
+  the **five** `macro_regime` questions (yield curve, credit spreads, PMI, earnings revisions,
+  inflation — constant, one per indicator), per-ticker `current_events` questions
   (anchored to each claim's `source_ref.published_at`), and per-position `portfolio_gap` questions
   (filled from the snapshot). Merges all questions, assigns `Q###` IDs and ordering, fills
   `data_sources` from the routing table, inserts empty-category placeholders, writes `initial_questions.json/.md`.
@@ -199,19 +201,21 @@ The system's core, split into a judgment agent and a deterministic compute node.
 - **A4 agent (Pydantic AI):** executes the seven-step framework as *judgment only* — Step 1
   supported/contradicted/unverified disposition per claim (after a code join on
   `claim_id ↔ signal_source`, and weighting cross-source `corroborations` as a positive input),
-  Step 4 thesis narratives, the Step 5 scenario probabilities and returns, Step 6
-  invalidation-condition authoring. Output type: `AnalysisJudgment` (surviving theses with scenarios
-  and narratives, dropped-claim records, the macro indicators it read, and an optional halt). Its
-  inputs are `aggregated_signals.json`, `initial_answers.json`, and `portfolio_snapshot.json`; it has
-  no tools and cannot retrieve.
+  Step 4 thesis narratives, the Step 5 scenario probabilities and returns (the distribution the
+  post-processor feeds into Kelly), Step 6 invalidation-condition authoring. Output type:
+  `AnalysisJudgment` (surviving theses with scenarios and narratives, dropped-claim records, the
+  macro indicators it read, and an optional halt). Its inputs are `aggregated_signals.json`,
+  `initial_answers.json`, and `portfolio_snapshot.json`; it has no tools and cannot retrieve.
 - **Post-processor (node):** consumes `AnalysisJudgment + PortfolioSnapshot` and produces
   `action_steps.json` (`list[ActionStep]`). It performs every deterministic operation: Step 2 regime
-  tagging via a decision table, Step 3 constraint extraction (25% sector cap, cash, overlap), Step 5
-  `EV = Σ(Pᵢ/100 × Rᵢ)` and the ≥ +3.0% gate, Step 7 sizing (base = equity ÷ 20 × conviction
-  multiplier, clamped), direction → `action_type` mapping, probability-sum validation, and emission
-  of `execution_parameters` with **manifest-correct field names**. This node is where the
-  `ticker→symbol` / `dollar_amount→notional` / `action→side` translation lives — never inside the
-  validator. A4 also writes `analysis.md`, the full human-readable reasoning including every drop.
+  tagging via the five-indicator decision table (`design_decisions.md §1`), Step 3 constraint
+  extraction (25% sector cap, cash, overlap), Step 5 `EV = Σ(Pᵢ/100 × Rᵢ)` and the ≥ +3.0% gate,
+  Step 7 fractional-Kelly sizing (`design_decisions.md §2`: `w = kelly_fraction × h_unverified ×
+  h_uncertain × f_kelly`, clamped to `max_position_weight`, then to §3 headroom), direction →
+  `action_type` mapping, probability-sum validation, and emission of `execution_parameters` with
+  **manifest-correct field names**. This node is where the `ticker→symbol` / `notional` / `side`
+  translation lives — never inside the validator. A4 also writes `analysis.md`, the full
+  human-readable reasoning including every drop.
 
 ### 6.6 A5 — Validation node (deterministic, no LLM)
 
@@ -380,7 +384,7 @@ transforms at a fixed pipeline point; **LLM** only for open-ended language or ge
 | claim union, run-global re-ID, tier reconciliation, run-level signal gate | node (aggregator) |
 | standing-question templating, IDs, ordering, routing-table `data_sources` | node |
 | deterministic known-param retrieval, `confidence` derivation, budget control | node |
-| regime tagging, EV + gate, constraint extraction, sizing, exec-param emission | node (post-processor) |
+| regime tagging (five-indicator decision table), EV + gate, constraint extraction, fractional-Kelly sizing, haircut application, exec-param emission | node (post-processor) |
 | capability validation (existence + literal schema + sequence) | node (A5) |
 | go/no-go determination + terminal-state routing | conditional edge (A6) |
 | order placement, email send | node + write-scoped MCP tool |
@@ -497,15 +501,17 @@ working-directory root (`data/daily_show/`) is the only persistent on-disk state
    names must match the official Alpaca MCP order tool's input schema, or A5 marks every step
    `UNMATCHED`. The official server is OpenAPI-generated, so read that schema and pin
    `execution_parameters` (and the post-processor's field emission) to it before building the post-processor.
-2. **Regime decision table (design).** The mapping from the four indicators to one of six regime
-   tags must be defined explicitly, including the rule that any missing/conflicting indicator →
-   `UNCERTAIN`. Auditable, but real upfront work.
-3. **Conviction-band thresholds (design).** Replace the prompt's run-relative "top of the surviving
-   range" with fixed numeric EV cutoffs for the 1.5× / 1.0× / 0.5× multipliers.
-4. **Snapshot vs live reads.** Decide whether A3's live Alpaca quotes may diverge from the
-   run-start snapshot for sizing; recommendation: the snapshot wins for all sizing/constraint math.
-5. **Sell sizing translation.** `TRIM`/`SELL` express a dollar amount to *remove*; the post-processor
-   must translate that into whatever the Alpaca sell tool accepts (notional vs quantity).
+2. **Regime decision table — RESOLVED.** Five-indicator (yield curve, credit spreads, PMI, earnings
+   revisions, inflation) ordered truth table in `design_decisions.md §1`. Missing indicator →
+   `UNCERTAIN`. v0 defers `RECOVERY` tag (no trailing state in v0); early-cycle → `GROWTH_ACCELERATING`.
+3. **Sizing — RESOLVED.** Continuous fractional-Kelly (no EV bands, no multiplier stairs). Full
+   spec in `design_decisions.md §2`. Config surface: `kelly_fraction`, `max_position_weight`,
+   `haircut_unverified`, `haircut_uncertain`, `ev_gate` (3%), `sector_cap` (25%), cash, overlap.
+4. **Snapshot vs live reads — RESOLVED.** Snapshot wins for all sizing/constraint math. Live reads
+   are current price for question answers and the actual order moment only.
+5. **Sell sizing translation — RESOLVED.** `SELL` (full exit) closes by quantity (snapshot `quantity`).
+   `TRIM` uses notional if the Alpaca order tool accepts notional sells, else converts via snapshot
+   price. `compute/execution_params.py` emits the literal field the official order schema defines.
 6. **Transcription fidelity.** Whisper errors on tickers/numbers are an upstream risk; `resolve_ticker`
    mitigates symbols but not misheard figures — A4's evidence-only rule is the backstop.
 7. **Template coverage.** Over-templating A2/A3 trades adaptability for reproducibility; keep the LLM

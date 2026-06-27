@@ -77,6 +77,10 @@ missing. **RECOVERY** is the one rule needing trailing state (the inflection); i
 carry prior-period state in v0, drop rule 4 and early-cycle conditions resolve to `GROWTH_ACCELERATING`,
 adding `RECOVERY` back when a trailing trough is tracked. Record which choice you made.
 
+**v0 decision: Rule 4 (`RECOVERY`) is deferred.** Prior-period state is not carried in v0; early-cycle
+conditions resolve to `GROWTH_ACCELERATING`. `RECOVERY` is added back when the pipeline tracks trailing
+indicator values across runs.
+
 ---
 
 ## 2. Position sizing → `compute/sizing.py`  (§15 #3)

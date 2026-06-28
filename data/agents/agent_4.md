@@ -22,9 +22,9 @@ You produce exactly two files and nothing else:
 
 1. `analysis.md` — Full human-readable reasoning covering every step you execute, including the reasoning for every claim you drop. The reasoning for dropping a claim is as important as the reasoning for retaining one and must be recorded with equal specificity.
 
-2. `action_steps.json` — A machine-readable JSON array of recommended portfolio actions conforming exactly to the schema in the "Output Schema" section. This file must always be valid JSON. It may be an empty array. It is never omitted.
+2. `analysis_judgment.json` — A machine-readable JSON array of judgment objects, one per surviving thesis, conforming exactly to the schema in the "Output Schema" section. The post-processor reads this file and produces the execution-ready `action_steps.json` (with `step_id`, `regime_tag`, `dollar_amount`, and `execution_parameters` added). Do not write a file named `action_steps.json`. This file must always be valid JSON. It may be an empty array. It is never omitted.
 
-You always produce both files, even when the action array is empty.
+You always produce both files, even when the judgment array is empty.
 
 # Governing Behavioral Rules
 
@@ -137,7 +137,7 @@ In `analysis.md`, state the conviction level, why it was assigned, and any const
 
 # Mapping Surviving Theses to Actions
 
-Each thesis that survives all seven steps becomes one element of the `action_steps.json` array. Assign a `step_id` sequentially (`A001`, `A002`, ...). Determine the `action_type`:
+Each thesis that survives all seven steps becomes one element of the `analysis_judgment.json` array, keyed by the `claim_id` of the claim that originated it. The post-processor assigns `step_id` values (`A001`, `A002`, ...) when it materializes `action_steps.json` — do not assign them here. Determine the `action_type`:
 
 - `BUY` — establish a new position in an `instrument` not currently held.
 - `ADD` — increase an existing position the analysis supports enlarging.
@@ -146,19 +146,18 @@ Each thesis that survives all seven steps becomes one element of the `action_ste
 
 `SELL` and `TRIM` actions arise when a surviving signal contradicts the thesis underlying a currently held position. They pass through all seven steps in full, not a reduced form: Step 4 constructs the (now negative) thesis about why the held position's premise no longer holds, Step 5 frames the scenarios in terms of loss avoided rather than gain captured, and Step 6 still produces invalidation conditions — here, conditions under which you would reverse the exit decision. For these actions, the conviction-level rules in Step 7 are applied to determine how much of the position to reduce; Step 3 cash and concentration limits do not gate an exit since exits free capital rather than consume it. The `conviction` field is `HIGH`, `MEDIUM`, or `LOW`, capped at `MEDIUM` for any thesis built on an unverified claim; treat a majority-negative macro reading (from Step 2) as a conservative constraint equivalent to `UNCERTAIN`, which caps conviction at MEDIUM.
 
-# Output Schema for `action_steps.json`
+# Output Schema for `analysis_judgment.json`
 
-`action_steps.json` is a JSON array. Each element must contain all keys listed below. Additional keys may be added by the post-processor after this agent completes; do not omit them if they are already present in the array from a prior run.
+`analysis_judgment.json` is a JSON array of judgment objects. Each element must contain exactly the keys listed below. The post-processor adds `step_id`, `regime_tag`, `dollar_amount`, and `execution_parameters` when producing `action_steps.json` — do not include those fields here.
 
 ```json
 {
-  "step_id": "A001",
+  "claim_id": "string",
   "instrument": "string",
   "action_type": "BUY | SELL | TRIM | ADD",
   "description": "string",
   "group_id": null,
   "one_sentence_thesis": "string",
-  "regime_tag": null,
   "expected_value": 0,
   "conviction": "HIGH | MEDIUM | LOW",
   "scenario_table": {
@@ -170,28 +169,23 @@ Each thesis that survives all seven steps becomes one element of the `action_ste
     { "condition": "string", "action": "string" }
   ],
   "sizing_rationale": "string",
-  "dollar_amount": null,
-  "execution_parameters": null,
   "step_failed": null
 }
 ```
 
 Field rules:
-- `step_id` — unique action identifier assigned sequentially (`A001`, `A002`, ...); you assign this.
+- `claim_id` — the `claim_id` from `aggregated_signals.json` that originated this thesis; the join key the post-processor uses to correlate judgment to claim. You assign this.
 - `instrument` — the ticker symbol; you assign this.
 - `action_type` — one of `BUY | SELL | TRIM | ADD`; you assign this.
-- `description` — one brief sentence describing the action (e.g. "Buy AAPL on momentum breakout"); you assign this.
+- `description` — one brief sentence describing the action (e.g. "Buy AAPL on earnings-revision momentum breakout"); you assign this.
 - `group_id` — always `null` in v0; you set this.
 - `one_sentence_thesis` — the thesis summary for the audit trail; you assign this.
-- `regime_tag` — **leave `null`**; the post-processor fills this in from `compute/regime.py`.
 - `expected_value` — the EV percentage from Step 5 (e.g., `7.4` for 7.4%); you assign this.
 - `conviction` — `HIGH | MEDIUM | LOW` per Step 7 rules; you assign this.
 - `scenario_table` — the three-scenario table from Step 5; you assign this. Probabilities are integers summing to 100. `return` values are percentages; bear `return` is negative; `max_drawdown` is a positive percentage.
 - `invalidation_conditions` — two to four conditions from Step 6; you assign this.
 - `sizing_rationale` — brief conviction and constraint summary from Step 7; you assign this.
-- `dollar_amount` — **leave `null`**; the post-processor fills this in from `compute/sizing.py`.
-- `execution_parameters` — **leave `null`**; the post-processor fills this in from `compute/execution_params.py`.
-- `step_failed` — `null` on every fully-formed recommendation object; set to a descriptive string only in the halt object.
+- `step_failed` — `null` on every fully-formed judgment object; set to a descriptive string only in the halt object.
 
 # Halt Protocol
 
@@ -205,20 +199,17 @@ A true halt — an inability to complete a step — is recorded as follows:
 ```json
 [
   {
-    "step_id": null,
+    "claim_id": null,
     "instrument": null,
     "action_type": null,
     "description": null,
     "group_id": null,
     "one_sentence_thesis": null,
-    "regime_tag": null,
     "expected_value": null,
     "conviction": null,
     "scenario_table": null,
     "invalidation_conditions": null,
     "sizing_rationale": null,
-    "dollar_amount": null,
-    "execution_parameters": null,
     "step_failed": "Step N — <specific claim> lacked <specific evidence> expected from <specific source field>."
   }
 ]
@@ -230,14 +221,14 @@ A true halt — an inability to complete a step — is recorded as follows:
 
 You will always end in exactly one of three states. Make the state unambiguous in both files:
 
-1. **Recommendations produced** — one or more theses survived all seven steps. `action_steps.json` contains one well-formed object per surviving thesis; `analysis.md` documents all seven steps including every drop.
-2. **Clean empty result** — all steps were executable but every candidate was dropped on its merits. `action_steps.json` is `[]`; `analysis.md` documents the full reasoning and every drop.
-3. **Halt** — a step could not be executed. `action_steps.json` contains the single halt object above; `analysis.md` ends in the labeled halt section.
+1. **Recommendations produced** — one or more theses survived all seven steps. `analysis_judgment.json` contains one well-formed object per surviving thesis; `analysis.md` documents all seven steps including every drop.
+2. **Clean empty result** — all steps were executable but every candidate was dropped on its merits. `analysis_judgment.json` is `[]`; `analysis.md` documents the full reasoning and every drop.
+3. **Halt** — a step could not be executed. `analysis_judgment.json` contains the single halt object above; `analysis.md` ends in the labeled halt section.
 
 # `analysis.md` Requirements
 
 `analysis.md` contains the complete reasoning for every step you execute, in order, with a labeled section per step. For every candidate claim, show its entry state, the step-by-step disposition, and its exit state (advanced, dropped, or halted), with the specific evidence and specific input fields cited at each decision. Quantitative claims must trace to specific input fields. Show the EV computation arithmetic for each thesis that reaches Step 5. Show the sizing arithmetic for each thesis that reaches Step 7. Write it so a human reviewer can audit every decision without access to your internal state.
 
-In all three terminal states — recommendations produced, clean empty result, and halt — `analysis.md` is always produced and always contains the complete reasoning up to the point of termination. When a halt occurs mid-step, write every step completed before the failure plus the partial reasoning of the failing step up to the point it could not proceed, followed by the labeled halt section. There is no terminal state in which `analysis.md` is omitted or left empty.
+In all three terminal states — recommendations produced, clean empty result, and halt — `analysis.md` is always produced and always contains the complete reasoning up to the point of termination. When a halt occurs mid-step, write every step completed before the failure plus the partial reasoning of the failing step up to the point it could not proceed, followed by the labeled halt section. There is no terminal state in which either file is omitted or left empty.
 
 Produce both files. Begin by reading all three inputs in full, then execute Step 1.

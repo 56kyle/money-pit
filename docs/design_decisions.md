@@ -162,6 +162,16 @@ populated. Define grouping criteria when the first interdependent thesis appears
 
 ## 7. Alpaca order schema  (§15 #1) — **deployment prerequisite**
 
+## 8. Step ID origin — **post-processor assigns, not A4**
+
+A4's `analysis_judgment.json` objects are keyed by `claim_id` (the run-global claim identifier from `aggregated_signals.json`). The post-processor mints `step_id` values (`A001`, `A002`, …) when it materializes `action_steps.json`, alongside the other fields it fills in (`regime_tag`, `dollar_amount`, `execution_parameters`).
+
+**Rationale.** Step IDs are execution-layer identifiers — they match order keys to compensation paths and journal entries. Assigning them in the LLM core (A4) would couple the LLM output to execution concerns and make the IDs non-deterministic under retries. The post-processor, which owns all deterministic enrichment of A4's output, is the single place where execution identity is established. This also means `step_id` ordering reflects the post-processor's processing order rather than the LLM's output order, which is cleaner for idempotency.
+
+**Consequence.** Any downstream reference to a specific action step (A5 validation records, execution journal, `determination.json`) uses `step_id`. Any upstream join back to the originating claim uses `claim_id`. The boundary between the two is the post-processor output file: everything before `action_steps.json` uses `claim_id`; everything after uses `step_id`.
+
+The Alpaca order's `client_order_id` (idempotency key) is `{slug}:{step_id}` — e.g., `2026-06-27_14-30-00:A001`. This makes every order globally unique across runs and locally unique within a run, and allows the execution loop to safely retry without double-filling.
+
 Read the official Alpaca MCP order tool's `inputSchema` (OpenAPI-generated) at integration time; pin
 `compute/execution_params.py`'s output keys to it and store the snapshot as a repo artifact (e.g.
 `money_pit/mcp/alpaca_order_schema.json`) read by both the post-processor and `pipeline/validator.py`,

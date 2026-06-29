@@ -1,1 +1,17 @@
 """Factor-profile aggregation from per-position factor_tags."""
+from money_pit.schemas.enums import FactorTag
+from money_pit.schemas.portfolio import Position
+
+
+def aggregate_factor_profile(positions: list[Position]) -> dict[FactorTag, float]:
+    total_value = sum(p.current_value for p in positions)
+    result: dict[FactorTag, float] = {t: 0.0 for t in FactorTag}
+    if total_value == 0.0:
+        return result
+    for pos in positions:
+        if not pos.factor_tags:
+            continue
+        weight_per_tag = pos.current_value / (total_value * len(pos.factor_tags))
+        for tag in pos.factor_tags:
+            result[tag] += weight_per_tag
+    return result

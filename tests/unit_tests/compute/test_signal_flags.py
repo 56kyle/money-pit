@@ -1,4 +1,6 @@
 """Tests for money_pit.compute.signal_flags."""
+from collections.abc import Callable
+
 import pytest
 
 from money_pit.compute.signal_flags import (
@@ -7,32 +9,8 @@ from money_pit.compute.signal_flags import (
     normalize_ticker,
     requires_validation,
 )
-from money_pit.schemas.enums import ClaimCategory, SignalTier, SourceType
-from money_pit.schemas.provenance import SourceRef
+from money_pit.schemas.enums import SignalTier
 from money_pit.schemas.signals import Claim
-
-_SOURCE_REF = SourceRef(
-    source_id="test-src",
-    source_type=SourceType.MANUAL_NOTE,
-    title="Test Source",
-    url=None,
-    published_at=None,
-    retrieved_at="2026-01-01T00:00:00Z",
-    locator=None,
-)
-
-
-def _claim(claim_id: str, tier: SignalTier) -> Claim:
-    return Claim(
-        claim_id=claim_id,
-        tier=tier,
-        claim="Test claim.",
-        category=ClaimCategory.FUNDAMENTAL,
-        tickers_affected=[],
-        requires_validation=tier in (SignalTier.HIGH, SignalTier.MEDIUM),
-        source_ref=_SOURCE_REF,
-        cited_sources=[],
-    )
 
 
 @pytest.mark.parametrize(
@@ -52,12 +30,16 @@ def test_has_actionable_content_with_empty_list() -> None:
     assert has_actionable_content([]) is False
 
 
-def test_has_actionable_content_with_one_high_claim() -> None:
-    assert has_actionable_content([_claim("c1", SignalTier.HIGH)]) is True
+def test_has_actionable_content_with_one_high_claim(
+    make_claim: Callable[[str, SignalTier], Claim],
+) -> None:
+    assert has_actionable_content([make_claim("c1", SignalTier.HIGH)]) is True
 
 
-def test_has_actionable_content_with_only_low_claims() -> None:
-    claims = [_claim("c1", SignalTier.LOW), _claim("c2", SignalTier.LOW)]
+def test_has_actionable_content_with_only_low_claims(
+    make_claim: Callable[[str, SignalTier], Claim],
+) -> None:
+    claims = [make_claim("c1", SignalTier.LOW), make_claim("c2", SignalTier.LOW)]
     assert has_actionable_content(claims) is False
 
 
@@ -82,11 +64,13 @@ def test_count_by_tier_with_empty_list() -> None:
     assert set(result.keys()) == set(SignalTier)
 
 
-def test_count_by_tier_with_mixed_claims() -> None:
+def test_count_by_tier_with_mixed_claims(
+    make_claim: Callable[[str, SignalTier], Claim],
+) -> None:
     claims = [
-        _claim("c1", SignalTier.HIGH),
-        _claim("c2", SignalTier.HIGH),
-        _claim("c3", SignalTier.LOW),
+        make_claim("c1", SignalTier.HIGH),
+        make_claim("c2", SignalTier.HIGH),
+        make_claim("c3", SignalTier.LOW),
     ]
     result = count_by_tier(claims)
     assert result[SignalTier.HIGH] == 2

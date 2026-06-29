@@ -12,6 +12,6 @@ def derive_confidence(sources_used: list[str]) -> Confidence:
     used = set(sources_used)
     if used & _TERTIARY:
         return Confidence.LOW
-    if used & _SECONDARY or used - _PRIMARY - _TERTIARY:
+    if used - _PRIMARY:
         return Confidence.MEDIUM
     return Confidence.HIGH

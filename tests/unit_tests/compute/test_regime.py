@@ -78,16 +78,16 @@ def test_classify_regime_with_all_none_indicators() -> None:
     ["yield_curve", "credit_spreads", "pmi", "earnings_revisions", "inflation"],
 )
 def test_classify_regime_with_one_none_returns_uncertain(field: str) -> None:
-    data: dict[str, float | str | None] = {
-        "yield_curve": 0.8,
-        "credit_spreads": 2.0,
-        "pmi": 52.0,
-        "earnings_revisions": 0.6,
-        "inflation": 2.0,
-        "as_of": "2026-01-01",
-    }
-    data[field] = None
-    assert classify_regime(MacroIndicators(**data), _cfg) == RegimeTag.UNCERTAIN
+    base = MacroIndicators(
+        yield_curve=0.8,
+        credit_spreads=2.0,
+        pmi=52.0,
+        earnings_revisions=0.6,
+        inflation=2.0,
+        as_of="2026-01-01",
+    )
+    indicators = base.model_copy(update={field: None})
+    assert classify_regime(indicators, _cfg) == RegimeTag.UNCERTAIN
 
 
 def test_classify_regime_with_late_cycle_stress_signals() -> None:

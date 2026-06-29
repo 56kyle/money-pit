@@ -1,6 +1,4 @@
 """ActionType + judgment → execution_parameters with literal Alpaca MCP field names."""
-from __future__ import annotations
-
 import json
 from pathlib import Path
 from typing import cast

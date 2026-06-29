@@ -1,4 +1,4 @@
-"""Claim union, run-global re-ID, tier max across corroborations."""
+"""Claim union, tier max across corroborations, run-level actionability flag."""
 from money_pit.schemas.enums import SignalTier
 from money_pit.schemas.signals import Claim, CorroborationEntry, SignalSet
 
@@ -39,7 +39,7 @@ def tier_max(claims: list[Claim], corroborations: list[CorroborationEntry]) -> l
                 claim = id_to_claim[cid]
                 if _TIER_ORDER[claim.tier] < _TIER_ORDER[max_tier]:
                     id_to_claim[cid] = claim.model_copy(update={"tier": max_tier})
-    return [id_to_claim.get(c.claim_id, c) for c in claims]
+    return [id_to_claim[c.claim_id] for c in claims]
 
 
 def compute_run_actionable(signal_sets: list[SignalSet]) -> bool:

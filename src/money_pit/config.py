@@ -30,6 +30,9 @@ class Config(BaseModel):
     threshold_pmi: float = 50.0
     threshold_earnings_revisions: float = 0.0
     threshold_inflation: float = 2.5
+    llm_model: str = "claude-sonnet-4-6"
+    fred_api_key: str | None = None
+    brave_api_key: str | None = None
 
 
 @lru_cache
@@ -63,4 +66,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> Config:
         threshold_pmi=float(os.environ.get("MONEY_PIT__THRESHOLD_PMI", 50.0)),
         threshold_earnings_revisions=float(os.environ.get("MONEY_PIT__THRESHOLD_EARNINGS_REVISIONS", 0.0)),
         threshold_inflation=float(os.environ.get("MONEY_PIT__THRESHOLD_INFLATION", 2.5)),
+        llm_model=os.environ.get("MONEY_PIT__LLM_MODEL", "claude-sonnet-4-6"),
+        fred_api_key=os.environ.get("MONEY_PIT__FRED_API_KEY", None),
+        brave_api_key=os.environ.get("MONEY_PIT__BRAVE_API_KEY", None),
     )

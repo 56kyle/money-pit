@@ -2,11 +2,31 @@
 from pathlib import Path
 from typing import Callable
 
+from money_pit.agents.research_tools import DeterministicResearchTools
 from money_pit.graph.state import PipelineState
 from money_pit.schemas.answers import Answer, InitialAnswers
+from money_pit.schemas.enums import Confidence, QuestionCategory
 from money_pit.schemas.provenance import SourceRef
-from money_pit.schemas.questions import Question, InitialQuestions
+from money_pit.schemas.questions import InitialQuestions, Question
 from money_pit.schemas.signals import AggregatedSignals
+
+
+_FRED_SERIES: dict[str, str] = {
+    "yield_curve": "T10Y2Y",
+    "credit_spreads": "BAMLH0A0HYM2",
+    "pmi": "NAPM",
+    "earnings_revisions": "SP500",
+    "inflation": "CPILFESL",
+}
+
+_DETERMINISTIC_CATEGORIES: frozenset[QuestionCategory] = frozenset({
+    QuestionCategory.MACRO_REGIME,
+    QuestionCategory.PORTFOLIO_GAP,
+})
+
+_INDICATOR_PREFIX: str = "indicator:"
+_FRED_SOURCE: str = "fred_mcp"
+_ALPACA_SOURCE: str = "alpaca_mcp"
 
 
 def _render_markdown(slug: str, answers: list[Answer]) -> str:
@@ -29,8 +49,38 @@ def _render_markdown(slug: str, answers: list[Answer]) -> str:
     return "\n".join(lines)
 
 
+def _fetch_deterministic(
+    question: Question,
+    tools: DeterministicResearchTools,
+) -> dict[str, object] | None:
+    """Return fetched data for a deterministic question, or None if unavailable."""
+    if question.category == QuestionCategory.MACRO_REGIME:
+        if not question.signal_source.startswith(_INDICATOR_PREFIX):
+            return None
+        indicator_name: str = question.signal_source[len(_INDICATOR_PREFIX):]
+        series_id: str | None = _FRED_SERIES.get(indicator_name)
+        if series_id is None:
+            return None
+        fred_value: float | None = tools.fetch_fred_series(series_id)
+        if fred_value is None:
+            return None
+        fred_result: dict[str, object] = {"value": fred_value}
+        return fred_result
+
+    if question.category == QuestionCategory.PORTFOLIO_GAP:
+        ticker: str = question.signal_source
+        price: float | None = tools.fetch_ticker_price(ticker) if ticker != "none" else None
+        if price is None:
+            return None
+        price_result: dict[str, object] = {"value": price}
+        return price_result
+
+    return None
+
+
 def make_retrieval_node(
     answer_synthesis_agent: Callable[[list[Question], list[SourceRef]], list[Answer]],
+    deterministic_tools: DeterministicResearchTools,
 ) -> Callable[[PipelineState], dict[str, object]]:
     """Return a LangGraph node that answers research questions via agent retrieval."""
 
@@ -48,22 +98,57 @@ def make_retrieval_node(
             (working_dir / "aggregated_signals.json").read_text(encoding="utf-8")
         )
 
-        answers: list[Answer] = answer_synthesis_agent(
-            initial_questions.questions,
-            aggregated_signals.sources,
-        )
-        initial_answers = InitialAnswers(
-            slug=slug,
-            sources=aggregated_signals.sources,
-            answers=answers,
-        )
+        questions: list[Question] = initial_questions.questions
+        sources: list[SourceRef] = aggregated_signals.sources
+
+        deterministic_questions: list[Question] = [
+            q for q in questions if q.category in _DETERMINISTIC_CATEGORIES
+        ]
+        open_ended_questions: list[Question] = [
+            q for q in questions if q.category not in _DETERMINISTIC_CATEGORIES
+        ]
+
+        deterministic_pairs: list[tuple[Question, dict[str, object] | None]] = [
+            (q, _fetch_deterministic(q, deterministic_tools))
+            for q in deterministic_questions
+        ]
+
+        deterministic_answers: list[Answer] = [
+            Answer(
+                question_id=q.id,
+                question=q.question,
+                category=q.category,
+                signal_source=q.signal_source,
+                signal_tier=q.signal_tier,
+                answer=f"Fetched: {data_retrieved}" if data_retrieved else "Data unavailable.",
+                confidence=Confidence.HIGH if data_retrieved else Confidence.LOW,
+                sources_used=[
+                    _FRED_SOURCE if q.category == QuestionCategory.MACRO_REGIME else _ALPACA_SOURCE
+                ],
+                data_retrieved=data_retrieved,
+                limitations=(
+                    "Direct deterministic fetch; no LLM synthesis."
+                    if data_retrieved
+                    else "Fetch returned no data."
+                ),
+            )
+            for q, data_retrieved in deterministic_pairs
+        ]
+
+        try:
+            llm_answers: list[Answer] = answer_synthesis_agent(open_ended_questions, sources)
+        except Exception:
+            llm_answers = []
+
+        all_answers: list[Answer] = deterministic_answers + llm_answers
+        initial_answers = InitialAnswers(slug=slug, sources=sources, answers=all_answers)
 
         _ = (working_dir / "initial_answers.json").write_text(
             initial_answers.model_dump_json(indent=2),
             encoding="utf-8",
         )
         _ = (working_dir / "initial_answers.md").write_text(
-            _render_markdown(slug, answers),
+            _render_markdown(slug, all_answers),
             encoding="utf-8",
         )
 

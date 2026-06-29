@@ -88,7 +88,11 @@ def _validate_step(
 
     # Phase 4 stub — tool availability check deferred to Phase 5; assume all tools present.
 
-    if not behavioral_match_agent(step, slug):
+    try:
+        behavioral_match: bool = behavioral_match_agent(step, slug)
+    except Exception:
+        behavioral_match = False
+    if not behavioral_match:
         return ValidationStep(
             step_id=step.step_id,
             status=ValidationStatus.UNMATCHED,

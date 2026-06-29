@@ -4,6 +4,7 @@ from typing import Callable
 from langgraph.graph import END, START, StateGraph  # pyright: ignore[reportMissingTypeStubs]
 from langgraph.graph.state import CompiledStateGraph  # pyright: ignore[reportMissingTypeStubs]
 
+from money_pit.agents.research_tools import DeterministicResearchTools
 from money_pit.config import Config
 from money_pit.graph.edges import (
     EXECUTE,
@@ -50,6 +51,7 @@ def build_graph(
     corroboration_agent: Callable[[list[Claim]], ClaimRelations],
     claim_questions_agent: Callable[[list[Claim]], list[Question]],
     answer_synthesis_agent: Callable[[list[Question], list[SourceRef]], list[Answer]],
+    deterministic_tools: DeterministicResearchTools,
     config: Config,
     thesis_agent: Callable[[AggregatedSignals, PortfolioSnapshot, InitialAnswers], list[AnalysisJudgment]],
     behavioral_match_agent: Callable[[ActionStep, str], bool],
@@ -63,7 +65,7 @@ def build_graph(
     builder.add_node("aggregator", make_aggregator_node(corroboration_agent=corroboration_agent))  # pyright: ignore[reportArgumentType]
     builder.add_node("no_action_terminal", _no_action_terminal)
     builder.add_node("questions", make_questions_node(claim_questions_agent=claim_questions_agent))  # pyright: ignore[reportArgumentType]
-    builder.add_node("retrieval", make_retrieval_node(answer_synthesis_agent=answer_synthesis_agent))  # pyright: ignore[reportArgumentType]
+    builder.add_node("retrieval", make_retrieval_node(answer_synthesis_agent=answer_synthesis_agent, deterministic_tools=deterministic_tools))  # pyright: ignore[reportArgumentType]
     builder.add_node("analysis", make_analysis_node(config=config, thesis_agent=thesis_agent))  # pyright: ignore[reportArgumentType]
     builder.add_node("validator", make_validator_node(behavioral_match_agent=behavioral_match_agent))  # pyright: ignore[reportArgumentType]
     builder.add_node("execution", make_execution_node(place_order=place_order))  # pyright: ignore[reportArgumentType]

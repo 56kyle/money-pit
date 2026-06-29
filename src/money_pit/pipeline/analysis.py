@@ -107,9 +107,19 @@ def make_analysis_node(
             (working_dir / "initial_answers.json").read_text(encoding="utf-8")
         )
 
-        judgments: list[AnalysisJudgment] = thesis_agent(
-            aggregated_signals, portfolio_snapshot, initial_answers
-        )
+        try:
+            judgments: list[AnalysisJudgment] = thesis_agent(
+                aggregated_signals, portfolio_snapshot, initial_answers
+            )
+        except Exception:
+            _ = (working_dir / "analysis_judgment.json").write_text("[]", encoding="utf-8")
+            _ = (working_dir / "action_steps.json").write_text("[]", encoding="utf-8")
+            _ = (working_dir / "action_steps.md").write_text("", encoding="utf-8")
+            analysis_halt_result: dict[str, object] = {
+                "terminal_state": TerminalState.ANALYSIS_HALT,
+                "completed_steps": [*(state.get("completed_steps") or []), "analysis"],
+            }
+            return analysis_halt_result
 
         _ = (working_dir / "analysis_judgment.json").write_text(
             json.dumps([j.model_dump(mode="json") for j in judgments], indent=2),

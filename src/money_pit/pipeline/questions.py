@@ -188,7 +188,10 @@ def make_questions_node(
         portfolio_gap_qs: list[Question] = _make_portfolio_gap_questions(
             high_medium_claims, portfolio
         )
-        llm_qs: list[Question] = claim_questions_agent(high_medium_claims)
+        try:
+            llm_qs: list[Question] = claim_questions_agent(high_medium_claims)
+        except Exception:
+            llm_qs = []
 
         all_questions: list[Question] = _assign_ids(
             macro_qs + current_events_qs + portfolio_gap_qs + llm_qs

@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "properties": {
+    "symbol": { "type": "string" },
+    "notional": { "type": "number" },
+    "quantity": { "type": "number" },
+    "side": { "type": "string", "enum": ["buy", "sell"] },
+    "type": { "type": "string", "enum": ["market", "limit", "stop", "stop_limit"] },
+    "time_in_force": { "type": "string", "enum": ["day", "gtc", "ioc", "fok"] },
+    "client_order_id": { "type": "string" }
+  },
+  "required": ["symbol", "side", "type", "time_in_force"]
+}

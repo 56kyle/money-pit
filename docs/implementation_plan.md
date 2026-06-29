@@ -31,7 +31,16 @@ Architecture phase is complete. All six agent prompts, `docs/design_decisions.md
 - 13 unit tests passing; basedpyright 0 errors, 0 warnings
 - Routing string constants (`PROCEED`, `NO_ACTION`, `VALIDATE`, `HALT`, `EXECUTE`, `NOTIFY`) defined in `edges.py`
 
-**Phase 4 (deterministic spine) — next.**
+**Phase 4 (deterministic spine) — COMPLETE.**
+- 10 pipeline nodes implemented: `snapshot`, `aggregator`, `questions`, `retrieval`, `analysis`, `validator`, `execution`, `notification` + inline `no_action_terminal`
+- `graph/graph.py` assembles `StateGraph[PipelineState]` with all conditional edges
+- `pipeline/orchestration.py` wires Phase 4 stubs and exposes `run_pipeline()`
+- `mcp/alpaca_order_schema.json` stubbed (real schema pinned in Phase 7)
+- `langgraph>=0.2.0` and `jsonschema>=4.0.0` added to dependencies
+- Integration tests: 2/2 passing (execute path + no_action path); all working-dir files schema-valid; zero LLM calls; zero real Alpaca orders
+- basedpyright: 0 errors across all pipeline modules (LangGraph stub warnings are structural noise)
+
+**Phase 5 (LLM cores) — next.**
 
 ---
 
@@ -123,7 +132,7 @@ Create `tests/unit_tests/graph/__init__.py` before writing tests.
 
 ---
 
-## Phase 4: Deterministic Spine with Stubbed Agents
+## Phase 4: Deterministic Spine with Stubbed Agents — COMPLETE
 
 **Goal:** Run the entire pipeline on hand-authored JSON with zero LLM calls, on paper trading, with no real Alpaca orders.
 

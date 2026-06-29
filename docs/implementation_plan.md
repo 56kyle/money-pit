@@ -40,7 +40,16 @@ Architecture phase is complete. All six agent prompts, `docs/design_decisions.md
 - Integration tests: 2/2 passing (execute path + no_action path); all working-dir files schema-valid; zero LLM calls; zero real Alpaca orders
 - basedpyright: 0 errors across all pipeline modules (LangGraph stub warnings are structural noise)
 
-**Phase 5 (LLM cores) — next.**
+**Phase 5 (LLM cores) — COMPLETE.**
+- Pydantic AI 2.1.0 agents implemented for A2 (claim_questions), A3 (answer_synthesis), A4 (thesis_judgment)
+- System prompts loaded verbatim from `data/agents/agent_N.md` at module import time
+- `DeterministicResearchTools` and `OpenEndedResearchTools` Protocols defined in `agents/research_tools.py`
+- `retrieval.py` split: macro_regime/portfolio_gap → FRED/yfinance SDK; open-ended questions → A3 LLM
+- `pipeline/orchestration.py` wired with Phase 5 agents; `PipelineOverrides` dataclass for test injection
+- Agent-failure contracts applied: A4→ANALYSIS_HALT (hard), A2/A3→empty list (soft), A5→UNMATCHED (conservative)
+- 112/112 tests passing; 0 basedpyright errors
+
+**Phase 6 (Source Adapters) — next.**
 
 ---
 

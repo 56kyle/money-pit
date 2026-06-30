@@ -49,7 +49,14 @@ Architecture phase is complete. All six agent prompts, `docs/design_decisions.md
 - Agent-failure contracts applied: A4→ANALYSIS_HALT (hard), A2/A3→empty list (soft), A5→UNMATCHED (conservative)
 - 112/112 tests passing; 0 basedpyright errors
 
-**Phase 6 (Source Adapters) — next.**
+**Phase 6 (Source Adapters) — COMPLETE.**
+- `adapters/base.py`: `SourceAdapter[T]` generic ABC; ADR in `docs/decisions/0002-source-adapter-pattern.md`
+- `adapters/video_llm.py`: `VideoPayload` Pydantic model + `TranscriptSource` enum + `make_video_llm_agent` A1 factory loading `data/agents/agent_1.md`
+- `adapters/video.py`: `VideoAdapter(SourceAdapter[VideoPayload])` — pre-LLM persistence, `SignalSetDraft → SignalSet` post-processing
+- 6 integration tests passing; 118/118 total; 0 basedpyright errors
+- Step 2 (yt-dlp + caption-first cascade + WhisperX forced alignment) deferred to Phase 7 (stepping-stone terminus marked in `VideoPayload`)
+
+**Phase 7 (MCP Layer and Email Server) — next.**
 
 ---
 

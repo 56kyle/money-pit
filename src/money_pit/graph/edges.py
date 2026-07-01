@@ -9,12 +9,13 @@ from money_pit.schemas.enums import ValidationStatus
 if TYPE_CHECKING:
     from money_pit.schemas.validation_results import ValidationStep
 
-PROCEED = "proceed"
-NO_ACTION = "no_action"
-VALIDATE = "validate"
-HALT = "halt"
-EXECUTE = "execute"
-NOTIFY = "notify"
+
+PROCEED: Literal["proceed"] = "proceed"
+NO_ACTION: Literal["no_action"] = "no_action"
+VALIDATE: Literal["validate"] = "validate"
+HALT: Literal["halt"] = "halt"
+EXECUTE: Literal["execute"] = "execute"
+NOTIFY: Literal["notify"] = "notify"
 
 
 def signal_gate(state: PipelineState) -> Literal["proceed", "no_action"]:

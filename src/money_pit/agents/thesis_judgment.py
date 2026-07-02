@@ -19,12 +19,12 @@ def make_thesis_judgment_agent(
     config: Config,
     *,
     model: str | None = None,
-) -> Callable[[AggregatedSignals, PortfolioSnapshot, InitialAnswers], list[AnalysisJudgment]]:
+) -> Callable[[AggregatedSignals, PortfolioSnapshot, InitialAnswers], AnalysisJudgment]:
     """Return a callable that runs the A4 thesis judgment agent against the three pipeline inputs."""
     resolved_model: str = f"anthropic:{model or config.llm_model}"
-    agent: Agent[None, list[AnalysisJudgment]] = Agent(
+    agent: Agent[None, AnalysisJudgment] = Agent(
         model=resolved_model,
-        output_type=list[AnalysisJudgment],
+        output_type=AnalysisJudgment,
         system_prompt=_SYSTEM_PROMPT,
         defer_model_check=False,
     )
@@ -33,7 +33,7 @@ def make_thesis_judgment_agent(
         signals: AggregatedSignals,
         portfolio: PortfolioSnapshot,
         answers: InitialAnswers,
-    ) -> list[AnalysisJudgment]:
+    ) -> AnalysisJudgment:
         """Execute the A4 judgment agent against the three pipeline inputs."""
         user_message: str = (
             "## Aggregated Signals\n"
@@ -44,7 +44,7 @@ def make_thesis_judgment_agent(
             + answers.model_dump_json(indent=2)
         )
         result = agent.run_sync(user_message)
-        output: list[AnalysisJudgment] = result.output
+        output: AnalysisJudgment = result.output
         return output
 
     return run

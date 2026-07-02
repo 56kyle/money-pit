@@ -7,7 +7,7 @@ from pydantic_ai import Agent, RunContext
 
 from money_pit.agents.research_tools import OpenEndedResearchTools
 from money_pit.config import Config
-from money_pit.schemas.answers import Answer
+from money_pit.schemas.answer_draft import AnswerDraft
 from money_pit.schemas.enums import QuestionCategory
 from money_pit.schemas.provenance import SourceRef
 from money_pit.schemas.questions import Question
@@ -27,17 +27,19 @@ def make_answer_synthesis_agent(
     config: Config,
     *,
     model: str | None = None,
-) -> Callable[[list[Question], list[SourceRef]], list[Answer]]:
+) -> Callable[[list[Question], list[SourceRef]], list[AnswerDraft]]:
     """Build and return the A3 answer synthesis callable backed by a pydantic-ai Agent.
 
     The returned callable accepts only open-ended question categories and raises on
     agent error; the retrieval pipeline node is responsible for wrapping in try/except.
+    The LLM emits only draft fields — confidence and canonical provenance are derived
+    downstream in the retrieval node.
     """
     resolved_model: str = f"anthropic:{model or config.llm_model}"
 
-    agent: Agent[OpenEndedResearchTools, list[Answer]] = Agent(
+    agent: Agent[OpenEndedResearchTools, list[AnswerDraft]] = Agent(
         model=resolved_model,
-        output_type=list[Answer],
+        output_type=list[AnswerDraft],
         deps_type=OpenEndedResearchTools,
         system_prompt=_SYSTEM_PROMPT,
     )
@@ -52,7 +54,7 @@ def make_answer_synthesis_agent(
         excerpts = ctx.deps.edgar_search(query, n_results=n_results)
         return "\n---\n".join(excerpts) if excerpts else "No results found."
 
-    def run(questions: list[Question], sources: list[SourceRef]) -> list[Answer]:
+    def run(questions: list[Question], sources: list[SourceRef]) -> list[AnswerDraft]:
         open_ended_qs = [q for q in questions if q.category in _OPEN_ENDED_CATEGORIES]
         if not open_ended_qs:
             return []

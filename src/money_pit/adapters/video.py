@@ -50,7 +50,7 @@ class VideoAdapter(SourceAdapter[VideoPayload]):
         return SignalSet(
             slug=payload.slug,
             source_ref=payload.source_ref,
-            summary=draft.episode_summary,
+            summary=draft.summary,
             claims=claims,
             tickers_mentioned=_normalize_tickers(draft.tickers_mentioned),
             sectors_mentioned=draft.sectors_mentioned,
@@ -67,7 +67,6 @@ def _to_claim(draft_claim: ClaimDraft, payload: VideoPayload) -> Claim:
         claim=draft_claim.claim,
         category=ClaimCategory(draft_claim.category),
         tickers_affected=_normalize_tickers(draft_claim.tickers_affected),
-        # requires_validation is always tier-derived; LLM draft value is intentionally ignored
         requires_validation=is_validation_required(tier),
         source_ref=payload.source_ref,
         cited_sources=draft_claim.cited_sources,

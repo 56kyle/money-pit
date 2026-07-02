@@ -4,31 +4,28 @@ from typing import Callable
 
 from pydantic import TypeAdapter
 
+from money_pit.constants import ACTION_STEPS_JSON_FILENAME
+from money_pit.constants import ACTION_STEPS_VALIDATION_JSON_FILENAME
 from money_pit.graph.state import PipelineState
 from money_pit.schemas.action_steps import ActionStep
-from money_pit.schemas.enums import TerminalState, ValidationStatus
+from money_pit.schemas.enums import TerminalState
+from money_pit.schemas.enums import ValidationStatus
 from money_pit.schemas.validation_results import ActionStepsValidation
 
+
 _action_steps_ta: TypeAdapter[list[ActionStep]] = TypeAdapter(list[ActionStep])
-
-
-def _count_unmatched(validation: ActionStepsValidation | None) -> int:
-    if validation is None:
-        return 0
-    return sum(1 for step in validation.steps if step.status == ValidationStatus.UNMATCHED)
 
 
 def _build_subject(
     slug: str,
     terminal_state: TerminalState | None,
-    validation: ActionStepsValidation | None,
+    _validation: ActionStepsValidation | None,
 ) -> str:
     if terminal_state is TerminalState.ANALYSIS_HALT:
-        return f"[money-pit] Analysis halted for {slug}"
-    if terminal_state is TerminalState.NO_ACTION:
-        return f"[money-pit] No actionable signals for {slug}"
-    n_unmatched: int = _count_unmatched(validation)
-    return f"[money-pit] Validation failed for {slug} — {n_unmatched} step(s) unmatched"
+        return f"money-pit: Analysis Halt - {slug}"
+    if terminal_state is TerminalState.VALIDATION_ERROR:
+        return f"money-pit: MCP Validation Error - {slug}"
+    raise ValueError(f"_build_subject received unexpected terminal state: {terminal_state}")
 
 
 def _build_body(
@@ -83,13 +80,13 @@ def make_notification_node(
         terminal_state: TerminalState | None = state.get("terminal_state")
 
         action_steps: list[ActionStep] = []
-        if (action_steps_path := working_dir / "action_steps.json").exists():
+        if (action_steps_path := working_dir / ACTION_STEPS_JSON_FILENAME).exists():
             action_steps = _action_steps_ta.validate_json(
                 action_steps_path.read_text(encoding="utf-8")
             )
 
         validation: ActionStepsValidation | None = None
-        if (validation_path := working_dir / "action_steps_validation.json").exists():
+        if (validation_path := working_dir / ACTION_STEPS_VALIDATION_JSON_FILENAME).exists():
             validation = ActionStepsValidation.model_validate_json(
                 validation_path.read_text(encoding="utf-8")
             )

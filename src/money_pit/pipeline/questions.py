@@ -3,11 +3,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from loguru import logger
+
 from money_pit.compute.routing import CATEGORY_TO_TOOLS
 from money_pit.compute.signal_flags import count_by_tier
+from money_pit.constants import AGGREGATED_SIGNALS_JSON_FILENAME
+from money_pit.constants import INITIAL_QUESTIONS_JSON_FILENAME
+from money_pit.constants import INITIAL_QUESTIONS_MD_FILENAME
+from money_pit.constants import PORTFOLIO_SNAPSHOT_FILENAME
 from money_pit.graph.state import PipelineState
 from money_pit.schemas.enums import QuestionCategory, SignalTier
-from money_pit.schemas.questions import InitialQuestions, Question, SignalSummary
+from money_pit.schemas.question_draft import DraftQuestion
+from money_pit.schemas.questions import INDICATOR_PREFIX, InitialQuestions, Question, SignalSummary
 from money_pit.schemas.signals import AggregatedSignals, Claim
 from money_pit.schemas.portfolio import PortfolioSnapshot
 
@@ -15,27 +22,27 @@ _CLAIM_SUMMARY_MAX_LEN: int = 80
 
 _MACRO_QUESTIONS: list[tuple[str, str, str]] = [
     (
-        "indicator:yield_curve",
+        "yield_curve",
         "What is the current T10Y2Y 10-year minus 2-year Treasury yield spread in percentage points?",
         "Yield curve shape determines credit cycle phase.",
     ),
     (
-        "indicator:credit_spreads",
+        "credit_spreads",
         "What is the current ICE BofA US High Yield OAS credit spread in percentage points?",
         "Credit spread width signals financial stress.",
     ),
     (
-        "indicator:pmi",
+        "pmi",
         "What is the current ISM Manufacturing PMI reading?",
         "PMI above/below 50 signals expansion/contraction.",
     ),
     (
-        "indicator:earnings_revisions",
+        "earnings_revisions",
         "What is the current S&P 500 forward EPS breadth — fraction of constituents with upward revisions minus downward?",
         "Positive earnings revision breadth confirms growth acceleration.",
     ),
     (
-        "indicator:inflation",
+        "inflation",
         "What is the most recent US CPI core (CPILFESL) year-over-year percentage change?",
         "Inflation above target constrains monetary easing.",
     ),
@@ -48,13 +55,13 @@ def _make_macro_questions() -> list[Question]:
             id="",
             category=QuestionCategory.MACRO_REGIME,
             question=question,
-            signal_source=source,
-            signal_tier=SignalTier.LOW.value,
+            signal_source=f"{INDICATOR_PREFIX}{indicator_name}",
+            signal_tier=SignalTier.LOW,
             rationale=rationale,
             data_sources=CATEGORY_TO_TOOLS[QuestionCategory.MACRO_REGIME],
             answer=None,
         )
-        for source, question, rationale in _MACRO_QUESTIONS
+        for indicator_name, question, rationale in _MACRO_QUESTIONS
     ]
 
 
@@ -72,7 +79,7 @@ def _make_current_events_questions(high_medium_claims: list[Claim]) -> list[Ques
                 category=QuestionCategory.CURRENT_EVENTS,
                 question=question_text,
                 signal_source=claim.claim_id,
-                signal_tier=claim.tier.value,
+                signal_tier=claim.tier,
                 rationale="Recency check on the thesis underpinning this signal.",
                 data_sources=CATEGORY_TO_TOOLS[QuestionCategory.CURRENT_EVENTS],
                 answer=None,
@@ -107,7 +114,7 @@ def _make_portfolio_gap_questions(
                 category=QuestionCategory.PORTFOLIO_GAP,
                 question=question_text,
                 signal_source=position.ticker,
-                signal_tier=SignalTier.PORTFOLIO.value,
+                signal_tier=SignalTier.PORTFOLIO,
                 rationale="Portfolio-overlap check before sizing.",
                 data_sources=CATEGORY_TO_TOOLS[QuestionCategory.PORTFOLIO_GAP],
                 answer=None,
@@ -121,7 +128,7 @@ def _make_portfolio_gap_questions(
                 category=QuestionCategory.PORTFOLIO_GAP,
                 question="No portfolio overlap detected for current signals.",
                 signal_source="none",
-                signal_tier=SignalTier.PORTFOLIO.value,
+                signal_tier=SignalTier.PORTFOLIO,
                 rationale="Placeholder — no actionable overlap.",
                 data_sources=CATEGORY_TO_TOOLS[QuestionCategory.PORTFOLIO_GAP],
                 answer=None,
@@ -129,6 +136,26 @@ def _make_portfolio_gap_questions(
         )
 
     return questions
+
+
+def _draft_to_question(draft: DraftQuestion, claims_by_id: dict[str, Claim]) -> Question | None:
+    origin_claim: Claim | None = claims_by_id.get(draft.signal_source)
+    if origin_claim is None:
+        logger.warning(
+            "Dropping A2 draft question referencing unknown claim {signal_source}",
+            signal_source=draft.signal_source,
+        )
+        return None
+    return Question(
+        id="",
+        category=draft.category,
+        question=draft.question,
+        signal_source=draft.signal_source,
+        signal_tier=origin_claim.tier,
+        rationale=draft.rationale,
+        data_sources=CATEGORY_TO_TOOLS[draft.category],
+        answer=None,
+    )
 
 
 def _assign_ids(questions: list[Question]) -> list[Question]:
@@ -154,7 +181,7 @@ def _render_markdown(result: InitialQuestions) -> str:
             "",
             f"### {question.id} — {question.category.value}",
             f"**{question.question}**",
-            f"Source: {question.signal_source} | Tier: {question.signal_tier}",
+            f"Source: {question.signal_source} | Tier: {question.signal_tier.value}",
             f"Tools: {tools_str}",
             f"Rationale: {question.rationale}",
         ]
@@ -162,7 +189,7 @@ def _render_markdown(result: InitialQuestions) -> str:
 
 
 def make_questions_node(
-    claim_questions_agent: Callable[[list[Claim]], list[Question]],
+    claim_questions_agent: Callable[[list[Claim]], list[DraftQuestion]],
 ) -> Callable[[PipelineState], dict[str, object]]:
     """Return a LangGraph node that generates initial research questions."""
 
@@ -171,10 +198,10 @@ def make_questions_node(
         working_dir: Path = Path(state["working_dir"])  # pyright: ignore[reportTypedDictNotRequiredAccess]
 
         aggregated_signals: AggregatedSignals = AggregatedSignals.model_validate_json(
-            (working_dir / "aggregated_signals.json").read_text(encoding="utf-8")
+            (working_dir / AGGREGATED_SIGNALS_JSON_FILENAME).read_text(encoding="utf-8")
         )
         portfolio: PortfolioSnapshot = PortfolioSnapshot.model_validate_json(
-            (working_dir / "portfolio_snapshot.json").read_text(encoding="utf-8")
+            (working_dir / PORTFOLIO_SNAPSHOT_FILENAME).read_text(encoding="utf-8")
         )
 
         high_medium_claims: list[Claim] = [
@@ -189,9 +216,17 @@ def make_questions_node(
             high_medium_claims, portfolio
         )
         try:
-            llm_qs: list[Question] = claim_questions_agent(high_medium_claims)
+            drafts: list[DraftQuestion] = claim_questions_agent(high_medium_claims)
         except Exception:
-            llm_qs = []
+            logger.exception("A2 claim questions agent failed; proceeding with no LLM-authored questions")
+            drafts = []
+
+        claims_by_id: dict[str, Claim] = {c.claim_id: c for c in high_medium_claims}
+        llm_qs: list[Question] = [
+            question
+            for question in (_draft_to_question(draft, claims_by_id) for draft in drafts)
+            if question is not None
+        ]
 
         all_questions: list[Question] = _assign_ids(
             macro_qs + current_events_qs + portfolio_gap_qs + llm_qs
@@ -214,11 +249,11 @@ def make_questions_node(
             error=None,
         )
 
-        _ = (working_dir / "initial_questions.json").write_text(
+        _ = (working_dir / INITIAL_QUESTIONS_JSON_FILENAME).write_text(
             initial_questions.model_dump_json(indent=2),
             encoding="utf-8",
         )
-        _ = (working_dir / "initial_questions.md").write_text(
+        _ = (working_dir / INITIAL_QUESTIONS_MD_FILENAME).write_text(
             _render_markdown(initial_questions),
             encoding="utf-8",
         )

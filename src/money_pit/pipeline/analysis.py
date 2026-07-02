@@ -3,25 +3,38 @@ import json
 from pathlib import Path
 from typing import Callable
 
+from loguru import logger
+
 from money_pit.compute.execution_params import build_execution_params
 from money_pit.compute.regime import classify_regime
 from money_pit.compute.sizing import size_position
 from money_pit.config import Config
+from money_pit.constants import ACTION_STEPS_JSON_FILENAME
+from money_pit.constants import ACTION_STEPS_MD_FILENAME
+from money_pit.constants import AGGREGATED_SIGNALS_JSON_FILENAME
+from money_pit.constants import ANALYSIS_JUDGMENT_JSON_FILENAME
+from money_pit.constants import ANALYSIS_MD_FILENAME
+from money_pit.constants import INITIAL_ANSWERS_JSON_FILENAME
+from money_pit.constants import PORTFOLIO_SNAPSHOT_FILENAME
 from money_pit.graph.state import PipelineState
 from money_pit.schemas.action_steps import ActionStep
+from money_pit.schemas.analysis_draft import AnalysisHalt
 from money_pit.schemas.analysis_draft import AnalysisJudgment
 from money_pit.schemas.analysis_draft import ScenarioTable
 from money_pit.schemas.answers import Answer
 from money_pit.schemas.answers import InitialAnswers
 from money_pit.schemas.enums import QuestionCategory
 from money_pit.schemas.enums import RegimeTag
+from money_pit.schemas.enums import Step1Disposition
 from money_pit.schemas.enums import TerminalState
 from money_pit.schemas.macro import MacroIndicators
 from money_pit.schemas.portfolio import PortfolioSnapshot
+from money_pit.schemas.questions import INDICATOR_PREFIX
 from money_pit.schemas.signals import AggregatedSignals
 
 
 _PROBABILITY_PCT_TO_FRACTION: float = 100.0
+_AGENT_EXCEPTION_HALT_REASON: str = "A4 thesis judgment agent raised an exception."
 
 
 def _extract_macro_indicators(answers: list[Answer]) -> MacroIndicators:
@@ -36,9 +49,9 @@ def _extract_macro_indicators(answers: list[Answer]) -> MacroIndicators:
     for ans in answers:
         if ans.category != QuestionCategory.MACRO_REGIME:
             continue
-        if not ans.signal_source.startswith("indicator:"):
+        if not ans.signal_source.startswith(INDICATOR_PREFIX):
             continue
-        name = ans.signal_source[len("indicator:"):]
+        name = ans.signal_source[len(INDICATOR_PREFIX):]
         if name not in values:
             continue
         data = ans.data_retrieved
@@ -65,6 +78,13 @@ def _to_scenario_list(table: ScenarioTable) -> list[tuple[float, float]]:
     ]
 
 
+def _favorable_label(favorable: bool | None) -> str:
+    """Render a MacroIndicatorReading.favorable tri-state as a human-readable label."""
+    if favorable is None:
+        return "unknown"
+    return "favorable" if favorable else "unfavorable"
+
+
 def _render_action_steps_md(slug: str, action_steps: list[ActionStep]) -> str:
     """Render action_steps.md content from a list of ActionStep objects."""
     lines: list[str] = [f"# Action Steps — {slug}", ""]
@@ -82,9 +102,82 @@ def _render_action_steps_md(slug: str, action_steps: list[ActionStep]) -> str:
     return "\n".join(lines)
 
 
+def _render_analysis_md(
+    slug: str,
+    container: AnalysisJudgment,
+    regime_tag: RegimeTag,
+    action_steps: list[ActionStep],
+) -> str:
+    """Render the full A4 reasoning deterministically from the container and materialized steps."""
+    lines: list[str] = [f"# Analysis — {slug}", ""]
+
+    if container.halt is not None:
+        lines.extend(["## Halt", container.halt.reason, ""])
+
+    lines.extend(["## Regime", f"Deterministic regime tag: {regime_tag.value}", ""])
+
+    lines.append("## Macro Read")
+    if container.macro_read:
+        for reading in container.macro_read:
+            lines.append(
+                f"- **{reading.indicator}** ({_favorable_label(reading.favorable)}): {reading.reading}"
+            )
+    else:
+        lines.append("- No macro indicators reported.")
+    lines.append("")
+
+    lines.append("## Dropped Claims")
+    if container.dropped_claims:
+        for dropped in container.dropped_claims:
+            lines.append(f"- **{dropped.claim_id}**: {dropped.reason}")
+    else:
+        lines.append("- No claims dropped.")
+    lines.append("")
+
+    lines.append("## Surviving Theses")
+    if container.theses:
+        for thesis in container.theses:
+            lines.extend([
+                f"### {thesis.claim_id} — {thesis.action_type.value} {thesis.instrument} ({thesis.disposition.value})",
+                f"**{thesis.description}**",
+                f"Thesis: {thesis.one_sentence_thesis}",
+                f"EV: {thesis.expected_value:.1%} | Conviction: {thesis.conviction.value}",
+                f"Sizing rationale: {thesis.sizing_rationale}",
+                "",
+            ])
+    else:
+        lines.extend(["- No theses survived.", ""])
+
+    lines.append("## Action Steps")
+    if action_steps:
+        for step in action_steps:
+            notional = step.execution_parameters.notional
+            notional_str = f"${notional:.2f}" if notional is not None else "N/A"
+            lines.append(
+                f"- {step.step_id}: {step.action_type.value} {step.instrument} ({notional_str})"
+            )
+    else:
+        lines.append("- No action steps produced.")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def _write_action_steps(working_dir: Path, slug: str, action_steps: list[ActionStep]) -> None:
+    """Write action_steps.json and its markdown companion for the given steps."""
+    _ = (working_dir / ACTION_STEPS_JSON_FILENAME).write_text(
+        json.dumps([step.model_dump(mode="json") for step in action_steps], indent=2),
+        encoding="utf-8",
+    )
+    _ = (working_dir / ACTION_STEPS_MD_FILENAME).write_text(
+        _render_action_steps_md(slug, action_steps),
+        encoding="utf-8",
+    )
+
+
 def make_analysis_node(
     config: Config,
-    thesis_agent: Callable[[AggregatedSignals, PortfolioSnapshot, InitialAnswers], list[AnalysisJudgment]],
+    thesis_agent: Callable[..., AnalysisJudgment],
 ) -> Callable[[PipelineState], dict[str, object]]:
     """Return a LangGraph node that runs A4 judgment and the deterministic post-processor."""
 
@@ -98,65 +191,54 @@ def make_analysis_node(
         working_dir = Path(working_dir_str)
 
         aggregated_signals = AggregatedSignals.model_validate_json(
-            (working_dir / "aggregated_signals.json").read_text(encoding="utf-8")
+            (working_dir / AGGREGATED_SIGNALS_JSON_FILENAME).read_text(encoding="utf-8")
         )
         portfolio_snapshot = PortfolioSnapshot.model_validate_json(
-            (working_dir / "portfolio_snapshot.json").read_text(encoding="utf-8")
+            (working_dir / PORTFOLIO_SNAPSHOT_FILENAME).read_text(encoding="utf-8")
         )
         initial_answers = InitialAnswers.model_validate_json(
-            (working_dir / "initial_answers.json").read_text(encoding="utf-8")
+            (working_dir / INITIAL_ANSWERS_JSON_FILENAME).read_text(encoding="utf-8")
         )
 
         try:
-            judgments: list[AnalysisJudgment] = thesis_agent(
+            container: AnalysisJudgment = thesis_agent(
                 aggregated_signals, portfolio_snapshot, initial_answers
             )
         except Exception:
-            _ = (working_dir / "analysis_judgment.json").write_text("[]", encoding="utf-8")
-            _ = (working_dir / "action_steps.json").write_text("[]", encoding="utf-8")
-            _ = (working_dir / "action_steps.md").write_text("", encoding="utf-8")
-            analysis_halt_result: dict[str, object] = {
-                "terminal_state": TerminalState.ANALYSIS_HALT,
-                "completed_steps": [*(state.get("completed_steps") or []), "analysis"],
-            }
-            return analysis_halt_result
+            logger.exception("A4 thesis judgment agent failed; halting analysis")
+            container = AnalysisJudgment(
+                theses=[],
+                dropped_claims=[],
+                macro_read=[],
+                halt=AnalysisHalt(reason=_AGENT_EXCEPTION_HALT_REASON),
+            )
 
-        _ = (working_dir / "analysis_judgment.json").write_text(
-            json.dumps([j.model_dump(mode="json") for j in judgments], indent=2),
+        _ = (working_dir / ANALYSIS_JUDGMENT_JSON_FILENAME).write_text(
+            json.dumps(container.model_dump(mode="json"), indent=2),
             encoding="utf-8",
         )
 
-        if any(j.step_failed is not None for j in judgments):
-            _ = (working_dir / "action_steps.json").write_text(
-                json.dumps([], indent=2),
+        macro_indicators = _extract_macro_indicators(initial_answers.answers)
+        regime_tag = classify_regime(macro_indicators, config)
+
+        if container.halt is not None:
+            action_steps: list[ActionStep] = []
+            _write_action_steps(working_dir, slug, action_steps)
+            _ = (working_dir / ANALYSIS_MD_FILENAME).write_text(
+                _render_analysis_md(slug, container, regime_tag, action_steps),
                 encoding="utf-8",
             )
-            _ = (working_dir / "action_steps.md").write_text("", encoding="utf-8")
-            result: dict[str, object] = {
+            return {
                 "terminal_state": TerminalState.ANALYSIS_HALT,
                 "completed_steps": [*(state.get("completed_steps") or []), "analysis"],
             }
-            return result
 
-        macro_indicators = _extract_macro_indicators(initial_answers.answers)
-        regime_tag = classify_regime(macro_indicators, config)
         regime_uncertain: bool = regime_tag == RegimeTag.UNCERTAIN
 
-        action_steps: list[ActionStep] = []
-        for i, judgment in enumerate(judgments):
-            if (
-                judgment.instrument is None
-                or judgment.action_type is None
-                or judgment.scenario_table is None
-                or judgment.description is None
-                or judgment.one_sentence_thesis is None
-                or judgment.expected_value is None
-                or judgment.conviction is None
-                or judgment.sizing_rationale is None
-            ):
-                continue
-
-            scenarios = _to_scenario_list(judgment.scenario_table)
+        action_steps = []
+        for i, thesis in enumerate(container.theses):
+            verified: bool = thesis.disposition == Step1Disposition.SUPPORTED
+            scenarios = _to_scenario_list(thesis.scenario_table)
             sector_headroom: float = config.sector_cap * portfolio_snapshot.total_account_value
             cash_headroom: float = max(
                 0.0,
@@ -169,7 +251,7 @@ def make_analysis_node(
                 scenarios,
                 portfolio_snapshot.total_account_value,
                 config,
-                False,
+                verified,
                 regime_uncertain,
                 sector_headroom,
                 cash_headroom,
@@ -180,46 +262,41 @@ def make_analysis_node(
 
             step_id: str = f"A{i + 1:03d}"
             execution_parameters = build_execution_params(
-                step_id, slug, judgment.instrument, judgment.action_type, dollar_amount
+                step_id, slug, thesis.instrument, thesis.action_type, dollar_amount
             )
 
             action_steps.append(
                 ActionStep(
                     step_id=step_id,
-                    instrument=judgment.instrument,
-                    action_type=judgment.action_type,
-                    description=judgment.description,
-                    group_id=judgment.group_id,
+                    instrument=thesis.instrument,
+                    action_type=thesis.action_type,
+                    description=thesis.description,
+                    group_id=thesis.group_id,
                     execution_parameters=execution_parameters,
-                    one_sentence_thesis=judgment.one_sentence_thesis,
+                    one_sentence_thesis=thesis.one_sentence_thesis,
                     regime_tag=regime_tag,
-                    expected_value=judgment.expected_value,
-                    scenario_table=judgment.scenario_table,
-                    invalidation_conditions=judgment.invalidation_conditions,
-                    sizing_rationale=judgment.sizing_rationale,
-                    conviction=judgment.conviction,
+                    expected_value=thesis.expected_value,
+                    scenario_table=thesis.scenario_table,
+                    invalidation_conditions=thesis.invalidation_conditions,
+                    sizing_rationale=thesis.sizing_rationale,
+                    conviction=thesis.conviction,
                 )
             )
 
-        _ = (working_dir / "action_steps.json").write_text(
-            json.dumps([step.model_dump(mode="json") for step in action_steps], indent=2),
-            encoding="utf-8",
-        )
-        _ = (working_dir / "action_steps.md").write_text(
-            _render_action_steps_md(slug, action_steps),
+        _write_action_steps(working_dir, slug, action_steps)
+        _ = (working_dir / ANALYSIS_MD_FILENAME).write_text(
+            _render_analysis_md(slug, container, regime_tag, action_steps),
             encoding="utf-8",
         )
 
         if not action_steps:
-            no_action_result: dict[str, object] = {
+            return {
                 "terminal_state": TerminalState.NO_ACTION,
                 "completed_steps": [*(state.get("completed_steps") or []), "analysis"],
             }
-            return no_action_result
 
-        completed_result: dict[str, object] = {
+        return {
             "completed_steps": [*(state.get("completed_steps") or []), "analysis"],
         }
-        return completed_result
 
     return analysis_node

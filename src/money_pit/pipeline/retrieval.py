@@ -2,12 +2,20 @@
 from pathlib import Path
 from typing import Callable
 
+from loguru import logger
+
 from money_pit.agents.research_tools import DeterministicResearchTools
+from money_pit.compute.confidence import derive_confidence
+from money_pit.constants import AGGREGATED_SIGNALS_JSON_FILENAME
+from money_pit.constants import INITIAL_ANSWERS_JSON_FILENAME
+from money_pit.constants import INITIAL_ANSWERS_MD_FILENAME
+from money_pit.constants import INITIAL_QUESTIONS_JSON_FILENAME
 from money_pit.graph.state import PipelineState
+from money_pit.schemas.answer_draft import AnswerDraft
 from money_pit.schemas.answers import Answer, InitialAnswers
-from money_pit.schemas.enums import Confidence, QuestionCategory
+from money_pit.schemas.enums import DataSourceToken, QuestionCategory
 from money_pit.schemas.provenance import SourceRef
-from money_pit.schemas.questions import InitialQuestions, Question
+from money_pit.schemas.questions import INDICATOR_PREFIX, InitialQuestions, Question
 from money_pit.schemas.signals import AggregatedSignals
 
 
@@ -24,9 +32,24 @@ _DETERMINISTIC_CATEGORIES: frozenset[QuestionCategory] = frozenset({
     QuestionCategory.PORTFOLIO_GAP,
 })
 
-_INDICATOR_PREFIX: str = "indicator:"
-_FRED_SOURCE: str = "fred_mcp"
-_ALPACA_SOURCE: str = "alpaca_mcp"
+_MACRO_REGIME_SOURCE: DataSourceToken = DataSourceToken.FRED_MCP
+_PORTFOLIO_GAP_SOURCE: DataSourceToken = DataSourceToken.YFINANCE_MCP
+
+
+def _draft_to_answer(draft: AnswerDraft, question: Question) -> Answer:
+    """Join an A3 draft to its originating question, deriving code-owned fields."""
+    return Answer(
+        question_id=draft.question_id,
+        question=question.question,
+        category=question.category,
+        signal_source=question.signal_source,
+        signal_tier=question.signal_tier,
+        answer=draft.answer,
+        confidence=derive_confidence(draft.sources_used),
+        sources_used=draft.sources_used,
+        data_retrieved=draft.data_retrieved,
+        limitations=draft.limitations,
+    )
 
 
 def _render_markdown(slug: str, answers: list[Answer]) -> str:
@@ -55,9 +78,9 @@ def _fetch_deterministic(
 ) -> dict[str, object] | None:
     """Return fetched data for a deterministic question, or None if unavailable."""
     if question.category == QuestionCategory.MACRO_REGIME:
-        if not question.signal_source.startswith(_INDICATOR_PREFIX):
+        if not question.signal_source.startswith(INDICATOR_PREFIX):
             return None
-        indicator_name: str = question.signal_source[len(_INDICATOR_PREFIX):]
+        indicator_name: str = question.signal_source[len(INDICATOR_PREFIX):]
         series_id: str | None = _FRED_SERIES.get(indicator_name)
         if series_id is None:
             return None
@@ -78,8 +101,34 @@ def _fetch_deterministic(
     return None
 
 
+def _deterministic_answer(question: Question, data_retrieved: dict[str, object] | None) -> Answer:
+    """Build an Answer for a deterministic question, deriving confidence from provenance."""
+    source_token: DataSourceToken = (
+        _MACRO_REGIME_SOURCE
+        if question.category == QuestionCategory.MACRO_REGIME
+        else _PORTFOLIO_GAP_SOURCE
+    )
+    sources_used: list[DataSourceToken] = [source_token] if data_retrieved else []
+    return Answer(
+        question_id=question.id,
+        question=question.question,
+        category=question.category,
+        signal_source=question.signal_source,
+        signal_tier=question.signal_tier,
+        answer=f"Fetched: {data_retrieved}" if data_retrieved else "Data unavailable.",
+        confidence=derive_confidence(sources_used),
+        sources_used=sources_used,
+        data_retrieved=data_retrieved,
+        limitations=(
+            "Direct deterministic fetch; no LLM synthesis."
+            if data_retrieved
+            else "Fetch returned no data."
+        ),
+    )
+
+
 def make_retrieval_node(
-    answer_synthesis_agent: Callable[[list[Question], list[SourceRef]], list[Answer]],
+    answer_synthesis_agent: Callable[[list[Question], list[SourceRef]], list[AnswerDraft]],
     deterministic_tools: DeterministicResearchTools,
 ) -> Callable[[PipelineState], dict[str, object]]:
     """Return a LangGraph node that answers research questions via agent retrieval."""
@@ -92,10 +141,10 @@ def make_retrieval_node(
         working_dir = Path(working_dir_str)
 
         initial_questions = InitialQuestions.model_validate_json(
-            (working_dir / "initial_questions.json").read_text(encoding="utf-8")
+            (working_dir / INITIAL_QUESTIONS_JSON_FILENAME).read_text(encoding="utf-8")
         )
         aggregated_signals = AggregatedSignals.model_validate_json(
-            (working_dir / "aggregated_signals.json").read_text(encoding="utf-8")
+            (working_dir / AGGREGATED_SIGNALS_JSON_FILENAME).read_text(encoding="utf-8")
         )
 
         questions: list[Question] = initial_questions.questions
@@ -114,40 +163,36 @@ def make_retrieval_node(
         ]
 
         deterministic_answers: list[Answer] = [
-            Answer(
-                question_id=q.id,
-                question=q.question,
-                category=q.category,
-                signal_source=q.signal_source,
-                signal_tier=q.signal_tier,
-                answer=f"Fetched: {data_retrieved}" if data_retrieved else "Data unavailable.",
-                confidence=Confidence.HIGH if data_retrieved else Confidence.LOW,
-                sources_used=[
-                    _FRED_SOURCE if q.category == QuestionCategory.MACRO_REGIME else _ALPACA_SOURCE
-                ],
-                data_retrieved=data_retrieved,
-                limitations=(
-                    "Direct deterministic fetch; no LLM synthesis."
-                    if data_retrieved
-                    else "Fetch returned no data."
-                ),
-            )
+            _deterministic_answer(q, data_retrieved)
             for q, data_retrieved in deterministic_pairs
         ]
 
+        question_by_id: dict[str, Question] = {q.id: q for q in open_ended_questions}
         try:
-            llm_answers: list[Answer] = answer_synthesis_agent(open_ended_questions, sources)
+            drafts: list[AnswerDraft] = answer_synthesis_agent(open_ended_questions, sources)
         except Exception:
-            llm_answers = []
+            logger.exception("A3 answer synthesis agent failed; proceeding with no open-ended answers")
+            drafts = []
+
+        llm_answers: list[Answer] = []
+        for draft in drafts:
+            question = question_by_id.get(draft.question_id)
+            if question is None:
+                logger.warning(
+                    "Dropping A3 draft with unmatched question_id {question_id}",
+                    question_id=draft.question_id,
+                )
+                continue
+            llm_answers.append(_draft_to_answer(draft, question))
 
         all_answers: list[Answer] = deterministic_answers + llm_answers
         initial_answers = InitialAnswers(slug=slug, sources=sources, answers=all_answers)
 
-        _ = (working_dir / "initial_answers.json").write_text(
+        _ = (working_dir / INITIAL_ANSWERS_JSON_FILENAME).write_text(
             initial_answers.model_dump_json(indent=2),
             encoding="utf-8",
         )
-        _ = (working_dir / "initial_answers.md").write_text(
+        _ = (working_dir / INITIAL_ANSWERS_MD_FILENAME).write_text(
             _render_markdown(slug, all_answers),
             encoding="utf-8",
         )

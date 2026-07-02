@@ -1,6 +1,7 @@
 """Scheduler trigger, working-dir creation, slug assignment."""
 import shutil
 from collections.abc import Callable
+from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import datetime
@@ -14,41 +15,53 @@ from money_pit.agents.research_tools import DeterministicResearchTools
 from money_pit.agents.research_tools import OpenEndedResearchTools
 from money_pit.agents.thesis_judgment import make_thesis_judgment_agent
 from money_pit.config import load_config
+from money_pit.constants import DAILY_SHOW_ROOT
 from money_pit.graph.graph import build_graph
 from money_pit.graph.state import PipelineState
-from money_pit.schemas.action_steps import ActionStep
 from money_pit.schemas.action_steps import ExecutionParameters
 from money_pit.schemas.aggregation_draft import ClaimRelations
 from money_pit.schemas.analysis_draft import AnalysisJudgment
 from money_pit.schemas.analysis_draft import Scenario
 from money_pit.schemas.analysis_draft import ScenarioTable
-from money_pit.schemas.answers import Answer
+from money_pit.schemas.analysis_draft import ThesisJudgment
+from money_pit.schemas.answer_draft import AnswerDraft
 from money_pit.schemas.answers import InitialAnswers
 from money_pit.schemas.enums import ActionType
-from money_pit.schemas.enums import Confidence
 from money_pit.schemas.enums import ConvictionLevel
 from money_pit.schemas.enums import SignalTier
+from money_pit.schemas.enums import Step1Disposition
 from money_pit.schemas.portfolio import PortfolioSnapshot
 from money_pit.schemas.provenance import SourceRef
+from money_pit.schemas.question_draft import DraftQuestion
 from money_pit.schemas.questions import Question
 from money_pit.schemas.signals import AggregatedSignals
 from money_pit.schemas.signals import Claim
+
+
+_MISSING_DEP_MESSAGE: str = (
+    "run_pipeline requires a real {name}; supply it via PipelineOverrides "
+    "or use phase4_overrides() for tests."
+)
+
+
+class MissingPipelineDependencyError(Exception):
+    """Raised when a capital-critical pipeline dependency is not supplied."""
 
 
 @dataclass
 class PipelineOverrides:
     """Injectable agent overrides for testing. All fields default to None (use Phase 5 implementations)."""
 
-    thesis_agent: Callable[[AggregatedSignals, PortfolioSnapshot, InitialAnswers], list[AnalysisJudgment]] | None = field(default=None)
-    claim_questions_agent: Callable[[list[Claim]], list[Question]] | None = field(default=None)
-    answer_synthesis_agent: Callable[[list[Question], list[SourceRef]], list[Answer]] | None = field(default=None)
+    thesis_agent: Callable[..., AnalysisJudgment] | None = field(default=None)
+    claim_questions_agent: Callable[[list[Claim]], list[DraftQuestion]] | None = field(default=None)
+    answer_synthesis_agent: Callable[[list[Question], list[SourceRef]], list[AnswerDraft]] | None = field(default=None)
     corroboration_agent: Callable[[list[Claim]], ClaimRelations] | None = field(default=None)
     fetch_portfolio: Callable[[str], PortfolioSnapshot] | None = field(default=None)
     deterministic_tools: DeterministicResearchTools | None = field(default=None)
     open_ended_tools: OpenEndedResearchTools | None = field(default=None)
     place_order: Callable[[ExecutionParameters], str] | None = field(default=None)
     send_email: Callable[[str, str], None] | None = field(default=None)
-    behavioral_match_agent: Callable[[ActionStep, str], bool] | None = field(default=None)
+    manifest: Mapping[str, dict[str, object]] | None = field(default=None)
 
 
 class _DirectDeterministicTools:
@@ -176,25 +189,20 @@ def _phase4_corroborate(_claims: list[Claim]) -> ClaimRelations:
     return ClaimRelations(agree=[], disagree=[])
 
 
-def _phase4_claim_questions(_claims: list[Claim]) -> list[Question]:
-    """Return no LLM-generated questions in Phase 4."""
+def _phase4_claim_questions(_claims: list[Claim]) -> list[DraftQuestion]:
+    """Return no LLM-generated draft questions in Phase 4."""
     return []
 
 
 def _phase4_answer_synthesis(
     questions: list[Question],
     _sources: list[SourceRef],
-) -> list[Answer]:
-    """Return one stub answer per question."""
+) -> list[AnswerDraft]:
+    """Return one stub draft per question."""
     return [
-        Answer(
+        AnswerDraft(
             question_id=q.id,
-            question=q.question,
-            category=q.category,
-            signal_source=q.signal_source,
-            signal_tier=q.signal_tier,
             answer="Stub answer — Phase 4 testing only.",
-            confidence=Confidence.LOW,
             sources_used=[],
             data_retrieved=None,
             limitations="Phase 4 stub; no real retrieval performed.",
@@ -207,8 +215,8 @@ def _phase4_thesis_agent(
     aggregated_signals: AggregatedSignals,
     _portfolio_snapshot: PortfolioSnapshot,
     _initial_answers: InitialAnswers,
-) -> list[AnalysisJudgment]:
-    """Return one stub judgment for the first high/medium-tier claim with a ticker, or [] if none."""
+) -> AnalysisJudgment:
+    """Return a container with one SUPPORTED stub thesis for the first eligible claim, else empty."""
     qualifying_claim: Claim | None = next(
         (
             c
@@ -218,38 +226,32 @@ def _phase4_thesis_agent(
         None,
     )
     if qualifying_claim is None:
-        return []
-    return [
-        AnalysisJudgment(
-            claim_id=qualifying_claim.claim_id,
-            instrument=qualifying_claim.tickers_affected[0],
-            action_type=ActionType.BUY,
-            description=f"Phase 4 stub: {qualifying_claim.claim[:100]}",
-            group_id=None,
-            one_sentence_thesis="Stub thesis — Phase 4 integration test.",
-            expected_value=0.08,
-            conviction=ConvictionLevel.MEDIUM,
-            scenario_table=ScenarioTable(
-                bull=Scenario.model_validate(
-                    {"probability": 30, "return": 0.20, "timeframe": None, "confirming_metric": None, "mechanism": None, "max_drawdown": None}
-                ),
-                base=Scenario.model_validate(
-                    {"probability": 50, "return": 0.08, "timeframe": None, "confirming_metric": None, "mechanism": None, "max_drawdown": None}
-                ),
-                bear=Scenario.model_validate(
-                    {"probability": 20, "return": -0.10, "timeframe": None, "confirming_metric": None, "mechanism": None, "max_drawdown": None}
-                ),
+        return AnalysisJudgment(theses=[], dropped_claims=[], macro_read=[], halt=None)
+    thesis = ThesisJudgment(
+        claim_id=qualifying_claim.claim_id,
+        instrument=qualifying_claim.tickers_affected[0],
+        action_type=ActionType.BUY,
+        description=f"Phase 4 stub: {qualifying_claim.claim[:100]}",
+        group_id=None,
+        one_sentence_thesis="Stub thesis — Phase 4 integration test.",
+        expected_value=0.08,
+        conviction=ConvictionLevel.MEDIUM,
+        scenario_table=ScenarioTable(
+            bull=Scenario.model_validate(
+                {"probability": 30, "return": 0.20, "timeframe": None, "confirming_metric": None, "mechanism": None, "max_drawdown": None}
             ),
-            invalidation_conditions=[],
-            sizing_rationale="Phase 4 stub sizing.",
-            step_failed=None,
-        )
-    ]
-
-
-def _phase4_behavioral_match(_step: ActionStep, _slug: str) -> bool:
-    """Return True — all steps pass behavioral match in Phase 4."""
-    return True
+            base=Scenario.model_validate(
+                {"probability": 50, "return": 0.08, "timeframe": None, "confirming_metric": None, "mechanism": None, "max_drawdown": None}
+            ),
+            bear=Scenario.model_validate(
+                {"probability": 20, "return": -0.10, "timeframe": None, "confirming_metric": None, "mechanism": None, "max_drawdown": None}
+            ),
+        ),
+        invalidation_conditions=[],
+        sizing_rationale="Phase 4 stub sizing.",
+        disposition=Step1Disposition.SUPPORTED,
+    )
+    return AnalysisJudgment(theses=[thesis], dropped_claims=[], macro_read=[], halt=None)
 
 
 def _phase4_place_order(params: ExecutionParameters) -> str:
@@ -272,7 +274,33 @@ def phase4_overrides() -> PipelineOverrides:
         deterministic_tools=_Phase4DeterministicTools(),
         place_order=_phase4_place_order,
         send_email=_phase4_send_email,
-        behavioral_match_agent=_phase4_behavioral_match,
+    )
+
+
+@dataclass(frozen=True)
+class _CapitalCriticalDeps:
+    """The three dependencies that move real capital, resolved and guaranteed non-None."""
+
+    fetch_portfolio: Callable[[str], PortfolioSnapshot]
+    place_order: Callable[[ExecutionParameters], str]
+    send_email: Callable[[str, str], None]
+
+
+def _require_capital_critical_deps(overrides: PipelineOverrides) -> _CapitalCriticalDeps:
+    """Return the capital-critical dependencies, raising MissingPipelineDependencyError if any is None."""
+    fetch_portfolio = overrides.fetch_portfolio
+    place_order = overrides.place_order
+    send_email = overrides.send_email
+    if fetch_portfolio is None:
+        raise MissingPipelineDependencyError(_MISSING_DEP_MESSAGE.format(name="fetch_portfolio"))
+    if place_order is None:
+        raise MissingPipelineDependencyError(_MISSING_DEP_MESSAGE.format(name="place_order"))
+    if send_email is None:
+        raise MissingPipelineDependencyError(_MISSING_DEP_MESSAGE.format(name="send_email"))
+    return _CapitalCriticalDeps(
+        fetch_portfolio=fetch_portfolio,
+        place_order=place_order,
+        send_email=send_email,
     )
 
 
@@ -283,8 +311,11 @@ def run_pipeline(
     overrides: PipelineOverrides | None = None,
 ) -> PipelineState:
     """Execute the full pipeline on the signals in signals_dir and return the final state."""
+    ov: PipelineOverrides = overrides or PipelineOverrides()
+    capital_deps: _CapitalCriticalDeps = _require_capital_critical_deps(ov)
+
     slug: str = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
-    working_dir: Path = run_dir if run_dir is not None else Path("runs") / slug
+    working_dir: Path = run_dir if run_dir is not None else DAILY_SHOW_ROOT / slug
     working_dir.mkdir(parents=True, exist_ok=True)
 
     signals_out: Path = working_dir / "signals"
@@ -294,7 +325,6 @@ def run_pipeline(
         _ = shutil.copy2(signal_file, signals_out / signal_file.name)
 
     config = load_config()
-    ov: PipelineOverrides = overrides or PipelineOverrides()
 
     det_tools: DeterministicResearchTools = ov.deterministic_tools or _DirectDeterministicTools(config.fred_api_key)
     open_tools: OpenEndedResearchTools = ov.open_ended_tools or _DirectOpenEndedTools(config.brave_api_key)
@@ -303,22 +333,18 @@ def run_pipeline(
     claim_qs = ov.claim_questions_agent or make_claim_questions_agent(config)
     answer_synth = ov.answer_synthesis_agent or make_answer_synthesis_agent(open_tools, config)
     corr = ov.corroboration_agent or corroborate
-    fetch_port = ov.fetch_portfolio or _phase4_fetch_portfolio
-    place = ov.place_order or _phase4_place_order
-    email = ov.send_email or _phase4_send_email
-    beh_match = ov.behavioral_match_agent or _phase4_behavioral_match
 
     graph = build_graph(
-        fetch_portfolio=fetch_port,
+        fetch_portfolio=capital_deps.fetch_portfolio,
         corroboration_agent=corr,
         claim_questions_agent=claim_qs,
         answer_synthesis_agent=answer_synth,
         deterministic_tools=det_tools,
         config=config,
         thesis_agent=thesis,
-        behavioral_match_agent=beh_match,
-        place_order=place,
-        send_email=email,
+        place_order=capital_deps.place_order,
+        send_email=capital_deps.send_email,
+        manifest=ov.manifest,
     )
 
     initial_state: PipelineState = {

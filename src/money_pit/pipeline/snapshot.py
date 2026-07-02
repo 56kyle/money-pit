@@ -2,6 +2,7 @@
 from pathlib import Path
 from typing import Callable
 
+from money_pit.constants import PORTFOLIO_SNAPSHOT_FILENAME
 from money_pit.graph.state import PipelineState
 from money_pit.schemas.portfolio import PortfolioSnapshot
 
@@ -21,7 +22,7 @@ def make_snapshot_node(
             raise ValueError("PipelineState missing required key 'working_dir'")
         working_dir: Path = Path(working_dir_str)
         snapshot: PortfolioSnapshot = fetch_portfolio(slug)
-        _ = (working_dir / "portfolio_snapshot.json").write_text(
+        _ = (working_dir / PORTFOLIO_SNAPSHOT_FILENAME).write_text(
             snapshot.model_dump_json(indent=2),
             encoding="utf-8",
         )

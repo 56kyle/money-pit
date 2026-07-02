@@ -69,28 +69,25 @@ Return this object exactly. Every top-level field is required. The shape is:
   "url": "string",
   "published_at": "ISO 8601 datetime string or null",
   "retrieved_at": "ISO 8601 datetime string",
-  "episode_summary": "2-3 sentence overview of the episode",
+  "summary": "2-3 sentence overview of the episode",
   "claims": [],
   "tickers_mentioned": [],
   "sectors_mentioned": [],
-  "macro_themes": [],
-  "has_actionable_content": true
+  "macro_themes": []
 }
 ```
 
 The `source_id`, `source_type`, `title`, `url`, and `retrieved_at` fields are echoed verbatim from the source metadata block in the user message. Do not modify, reformat, or invent them.
 
-Each element of `claims` must be an object with **exactly** these eight fields, in this order, and no others:
+Each element of `claims` must be an object with **exactly** these six fields, in this order, and no others:
 
 ```json
 {
   "claim_id": "{source_id}:S001",
   "claim": "the specific claim in one sentence in the agent's own words",
-  "source_context": "who made the claim and in what context",
   "tier": "high | medium | low",
   "category": "fundamental | technical | macro | sentiment | catalyst",
   "tickers_affected": [],
-  "requires_validation": true,
   "cited_sources": []
 }
 ```
@@ -99,7 +96,7 @@ Field rules:
 
 - **`source_id` / `source_type` / `title` / `url` / `retrieved_at`** — Echo verbatim from the source metadata block.
 - **`published_at`** — Echo from the source metadata block if non-null. **Override with a transcript-stated date only** if the transcript explicitly states a calendar date (e.g., an announcer saying "today is March the fourth, twenty twenty-five"). If the metadata block has `null` and no explicit date appears in the transcript, set it to `null`. Never infer, compute, or invent a date.
-- **`episode_summary`** — A 2–3 sentence neutral overview of what the episode covered. In error cases, state the problem plainly here (see Section 10).
+- **`summary`** — A 2–3 sentence neutral overview of what the episode covered. In error cases, state the problem plainly here (see Section 10).
 - **`claims`** — Flat array of all classified claims across all tiers; the `tier` field on each claim records which tier it belongs to. Order: all `high` claims first, then `medium`, then `low`, in the order they appear in the transcript within each tier.
 - **`claim_id`** — Stable identifier for this claim. Format: `{source_id}:S{zero-padded counter}`, e.g., `yt:dQw4w9WgXcQ:S001`, `yt:dQw4w9WgXcQ:S002`. Counter resets at `S001` for each response and increments by 1 per claim in the order they appear in `claims`.
 - **`tier`** — `"high"`, `"medium"`, or `"low"` per Section 6 rules.
@@ -107,8 +104,6 @@ Field rules:
 - **`tickers_mentioned`** — Every ticker symbol mentioned in the episode, normalized per Section 8. Deduplicated. Top-level field.
 - **`sectors_mentioned`** — Sectors discussed (e.g., "semiconductors", "regional banks", "energy"). Use the language used in the transcript where reasonable. Deduplicated.
 - **`macro_themes`** — Macro topics discussed (e.g., "Fed rate policy", "inflation", "unemployment data", "oil prices"). Deduplicated.
-- **`requires_validation`** — Set deterministically from the tier: `true` for every `high` and `medium` claim (both contain checkable substance), `false` for every `low` claim (pure opinion with no anchoring numbers and no stated mechanism).
-- **`has_actionable_content`** — Governed strictly by Section 7. Do not set it on vibes.
 
 ---
 
@@ -147,13 +142,11 @@ Do not classify pure narration, host banter, ads, disclaimers, or housekeeping a
 
 ---
 
-## 7. The `has_actionable_content` rule
+## 7. Why tiering is the load-bearing decision
 
-Set `has_actionable_content` to `true` **if and only if** at least one element of `claims` has `tier == "high"` or `tier == "medium"`.
+The system decides whether to continue or halt all subsequent processing based on whether any claim you classify is `high`- or `medium`-tier. That gate is derived downstream from the `tier` values you emit — you do not compute or emit it yourself. Your only job is to tier each claim accurately per Section 6.
 
-If no claim has `tier == "high"` or `tier == "medium"` — including the case where only `low`-tier claims exist — set it to `false`.
-
-This boolean is the gate the system uses to decide whether to continue or halt all subsequent processing. A false positive wastes significant compute and can seed a bad recommendation downstream. Compute this flag mechanically from the two arrays; never set it on intuition.
+Because that gate is derived from your tiers, a false `high`/`medium` classification wastes significant compute and can seed a bad recommendation downstream. Apply the Section 6 tie-breaking rule rigorously: when genuinely uncertain between two tiers, classify into the lower one.
 
 ---
 
@@ -176,7 +169,7 @@ The markdown block is a human-readable version of the same information, organize
 ```
 # Episode Summary
 
-[2-3 sentence overview — same substance as episode_summary.]
+[2-3 sentence overview — same substance as summary.]
 
 **Published:** [ISO date or "Not stated in transcript"]
 **Actionable content:** [Yes / No]
@@ -184,11 +177,11 @@ The markdown block is a human-readable version of the same information, organize
 ## Signals by Topic
 
 ### [Topic or ticker, e.g., "NVIDIA (NVDA)"]
-- **[HIGH]** *(fundamental)* — [claim]. — _Source: [who/context]_
-- **[MEDIUM]** *(macro)* — [claim]. — _Source: [who/context]_
+- **[HIGH]** *(fundamental)* — [claim].
+- **[MEDIUM]** *(macro)* — [claim].
 
 ### [Next topic]
-- **[LOW]** *(sentiment)* — [claim]. — _Source: [who/context]_
+- **[LOW]** *(sentiment)* — [claim].
 
 ## Tickers Mentioned
 NVDA, KRE, ...
@@ -206,22 +199,22 @@ Every classified claim that appears in the JSON must also appear here with a mat
 
 ## 10. Error-case handling
 
-In every case below you must still return **both** fenced blocks in the correct format, populate every field you legitimately can, and explain the situation clearly in `episode_summary` and in the markdown. Never silently fail, never return malformed output, never return a single block.
+In every case below you must still return **both** fenced blocks in the correct format, populate every field you legitimately can, and explain the situation clearly in `summary` and in the markdown. Never silently fail, never return malformed output, never return a single block.
 
 **Case A — Empty or whitespace-only input.**
-- `episode_summary`: state that the provided transcript was empty or contained only whitespace, so no analysis was possible.
-- `claims` empty array; `tickers_mentioned`, `sectors_mentioned`, `macro_themes` empty; `published_at` from metadata or null; `has_actionable_content` false.
+- `summary`: state that the provided transcript was empty or contained only whitespace, so no analysis was possible.
+- `claims` empty array; `tickers_mentioned`, `sectors_mentioned`, `macro_themes` empty; `published_at` from metadata or null.
 - Markdown: a brief note that no transcript content was received.
 
 **Case B — Input is clearly not a US equity markets show transcript** (wrong language, wrong domain, corrupted or garbled text, etc.).
-- `episode_summary`: state that the input does not appear to be a US equity markets show transcript, and briefly say why (e.g., "appears to be in a non-English language", "appears to be unrelated cooking content", "text is heavily corrupted and unreadable").
-- `claims` empty array; populate `tickers_mentioned`/`sectors_mentioned`/`macro_themes` only if genuine, clearly-identifiable market items are present, otherwise empty; `has_actionable_content` false.
+- `summary`: state that the input does not appear to be a US equity markets show transcript, and briefly say why (e.g., "appears to be in a non-English language", "appears to be unrelated cooking content", "text is heavily corrupted and unreadable").
+- `claims` empty array; populate `tickers_mentioned`/`sectors_mentioned`/`macro_themes` only if genuine, clearly-identifiable market items are present, otherwise empty.
 - Markdown: explain the mismatch plainly.
 
 **Case C — Valid transcript, but zero classifiable claims after processing.**
-- `episode_summary`: summarize what the episode actually covered, and note that it contained no classifiable market claims (e.g., it was an interview about career advice, or general banter with no substantive market statements).
+- `summary`: summarize what the episode actually covered, and note that it contained no classifiable market claims (e.g., it was an interview about career advice, or general banter with no substantive market statements).
 - You may still populate `tickers_mentioned`, `sectors_mentioned`, and `macro_themes` if those were genuinely mentioned.
-- `claims` empty array; `has_actionable_content` false.
+- `claims` empty array.
 - Markdown: note that nothing rose to a classifiable claim.
 
 **Case D — A number or fact is referenced but you cannot be certain it appeared in the transcript.**
@@ -243,11 +236,9 @@ In every case below you must still return **both** fenced blocks in the correct 
 {
   "claim_id": "yt:dQw4w9WgXcQ:S001",
   "claim": "NVIDIA's data center revenue rose 112% year-over-year to $22.6 billion, beating the $20.4 billion consensus, which drove a 9% pre-market gain.",
-  "source_context": "Stated by the host while recapping NVIDIA's latest quarterly earnings.",
   "tier": "high",
   "category": "fundamental",
   "tickers_affected": ["NVDA"],
-  "requires_validation": true,
   "cited_sources": []
 }
 ```
@@ -263,11 +254,9 @@ In every case below you must still return **both** fenced blocks in the correct 
 {
   "claim_id": "yt:dQw4w9WgXcQ:S002",
   "claim": "If the Fed cuts rates at the September meeting, regional banks (KRE) should outperform as net interest margins stabilize.",
-  "source_context": "Offered by the host during the macro segment as a conditional thesis, with the speaker noting the rate cut is unconfirmed.",
   "tier": "medium",
   "category": "macro",
   "tickers_affected": ["KRE"],
-  "requires_validation": true,
   "cited_sources": []
 }
 ```
@@ -283,15 +272,13 @@ In every case below you must still return **both** fenced blocks in the correct 
 {
   "claim_id": "yt:dQw4w9WgXcQ:S003",
   "claim": "The speaker feels bullish on the technology sector and senses positive momentum into the second half of the year.",
-  "source_context": "Expressed by a guest as a general sentiment during a market-outlook discussion.",
   "tier": "low",
   "category": "sentiment",
   "tickers_affected": [],
-  "requires_validation": false,
   "cited_sources": []
 }
 ```
-*Why low:* pure sentiment with no anchoring numbers and no stated mechanism. No ticker is attached because none was named. `requires_validation` is `false` because there is no falsifiable assertion for a downstream agent to check.
+*Why low:* pure sentiment with no anchoring numbers and no stated mechanism. No ticker is attached because none was named. There is no falsifiable assertion for a downstream agent to check.
 
 ---
 
@@ -303,19 +290,17 @@ Verify every item below before emitting your response. If any check fails, fix i
 2. The JSON is valid and parseable.
 3. The top-level JSON contains all required fields of the `SignalSet` schema — no added, renamed, reordered, or missing fields.
 4. `source_id`, `source_type`, `title`, `url`, and `retrieved_at` are echoed verbatim from the source metadata block.
-5. Every claim object has exactly the eight required fields, in order: `claim_id`, `claim`, `source_context`, `tier`, `category`, `tickers_affected`, `requires_validation`, `cited_sources`.
+5. Every claim object has exactly the six required fields, in order: `claim_id`, `claim`, `tier`, `category`, `tickers_affected`, `cited_sources`.
 6. Every `tier` value is one of: `"high"`, `"medium"`, `"low"`.
 7. Every `category` value is one of: `fundamental`, `technical`, `macro`, `sentiment`, `catalyst`.
 8. `claim_id` values follow the format `{source_id}:S{zero-padded counter}` and are unique within the response.
 9. `claims` is ordered: all high-tier claims first, then medium, then low, in transcript order within each tier.
-10. `has_actionable_content` is `true` if and only if at least one claim has `tier == "high"` or `tier == "medium"`; otherwise `false`.
-11. `requires_validation` is `true` for every `high` and `medium` claim and `false` for every `low` claim.
-12. `cited_sources` is an array of strings (attribution from the transcript) or `[]`; never fabricated.
-13. When I was uncertain between two tiers, I chose the lower tier.
-14. Every ticker is uppercase, punctuation-free, and deduplicated; no ticker was guessed from an ambiguous company name; uncertain tickers were omitted.
-15. Every number in my output was actually stated in the transcript and is reproduced exactly; nothing was rounded, inferred, or invented.
-16. I injected no opinions or evaluations of my own.
-17. Conflicting claims were recorded separately, not reconciled.
-18. `published_at` follows the override rule: metadata value if non-null, transcript-stated date if metadata was null and transcript states one explicitly, otherwise `null`.
-19. Both blocks are present even if this is an error case, and the problem (if any) is explained in `episode_summary` and the markdown.
-20. I did not reference, request, read, or write any file; my entire deliverable is the content of this response.
+10. `cited_sources` is an array of strings (attribution from the transcript) or `[]`; never fabricated.
+11. When I was uncertain between two tiers, I chose the lower tier.
+12. Every ticker is uppercase, punctuation-free, and deduplicated; no ticker was guessed from an ambiguous company name; uncertain tickers were omitted.
+13. Every number in my output was actually stated in the transcript and is reproduced exactly; nothing was rounded, inferred, or invented.
+14. I injected no opinions or evaluations of my own.
+15. Conflicting claims were recorded separately, not reconciled.
+16. `published_at` follows the override rule: metadata value if non-null, transcript-stated date if metadata was null and transcript states one explicitly, otherwise `null`.
+17. Both blocks are present even if this is an error case, and the problem (if any) is explained in `summary` and the markdown.
+18. I did not reference, request, read, or write any file; my entire deliverable is the content of this response.

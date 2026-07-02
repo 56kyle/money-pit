@@ -1,13 +1,14 @@
 """Node factory that merges source SignalSets, corroborates claims, and writes AggregatedSignals."""
 from pathlib import Path
-from typing import Callable
 
 from money_pit.compute.aggregation import compute_run_actionable
 from money_pit.compute.aggregation import tier_max
 from money_pit.compute.aggregation import union_claims
 from money_pit.constants import AGGREGATED_SIGNALS_JSON_FILENAME
 from money_pit.constants import AGGREGATED_SIGNALS_MD_FILENAME
+from money_pit.graph.state import PipelineNode
 from money_pit.graph.state import PipelineState
+from money_pit.pipeline._types import CorroborationAgent
 from money_pit.schemas.aggregation_draft import ClaimRelations
 from money_pit.schemas.enums import ClaimRelationType
 from money_pit.schemas.signals import AggregatedSignals
@@ -50,11 +51,11 @@ def _render_aggregated_md(aggregated: AggregatedSignals) -> str:
 
 
 def make_aggregator_node(
-    corroboration_agent: Callable[[list[Claim]], ClaimRelations],
-) -> Callable[[PipelineState], dict[str, object]]:
+    corroboration_agent: CorroborationAgent,
+) -> PipelineNode:
     """Return a LangGraph node that merges all source SignalSets into AggregatedSignals."""
 
-    def aggregator_node(state: PipelineState) -> dict[str, object]:
+    def aggregator_node(state: PipelineState) -> PipelineState:
         working_dir_raw: str | None = state.get("working_dir")
         if working_dir_raw is None:
             raise ValueError("PipelineState missing required key 'working_dir'")
@@ -69,8 +70,7 @@ def make_aggregator_node(
             raise FileNotFoundError(f"No signal files found in {signals_dir}")
 
         signal_sets: list[SignalSet] = [
-            SignalSet.model_validate_json(path.read_text(encoding="utf-8"))
-            for path in signal_files
+            SignalSet.model_validate_json(path.read_text(encoding="utf-8")) for path in signal_files
         ]
 
         claims: list[Claim] = union_claims(signal_sets)
@@ -79,12 +79,10 @@ def make_aggregator_node(
         relations: ClaimRelations = corroboration_agent(claims)
 
         corroboration_entries: list[CorroborationEntry] = [
-            CorroborationEntry(relation=ClaimRelationType.AGREE, claim_ids=group)
-            for group in relations.agree
+            CorroborationEntry(relation=ClaimRelationType.AGREE, claim_ids=group) for group in relations.agree
         ]
         conflict_entries: list[CorroborationEntry] = [
-            CorroborationEntry(relation=ClaimRelationType.DISAGREE, claim_ids=group)
-            for group in relations.disagree
+            CorroborationEntry(relation=ClaimRelationType.DISAGREE, claim_ids=group) for group in relations.disagree
         ]
 
         all_relations: list[CorroborationEntry] = corroboration_entries + conflict_entries
@@ -100,14 +98,13 @@ def make_aggregator_node(
             has_actionable_content=has_actionable,
         )
 
-        _ = (working_dir / AGGREGATED_SIGNALS_JSON_FILENAME).write_text(
-            aggregated.model_dump_json(indent=2),
-            encoding="utf-8",
-        )
-        _ = (working_dir / AGGREGATED_SIGNALS_MD_FILENAME).write_text(
-            _render_aggregated_md(aggregated),
-            encoding="utf-8",
-        )
+        aggregated_signals_json_path: Path = working_dir / AGGREGATED_SIGNALS_JSON_FILENAME
+        aggregated_signals_json_text: str = aggregated.model_dump_json(indent=2)
+        aggregated_signals_json_path.write_text(aggregated_signals_json_text, encoding="utf-8")
+
+        aggregated_signals_md_path: Path = working_dir / AGGREGATED_SIGNALS_MD_FILENAME
+        aggregated_signals_md_text: str = _render_aggregated_md(aggregated=aggregated)
+        aggregated_signals_md_path.write_text(aggregated_signals_md_text, encoding="utf-8")
 
         return {
             "completed_steps": list(state.get("completed_steps") or []) + ["aggregator"],

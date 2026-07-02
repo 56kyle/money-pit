@@ -8,7 +8,6 @@ writes the single determination.json/.md audit record once, after the chosen sub
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
-from typing import Callable
 from typing import Literal
 
 from pydantic import ValidationError
@@ -17,6 +16,7 @@ from money_pit.constants import ACTION_STEPS_VALIDATION_JSON_FILENAME
 from money_pit.constants import DETERMINATION_JSON_FILENAME
 from money_pit.constants import DETERMINATION_MD_FILENAME
 from money_pit.constants import EXECUTION_JOURNAL_FILENAME
+from money_pit.graph.state import PipelineNode
 from money_pit.graph.state import PipelineState
 from money_pit.schemas.determination import DeterminationReport
 from money_pit.schemas.enums import Determination
@@ -86,10 +86,10 @@ def _halt_reason(failed_steps: list[str]) -> str:
     return f"{len(failed_steps)} validation step(s) unmatched; execution halted."
 
 
-def make_determination_node() -> Callable[[PipelineState], dict[str, object]]:
+def make_determination_node() -> PipelineNode:
     """Return the node that recomputes the go/no-go from the persisted validation and routes."""
 
-    def determination_node(state: PipelineState) -> dict[str, object]:
+    def determination_node(state: PipelineState) -> PipelineState:
         working_dir_raw: str | None = state.get("working_dir")
         if working_dir_raw is None:
             raise ValueError("PipelineState missing required key 'working_dir'")
@@ -170,10 +170,10 @@ def _render_report_md(report: DeterminationReport) -> str:
     return "\n".join(lines) + "\n"
 
 
-def make_finalizer_node() -> Callable[[PipelineState], dict[str, object]]:
+def make_finalizer_node() -> PipelineNode:
     """Return the node that writes the single determination.json/.md record after the sub-agent runs."""
 
-    def finalizer_node(state: PipelineState) -> dict[str, object]:
+    def finalizer_node(state: PipelineState) -> PipelineState:
         slug: str | None = state.get("slug")
         if slug is None:
             raise ValueError("PipelineState missing required key 'slug'")

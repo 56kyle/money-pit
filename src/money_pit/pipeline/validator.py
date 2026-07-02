@@ -1,7 +1,5 @@
 """A5: manifest existence + jsonschema checks, action_type→tool routing, three-file write."""
-from collections.abc import Mapping
 from pathlib import Path
-from typing import Callable
 
 import jsonschema
 from pydantic import TypeAdapter
@@ -12,8 +10,10 @@ from money_pit.constants import ACTION_STEPS_JSON_FILENAME
 from money_pit.constants import ACTION_STEPS_VALIDATION_JSON_FILENAME
 from money_pit.constants import ACTION_STEPS_VALIDATION_MD_FILENAME
 from money_pit.constants import VALIDATION_STATUS_FILENAME
+from money_pit.graph.state import PipelineNode
 from money_pit.graph.state import PipelineState
 from money_pit.mcp.manifest import pinned_manifest
+from money_pit.pipeline._types import ToolManifest
 from money_pit.schemas.action_steps import ActionStep
 from money_pit.schemas.enums import ValidationStatus
 from money_pit.schemas.validation_results import ActionStepsValidation
@@ -51,7 +51,7 @@ def _build_tool_calls(step: ActionStep) -> tuple[list[ToolCall], list[ToolCall]]
 def _validate_step(
     step: ActionStep,
     slug: str,
-    manifest: Mapping[str, dict[str, object]],
+    manifest: ToolManifest,
 ) -> ValidationStep:
     """Run existence, schema, and client_order_id checks and return a MATCHED or UNMATCHED ValidationStep."""
     tool_sequence, compensation_sequence = _build_tool_calls(step)
@@ -123,18 +123,18 @@ def _render_markdown(slug: str, validation: ActionStepsValidation) -> str:
 
 
 def make_validator_node(
-    manifest: Mapping[str, dict[str, object]] | None = None,
-) -> Callable[[PipelineState], dict[str, object]]:
+    manifest: ToolManifest | None = None,
+) -> PipelineNode:
     """Return a LangGraph node that validates each action step against schema and tool constraints.
 
     With the default `manifest=None`, `pinned_manifest()` is resolved eagerly at
     construction and can therefore raise `ManifestUnavailableError` at graph-build time.
     """
-    resolved_manifest: Mapping[str, dict[str, object]] = (
+    resolved_manifest: ToolManifest = (
         manifest if manifest is not None else pinned_manifest()
     )
 
-    def validator_node(state: PipelineState) -> dict[str, object]:
+    def validator_node(state: PipelineState) -> PipelineState:
         working_dir_raw: str | None = state.get("working_dir")
         if working_dir_raw is None:
             raise ValueError("PipelineState missing required key 'working_dir'")
@@ -180,7 +180,7 @@ def make_validator_node(
             status_report.model_dump_json(indent=2), encoding="utf-8"
         )
 
-        result: dict[str, object] = {
+        result: PipelineState = {
             "completed_steps": [*(state.get("completed_steps") or []), "validator"],
             "validation_steps": validation_steps,
         }

@@ -1,18 +1,19 @@
 """Calls Alpaca read MCP, writes portfolio_snapshot.json."""
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from money_pit.constants import PORTFOLIO_SNAPSHOT_FILENAME
+from money_pit.graph.state import PipelineNode
 from money_pit.graph.state import PipelineState
 from money_pit.schemas.portfolio import PortfolioSnapshot
 
 
 def make_snapshot_node(
     fetch_portfolio: Callable[[str], PortfolioSnapshot],
-) -> Callable[[PipelineState], dict[str, object]]:
+) -> PipelineNode:
     """Return a LangGraph node that fetches and persists the portfolio snapshot."""
 
-    def snapshot_node(state: PipelineState) -> dict[str, object]:
+    def snapshot_node(state: PipelineState) -> PipelineState:
         """Fetch the portfolio snapshot for state["slug"] and write it to working_dir."""
         slug: str | None = state.get("slug")
         if slug is None:
@@ -27,7 +28,7 @@ def make_snapshot_node(
             encoding="utf-8",
         )
         prior_steps: list[str] = list(state.get("completed_steps") or [])
-        result: dict[str, object] = {"completed_steps": prior_steps + ["snapshot"]}
+        result: PipelineState = {"completed_steps": prior_steps + ["snapshot"]}
         return result
 
     return snapshot_node

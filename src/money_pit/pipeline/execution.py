@@ -1,12 +1,13 @@
 """Execution sub-agent: independent-path order submission with a crash-survivable journal."""
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
 
 from pydantic import TypeAdapter
 
 from money_pit.constants import ACTION_STEPS_JSON_FILENAME
 from money_pit.constants import EXECUTION_JOURNAL_FILENAME
+from money_pit.graph.state import PipelineNode
 from money_pit.graph.state import PipelineState
 from money_pit.schemas.action_steps import ActionStep, ExecutionParameters
 from money_pit.schemas.enums import ExecutionOutcome, ExecutionPhase
@@ -53,7 +54,7 @@ def _write_journal(
 
 def make_execution_node(
     place_order: Callable[[ExecutionParameters], str],
-) -> Callable[[PipelineState], dict[str, object]]:
+) -> PipelineNode:
     """Return a LangGraph node that submits validated orders via the injected place_order callable.
 
     place_order is contracted to return a broker order id on success and to raise
@@ -61,7 +62,7 @@ def make_execution_node(
     unexpected bug and propagates, leaving a truthful partial journal on disk.
     """
 
-    def execution_node(state: PipelineState) -> dict[str, object]:
+    def execution_node(state: PipelineState) -> PipelineState:
         slug: str | None = state.get("slug")
         if slug is None:
             raise ValueError("PipelineState missing required key 'slug'")
@@ -101,7 +102,7 @@ def make_execution_node(
                     timestamp=datetime.now(timezone.utc).isoformat(),
                 )
             else:
-                entry = ExecutionJournalEntry(
+                entry: ExecutionJournalEntry = ExecutionJournalEntry(
                     step_id=step.step_id,
                     group_id=step.group_id,
                     client_order_id=step.execution_parameters.client_order_id,
@@ -121,7 +122,7 @@ def make_execution_node(
 
         _write_journal(working_dir, slug, entries, outcome=_derive_outcome(entries))
 
-        result: dict[str, object] = {
+        result: PipelineState = {
             "completed_steps": list(state.get("completed_steps") or []) + ["execution"],
         }
         return result

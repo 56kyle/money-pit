@@ -1,6 +1,5 @@
 """StateGraph assembly: add_node / add_edge / add_conditional_edges."""
-from collections.abc import Mapping
-from typing import Callable
+from collections.abc import Callable
 
 from langgraph.graph import END  # pyright: ignore[reportMissingTypeStubs]
 from langgraph.graph import START  # pyright: ignore[reportMissingTypeStubs]
@@ -21,6 +20,11 @@ from money_pit.graph.edges import post_notification_router
 from money_pit.graph.edges import signal_gate
 from money_pit.graph.edges import terminal_state_router
 from money_pit.graph.state import PipelineState
+from money_pit.pipeline._types import AnswerSynthesisAgent
+from money_pit.pipeline._types import ClaimQuestionsAgent
+from money_pit.pipeline._types import CorroborationAgent
+from money_pit.pipeline._types import ThesisAgent
+from money_pit.pipeline._types import ToolManifest
 from money_pit.pipeline.aggregator import make_aggregator_node
 from money_pit.pipeline.analysis import make_analysis_node
 from money_pit.pipeline.determination import make_determination_node
@@ -32,19 +36,12 @@ from money_pit.pipeline.retrieval import make_retrieval_node
 from money_pit.pipeline.snapshot import make_snapshot_node
 from money_pit.pipeline.validator import make_validator_node
 from money_pit.schemas.action_steps import ExecutionParameters
-from money_pit.schemas.aggregation_draft import ClaimRelations
-from money_pit.schemas.analysis_draft import AnalysisJudgment
-from money_pit.schemas.answer_draft import AnswerDraft
 from money_pit.schemas.enums import TerminalState
 from money_pit.schemas.portfolio import PortfolioSnapshot
-from money_pit.schemas.provenance import SourceRef
-from money_pit.schemas.question_draft import DraftQuestion
-from money_pit.schemas.questions import Question
-from money_pit.schemas.signals import Claim
 
 
-def _no_action_terminal(state: PipelineState) -> dict[str, object]:
-    result: dict[str, object] = {
+def _no_action_terminal(state: PipelineState) -> PipelineState:
+    result: PipelineState = {
         "terminal_state": TerminalState.NO_ACTION,
         "completed_steps": list(state.get("completed_steps") or []) + ["no_action_terminal"],
     }
@@ -54,30 +51,30 @@ def _no_action_terminal(state: PipelineState) -> dict[str, object]:
 def build_graph(
     *,
     fetch_portfolio: Callable[[str], PortfolioSnapshot],
-    corroboration_agent: Callable[[list[Claim]], ClaimRelations],
-    claim_questions_agent: Callable[[list[Claim]], list[DraftQuestion]],
-    answer_synthesis_agent: Callable[[list[Question], list[SourceRef]], list[AnswerDraft]],
+    corroboration_agent: CorroborationAgent,
+    claim_questions_agent: ClaimQuestionsAgent,
+    answer_synthesis_agent: AnswerSynthesisAgent,
     deterministic_tools: DeterministicResearchTools,
     config: Config,
-    thesis_agent: Callable[..., AnalysisJudgment],
+    thesis_agent: ThesisAgent,
     place_order: Callable[[ExecutionParameters], str],
     send_email: Callable[[str, str], None],
-    manifest: Mapping[str, dict[str, object]] | None = None,
-) -> CompiledStateGraph:  # pyright: ignore[reportMissingTypeArgument]
+    manifest: ToolManifest | None = None,
+) -> CompiledStateGraph[PipelineState]:
     """Assemble and compile the full money-pit LangGraph pipeline."""
-    builder = StateGraph(PipelineState)
+    builder: StateGraph[PipelineState] = StateGraph(state_schema=PipelineState)
 
-    builder.add_node("snapshot", make_snapshot_node(fetch_portfolio=fetch_portfolio))  # pyright: ignore[reportArgumentType]
-    builder.add_node("aggregator", make_aggregator_node(corroboration_agent=corroboration_agent))  # pyright: ignore[reportArgumentType]
+    builder.add_node("snapshot", make_snapshot_node(fetch_portfolio=fetch_portfolio))
+    builder.add_node("aggregator", make_aggregator_node(corroboration_agent=corroboration_agent))
     builder.add_node("no_action_terminal", _no_action_terminal)
-    builder.add_node("questions", make_questions_node(claim_questions_agent=claim_questions_agent))  # pyright: ignore[reportArgumentType]
-    builder.add_node("retrieval", make_retrieval_node(answer_synthesis_agent=answer_synthesis_agent, deterministic_tools=deterministic_tools))  # pyright: ignore[reportArgumentType]
-    builder.add_node("analysis", make_analysis_node(config=config, thesis_agent=thesis_agent))  # pyright: ignore[reportArgumentType]
-    builder.add_node("validator", make_validator_node(manifest=manifest))  # pyright: ignore[reportArgumentType]
-    builder.add_node("determination", make_determination_node())  # pyright: ignore[reportArgumentType]
-    builder.add_node("execution", make_execution_node(place_order=place_order))  # pyright: ignore[reportArgumentType]
-    builder.add_node("notification", make_notification_node(send_email=send_email))  # pyright: ignore[reportArgumentType]
-    builder.add_node("finalizer", make_finalizer_node())  # pyright: ignore[reportArgumentType]
+    builder.add_node("questions", make_questions_node(claim_questions_agent=claim_questions_agent))
+    builder.add_node("retrieval", make_retrieval_node(answer_synthesis_agent=answer_synthesis_agent, deterministic_tools=deterministic_tools))
+    builder.add_node("analysis", make_analysis_node(config=config, thesis_agent=thesis_agent))
+    builder.add_node("validator", make_validator_node(manifest=manifest))
+    builder.add_node("determination", make_determination_node())
+    builder.add_node("execution", make_execution_node(place_order=place_order))
+    builder.add_node("notification", make_notification_node(send_email=send_email))
+    builder.add_node("finalizer", make_finalizer_node())
 
     builder.add_edge(START, "snapshot")
     builder.add_edge("snapshot", "aggregator")

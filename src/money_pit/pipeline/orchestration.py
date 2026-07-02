@@ -1,7 +1,6 @@
 """Scheduler trigger, working-dir creation, slug assignment."""
 import shutil
 from collections.abc import Callable
-from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import datetime
@@ -18,6 +17,11 @@ from money_pit.config import load_config
 from money_pit.constants import DAILY_SHOW_ROOT
 from money_pit.graph.graph import build_graph
 from money_pit.graph.state import PipelineState
+from money_pit.pipeline._types import AnswerSynthesisAgent
+from money_pit.pipeline._types import ClaimQuestionsAgent
+from money_pit.pipeline._types import CorroborationAgent
+from money_pit.pipeline._types import ThesisAgent
+from money_pit.pipeline._types import ToolManifest
 from money_pit.schemas.action_steps import ExecutionParameters
 from money_pit.schemas.aggregation_draft import ClaimRelations
 from money_pit.schemas.analysis_draft import AnalysisJudgment
@@ -52,16 +56,16 @@ class MissingPipelineDependencyError(Exception):
 class PipelineOverrides:
     """Injectable agent overrides for testing. All fields default to None (use Phase 5 implementations)."""
 
-    thesis_agent: Callable[..., AnalysisJudgment] | None = field(default=None)
-    claim_questions_agent: Callable[[list[Claim]], list[DraftQuestion]] | None = field(default=None)
-    answer_synthesis_agent: Callable[[list[Question], list[SourceRef]], list[AnswerDraft]] | None = field(default=None)
-    corroboration_agent: Callable[[list[Claim]], ClaimRelations] | None = field(default=None)
+    thesis_agent: ThesisAgent | None = field(default=None)
+    claim_questions_agent: ClaimQuestionsAgent | None = field(default=None)
+    answer_synthesis_agent: AnswerSynthesisAgent | None = field(default=None)
+    corroboration_agent: CorroborationAgent | None = field(default=None)
     fetch_portfolio: Callable[[str], PortfolioSnapshot] | None = field(default=None)
     deterministic_tools: DeterministicResearchTools | None = field(default=None)
     open_ended_tools: OpenEndedResearchTools | None = field(default=None)
     place_order: Callable[[ExecutionParameters], str] | None = field(default=None)
     send_email: Callable[[str, str], None] | None = field(default=None)
-    manifest: Mapping[str, dict[str, object]] | None = field(default=None)
+    manifest: ToolManifest | None = field(default=None)
 
 
 class _DirectDeterministicTools:
@@ -87,7 +91,7 @@ class _DirectDeterministicTools:
                 },
                 timeout=10,
             )
-            data: dict[str, object] = response.json()  # pyright: ignore[reportAny]
+            data: dict[str, object] = response.json()
             observations = data.get("observations")
             if not isinstance(observations, list) or not observations:
                 return None

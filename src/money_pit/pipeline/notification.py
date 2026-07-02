@@ -1,11 +1,12 @@
 """Notification sub-agent: email templating per terminal state, send_email call."""
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from pydantic import TypeAdapter
 
 from money_pit.constants import ACTION_STEPS_JSON_FILENAME
 from money_pit.constants import ACTION_STEPS_VALIDATION_JSON_FILENAME
+from money_pit.graph.state import PipelineNode
 from money_pit.graph.state import PipelineState
 from money_pit.schemas.action_steps import ActionStep
 from money_pit.schemas.enums import TerminalState
@@ -66,10 +67,10 @@ def _build_body(
 
 def make_notification_node(
     send_email: Callable[[str, str], None],
-) -> Callable[[PipelineState], dict[str, object]]:
+) -> PipelineNode:
     """Return a LangGraph node that sends an email summary when execution does not proceed."""
 
-    def notification_node(state: PipelineState) -> dict[str, object]:
+    def notification_node(state: PipelineState) -> PipelineState:
         slug: str | None = state.get("slug")
         if slug is None:
             raise ValueError("PipelineState missing required key 'slug'")
@@ -95,7 +96,7 @@ def make_notification_node(
         body: str = _build_body(slug, terminal_state, action_steps, validation)
         send_email(subject, body)
 
-        result: dict[str, object] = {
+        result: PipelineState = {
             "completed_steps": list(state.get("completed_steps") or []) + ["notification"],
         }
         return result

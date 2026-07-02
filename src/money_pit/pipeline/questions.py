@@ -1,7 +1,6 @@
 """A2 node: template emission, ID assignment, routing-table data_sources, file writes."""
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
 
 from loguru import logger
 
@@ -11,7 +10,9 @@ from money_pit.constants import AGGREGATED_SIGNALS_JSON_FILENAME
 from money_pit.constants import INITIAL_QUESTIONS_JSON_FILENAME
 from money_pit.constants import INITIAL_QUESTIONS_MD_FILENAME
 from money_pit.constants import PORTFOLIO_SNAPSHOT_FILENAME
+from money_pit.graph.state import PipelineNode
 from money_pit.graph.state import PipelineState
+from money_pit.pipeline._types import ClaimQuestionsAgent
 from money_pit.schemas.enums import QuestionCategory, SignalTier
 from money_pit.schemas.question_draft import DraftQuestion
 from money_pit.schemas.questions import INDICATOR_PREFIX, InitialQuestions, Question, SignalSummary
@@ -189,11 +190,11 @@ def _render_markdown(result: InitialQuestions) -> str:
 
 
 def make_questions_node(
-    claim_questions_agent: Callable[[list[Claim]], list[DraftQuestion]],
-) -> Callable[[PipelineState], dict[str, object]]:
+    claim_questions_agent: ClaimQuestionsAgent,
+) -> PipelineNode:
     """Return a LangGraph node that generates initial research questions."""
 
-    def questions_node(state: PipelineState) -> dict[str, object]:
+    def questions_node(state: PipelineState) -> PipelineState:
         slug: str = state["slug"]  # pyright: ignore[reportTypedDictNotRequiredAccess]
         working_dir: Path = Path(state["working_dir"])  # pyright: ignore[reportTypedDictNotRequiredAccess]
 
@@ -259,7 +260,7 @@ def make_questions_node(
         )
 
         prior_steps: list[str] = list(state.get("completed_steps") or [])
-        result: dict[str, object] = {"completed_steps": prior_steps + ["questions"]}
+        result: PipelineState = {"completed_steps": prior_steps + ["questions"]}
         return result
 
     return questions_node

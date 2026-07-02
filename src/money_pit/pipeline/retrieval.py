@@ -1,6 +1,5 @@
 """A3 node: deterministic known-param fetch, budget control, file writes."""
 from pathlib import Path
-from typing import Callable
 
 from loguru import logger
 
@@ -10,7 +9,9 @@ from money_pit.constants import AGGREGATED_SIGNALS_JSON_FILENAME
 from money_pit.constants import INITIAL_ANSWERS_JSON_FILENAME
 from money_pit.constants import INITIAL_ANSWERS_MD_FILENAME
 from money_pit.constants import INITIAL_QUESTIONS_JSON_FILENAME
+from money_pit.graph.state import PipelineNode
 from money_pit.graph.state import PipelineState
+from money_pit.pipeline._types import AnswerSynthesisAgent
 from money_pit.schemas.answer_draft import AnswerDraft
 from money_pit.schemas.answers import Answer, InitialAnswers
 from money_pit.schemas.enums import DataSourceToken, QuestionCategory
@@ -128,12 +129,12 @@ def _deterministic_answer(question: Question, data_retrieved: dict[str, object] 
 
 
 def make_retrieval_node(
-    answer_synthesis_agent: Callable[[list[Question], list[SourceRef]], list[AnswerDraft]],
+    answer_synthesis_agent: AnswerSynthesisAgent,
     deterministic_tools: DeterministicResearchTools,
-) -> Callable[[PipelineState], dict[str, object]]:
+) -> PipelineNode:
     """Return a LangGraph node that answers research questions via agent retrieval."""
 
-    def retrieval_node(state: PipelineState) -> dict[str, object]:
+    def retrieval_node(state: PipelineState) -> PipelineState:
         working_dir_str = state.get("working_dir")
         slug = state.get("slug")
         if working_dir_str is None or slug is None:
@@ -197,7 +198,7 @@ def make_retrieval_node(
             encoding="utf-8",
         )
 
-        result: dict[str, object] = {
+        result: PipelineState = {
             "completed_steps": list(state.get("completed_steps") or []) + ["retrieval"]
         }
         return result

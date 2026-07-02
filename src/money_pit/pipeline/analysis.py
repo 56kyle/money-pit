@@ -1,7 +1,7 @@
 """A4 node: calls agents/thesis_judgment + compute/ post-processor functions, writes action_steps.json."""
 import json
 from pathlib import Path
-from typing import Callable
+from typing import Optional
 
 from loguru import logger
 
@@ -16,7 +16,10 @@ from money_pit.constants import ANALYSIS_JUDGMENT_JSON_FILENAME
 from money_pit.constants import ANALYSIS_MD_FILENAME
 from money_pit.constants import INITIAL_ANSWERS_JSON_FILENAME
 from money_pit.constants import PORTFOLIO_SNAPSHOT_FILENAME
+from money_pit.graph.state import PipelineNode
 from money_pit.graph.state import PipelineState
+from money_pit.pipeline._types import ThesisAgent
+from money_pit.schemas import ExecutionParameters
 from money_pit.schemas.action_steps import ActionStep
 from money_pit.schemas.analysis_draft import AnalysisHalt
 from money_pit.schemas.analysis_draft import AnalysisJudgment
@@ -177,26 +180,26 @@ def _write_action_steps(working_dir: Path, slug: str, action_steps: list[ActionS
 
 def make_analysis_node(
     config: Config,
-    thesis_agent: Callable[..., AnalysisJudgment],
-) -> Callable[[PipelineState], dict[str, object]]:
+    thesis_agent: ThesisAgent,
+) -> PipelineNode:
     """Return a LangGraph node that runs A4 judgment and the deterministic post-processor."""
 
-    def analysis_node(state: PipelineState) -> dict[str, object]:
+    def analysis_node(state: PipelineState) -> PipelineState:
         working_dir_str = state.get("working_dir")
         if working_dir_str is None:
             raise ValueError("PipelineState missing required key 'working_dir'")
-        slug = state.get("slug")
+        slug: Optional[str] = state.get("slug")
         if slug is None:
             raise ValueError("PipelineState missing required key 'slug'")
-        working_dir = Path(working_dir_str)
+        working_dir: Path = Path(working_dir_str)
 
-        aggregated_signals = AggregatedSignals.model_validate_json(
+        aggregated_signals: AggregatedSignals = AggregatedSignals.model_validate_json(
             (working_dir / AGGREGATED_SIGNALS_JSON_FILENAME).read_text(encoding="utf-8")
         )
-        portfolio_snapshot = PortfolioSnapshot.model_validate_json(
+        portfolio_snapshot: PortfolioSnapshot = PortfolioSnapshot.model_validate_json(
             (working_dir / PORTFOLIO_SNAPSHOT_FILENAME).read_text(encoding="utf-8")
         )
-        initial_answers = InitialAnswers.model_validate_json(
+        initial_answers: InitialAnswers = InitialAnswers.model_validate_json(
             (working_dir / INITIAL_ANSWERS_JSON_FILENAME).read_text(encoding="utf-8")
         )
 
@@ -218,8 +221,8 @@ def make_analysis_node(
             encoding="utf-8",
         )
 
-        macro_indicators = _extract_macro_indicators(initial_answers.answers)
-        regime_tag = classify_regime(macro_indicators, config)
+        macro_indicators: MacroIndicators = _extract_macro_indicators(initial_answers.answers)
+        regime_tag: RegimeTag = classify_regime(macro_indicators, config)
 
         if container.halt is not None:
             action_steps: list[ActionStep] = []
@@ -238,7 +241,7 @@ def make_analysis_node(
         action_steps = []
         for i, thesis in enumerate(container.theses):
             verified: bool = thesis.disposition == Step1Disposition.SUPPORTED
-            scenarios = _to_scenario_list(thesis.scenario_table)
+            scenarios: list[tuple[float, float]] = _to_scenario_list(thesis.scenario_table)
             sector_headroom: float = config.sector_cap * portfolio_snapshot.total_account_value
             cash_headroom: float = max(
                 0.0,
@@ -247,7 +250,7 @@ def make_analysis_node(
             )
             overlap_headroom: float = config.overlap_limit * portfolio_snapshot.total_account_value
 
-            dollar_amount = size_position(
+            dollar_amount: Optional[float] = size_position(
                 scenarios,
                 portfolio_snapshot.total_account_value,
                 config,
@@ -261,7 +264,7 @@ def make_analysis_node(
                 continue
 
             step_id: str = f"A{i + 1:03d}"
-            execution_parameters = build_execution_params(
+            execution_parameters: ExecutionParameters = build_execution_params(
                 step_id, slug, thesis.instrument, thesis.action_type, dollar_amount
             )
 

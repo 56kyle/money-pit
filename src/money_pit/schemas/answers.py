@@ -3,7 +3,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict
 
-from money_pit.schemas.enums import Confidence, QuestionCategory
+from money_pit.schemas.enums import Confidence, DataSourceToken, QuestionCategory, SignalTier
 from money_pit.schemas.provenance import SourceRef
 
 
@@ -16,10 +16,10 @@ class Answer(BaseModel):
     question: str
     category: QuestionCategory
     signal_source: str
-    signal_tier: str
+    signal_tier: SignalTier
     answer: str
     confidence: Confidence
-    sources_used: list[str]
+    sources_used: list[DataSourceToken]
     data_retrieved: dict[str, object] | None
     limitations: str
 

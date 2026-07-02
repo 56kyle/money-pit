@@ -11,11 +11,9 @@ class ClaimDraft(BaseModel):
 
     claim_id: str
     claim: str
-    source_context: str
     tier: str
     category: str
     tickers_affected: list[str]
-    requires_validation: bool
     cited_sources: list[str]
 
 
@@ -30,10 +28,8 @@ class SignalSetDraft(BaseModel):
     url: str | None
     published_at: str | None
     retrieved_at: str
-    episode_summary: str
+    summary: str
     claims: list[ClaimDraft]
     tickers_mentioned: list[str]
     sectors_mentioned: list[str]
     macro_themes: list[str]
-    # LLM-emitted; overridden deterministically by compute/signal_flags.has_actionable_content
-    has_actionable_content: bool

@@ -1,11 +1,15 @@
 """Subpackage containing all boundary-contract schemas used throughout the money_pit package."""
-from money_pit.schemas.action_steps import ActionStep, ActionSteps, ExecutionParameters
+from money_pit.schemas.action_steps import ActionStep, ExecutionParameters
 from money_pit.schemas.aggregation_draft import ClaimRelations
 from money_pit.schemas.analysis_draft import (
+    AnalysisHalt,
     AnalysisJudgment,
+    DroppedClaim,
     InvalidationCondition,
+    MacroIndicatorReading,
     Scenario,
     ScenarioTable,
+    ThesisJudgment,
 )
 from money_pit.schemas.answer_draft import AnswerDraft
 from money_pit.schemas.answers import Answer, InitialAnswers
@@ -25,6 +29,7 @@ from money_pit.schemas.enums import (
     RegimeTag,
     SignalTier,
     SourceType,
+    Step1Disposition,
     TerminalState,
     ValidationStatus,
 )
@@ -45,10 +50,10 @@ from money_pit.schemas.validation_results import (
 
 __all__ = [
     "ActionStep",
-    "ActionSteps",
     "ActionStepsValidation",
     "ActionType",
     "AggregatedSignals",
+    "AnalysisHalt",
     "AnalysisJudgment",
     "Answer",
     "AnswerDraft",
@@ -65,6 +70,7 @@ __all__ = [
     "Determination",
     "DeterminationReport",
     "DraftQuestion",
+    "DroppedClaim",
     "ExecutionJournal",
     "ExecutionJournalEntry",
     "ExecutionOutcome",
@@ -74,6 +80,7 @@ __all__ = [
     "InitialAnswers",
     "InitialQuestions",
     "InvalidationCondition",
+    "MacroIndicatorReading",
     "MacroIndicators",
     "Position",
     "PortfolioSnapshot",
@@ -88,7 +95,9 @@ __all__ = [
     "SignalTier",
     "SourceRef",
     "SourceType",
+    "Step1Disposition",
     "TerminalState",
+    "ThesisJudgment",
     "ToolCall",
     "ValidationStatus",
     "ValidationStatusReport",

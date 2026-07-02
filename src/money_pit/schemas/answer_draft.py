@@ -3,7 +3,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict
 
-from money_pit.schemas.enums import Confidence
+from money_pit.schemas.enums import DataSourceToken
 
 
 class AnswerDraft(BaseModel):
@@ -11,13 +11,13 @@ class AnswerDraft(BaseModel):
 
     Deterministic retrieval (named FRED series, current price, P/E) is performed
     by the pipeline node; only results requiring relevance judgment flow through here.
+    Confidence is code-derived from sources_used by the node, never authored by the LLM.
     """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
 
     question_id: str
     answer: str
-    confidence: Confidence
-    sources_used: list[str]
+    sources_used: list[DataSourceToken]
     data_retrieved: dict[str, object] | None
     limitations: str

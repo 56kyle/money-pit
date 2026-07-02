@@ -3,7 +3,9 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict
 
-from money_pit.schemas.enums import DataSourceToken, QuestionCategory
+from money_pit.schemas.enums import DataSourceToken, QuestionCategory, SignalTier
+
+INDICATOR_PREFIX: str = "indicator:"
 
 
 class Question(BaseModel):
@@ -15,7 +17,7 @@ class Question(BaseModel):
     category: QuestionCategory
     question: str
     signal_source: str
-    signal_tier: str
+    signal_tier: SignalTier
     rationale: str
     data_sources: list[DataSourceToken]
     answer: None

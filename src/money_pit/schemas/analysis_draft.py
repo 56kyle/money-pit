@@ -1,9 +1,9 @@
-"""AnalysisJudgment — LLM draft from A4, input to the post-processor in pipeline/analysis.py."""
+"""AnalysisJudgment container — the §6.5 A4 judgment output consumed by pipeline/analysis.py."""
 from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from money_pit.schemas.enums import ActionType, ConvictionLevel
+from money_pit.schemas.enums import ActionType, ConvictionLevel, Step1Disposition
 
 
 class Scenario(BaseModel):
@@ -42,25 +42,62 @@ class InvalidationCondition(BaseModel):
     action: str
 
 
-class AnalysisJudgment(BaseModel):
-    """One judgment object from the A4 LLM core.
+class ThesisJudgment(BaseModel):
+    """One surviving thesis from the A4 seven-step framework.
 
     The post-processor adds step_id, regime_tag, dollar_amount, and execution_parameters
-    when materializing action_steps.json. Fields are nullable to accommodate the halt
-    object (step_failed non-null, all others null).
+    when materializing action_steps.json.
     """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
 
-    claim_id: str | None
-    instrument: str | None
-    action_type: ActionType | None
-    description: str | None
+    claim_id: str
+    instrument: str
+    action_type: ActionType
+    description: str
     group_id: str | None
-    one_sentence_thesis: str | None
-    expected_value: float | None
-    conviction: ConvictionLevel | None
-    scenario_table: ScenarioTable | None
+    one_sentence_thesis: str
+    expected_value: float
+    conviction: ConvictionLevel
+    scenario_table: ScenarioTable
     invalidation_conditions: list[InvalidationCondition]
-    sizing_rationale: str | None
-    step_failed: str | None
+    sizing_rationale: str
+    disposition: Step1Disposition
+
+
+class DroppedClaim(BaseModel):
+    """A claim discarded during A4 analysis, recorded with the reason for the audit trail."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    claim_id: str
+    reason: str
+
+
+class MacroIndicatorReading(BaseModel):
+    """A4's qualitative Step-2 reading of one macro indicator; consumed only by analysis.md."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    indicator: str
+    reading: str
+    favorable: bool | None
+
+
+class AnalysisHalt(BaseModel):
+    """Pure-data record that A4 could not complete a mandatory step; carries no TerminalState."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    reason: str
+
+
+class AnalysisJudgment(BaseModel):
+    """The §6.5 A4 output container: surviving theses, dropped claims, macro read, optional halt."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    theses: list[ThesisJudgment]
+    dropped_claims: list[DroppedClaim]
+    macro_read: list[MacroIndicatorReading]
+    halt: AnalysisHalt | None

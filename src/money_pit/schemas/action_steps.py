@@ -1,4 +1,4 @@
-"""ActionStep, ExecutionParameters, ActionSteps — post-processor output, consumed by A5."""
+"""ActionStep, ExecutionParameters — post-processor output, consumed by A5."""
 from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -15,10 +15,25 @@ class ExecutionParameters(BaseModel):
     symbol: str
     notional: float | None
     quantity: float | None
-    side: str
-    type: str
-    time_in_force: str
+    side: Literal["buy", "sell"]
+    type: Literal["market"]
+    time_in_force: Literal["day"]
     client_order_id: str
+
+    def to_order_payload(self) -> dict[str, object]:
+        """Return the exact order-tool payload dict, omitting None-valued optional fields."""
+        payload: dict[str, object] = {
+            "symbol": self.symbol,
+            "side": self.side,
+            "type": self.type,
+            "time_in_force": self.time_in_force,
+            "client_order_id": self.client_order_id,
+        }
+        if self.notional is not None:
+            payload["notional"] = self.notional
+        if self.quantity is not None:
+            payload["quantity"] = self.quantity
+        return payload
 
 
 class ActionStep(BaseModel):
@@ -40,11 +55,3 @@ class ActionStep(BaseModel):
     sizing_rationale: str
     conviction: ConvictionLevel
     step_failed: Literal[None] = None
-
-
-class ActionSteps(BaseModel):
-    """Container for all action steps in a run; steps=[] signals a clean no-trade day."""
-
-    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
-
-    steps: list[ActionStep]

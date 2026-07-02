@@ -32,5 +32,5 @@ class ExecutionJournal(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
 
     slug: str
-    outcome: ExecutionOutcome
+    outcome: ExecutionOutcome | None
     entries: list[ExecutionJournalEntry]

@@ -47,11 +47,9 @@ def _high_claim() -> ClaimDraft:
     return ClaimDraft(
         claim_id="claim_001",
         claim="NVDA data center segment shows 200%+ YoY growth driven by AI infrastructure buildout.",
-        source_context="data center segment continues to show 200%+ growth",
         tier=SignalTier.HIGH.value,
         category=ClaimCategory.FUNDAMENTAL.value,
         tickers_affected=["NVDA"],
-        requires_validation=True,
         cited_sources=[],
     )
 
@@ -60,11 +58,9 @@ def _low_claim() -> ClaimDraft:
     return ClaimDraft(
         claim_id="claim_002",
         claim="AMD competition is increasing in the GPU space.",
-        source_context="AMD competition increasing",
         tier=SignalTier.LOW.value,
         category=ClaimCategory.SENTIMENT.value,
         tickers_affected=["AMD"],
-        requires_validation=False,
         cited_sources=[],
     )
 
@@ -77,12 +73,11 @@ def _make_draft(source_ref: SourceRef, claims: list[ClaimDraft]) -> SignalSetDra
         url=source_ref.url,
         published_at=source_ref.published_at,
         retrieved_at=source_ref.retrieved_at,
-        episode_summary="NVDA is well-positioned for AI infrastructure. Risk is AMD competition.",
+        summary="NVDA is well-positioned for AI infrastructure. Risk is AMD competition.",
         claims=claims,
         tickers_mentioned=["NVDA", "AMD"],
         sectors_mentioned=["Technology", "Semiconductors"],
         macro_themes=["AI infrastructure buildout"],
-        has_actionable_content=True,
     )
 
 
@@ -108,11 +103,9 @@ def empty_ticker_stub_agent(source_ref: SourceRef) -> Callable[[VideoPayload], S
         claim_with_empty_ticker = ClaimDraft(
             claim_id="claim_003",
             claim="General market sentiment is positive.",
-            source_context="general positive outlook",
             tier=SignalTier.LOW.value,
             category=ClaimCategory.SENTIMENT.value,
             tickers_affected=[""],
-            requires_validation=False,
             cited_sources=[],
         )
         return _make_draft(source_ref, [claim_with_empty_ticker])
@@ -131,6 +124,7 @@ def test_video_adapter_process_returns_signal_set(
     assert isinstance(result, SignalSet)
     assert result.source_ref.source_id == "yt_test_001"
     assert result.slug == "2026-06-18_14-30-00"
+    assert result.summary == "NVDA is well-positioned for AI infrastructure. Risk is AMD competition."
     assert len(result.claims) > 0
 
 

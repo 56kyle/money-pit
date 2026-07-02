@@ -3,17 +3,26 @@ import shutil
 from pathlib import Path
 from typing import TypeVar
 
-from pydantic import BaseModel, TypeAdapter
+import pytest
+from pydantic import BaseModel
+from pydantic import TypeAdapter
 
-from money_pit.pipeline.orchestration import phase4_overrides, run_pipeline
+from money_pit.graph.state import PipelineState
+from money_pit.pipeline.orchestration import PipelineOverrides
+from money_pit.pipeline.orchestration import phase4_overrides
+from money_pit.pipeline.orchestration import run_pipeline
 from money_pit.schemas.action_steps import ActionStep
+from money_pit.schemas.analysis_draft import AnalysisJudgment
 from money_pit.schemas.answers import InitialAnswers
+from money_pit.schemas.determination import DeterminationReport
+from money_pit.schemas.enums import Determination
 from money_pit.schemas.enums import TerminalState
 from money_pit.schemas.journal import ExecutionJournal
 from money_pit.schemas.portfolio import PortfolioSnapshot
 from money_pit.schemas.questions import InitialQuestions
 from money_pit.schemas.signals import AggregatedSignals
 from money_pit.schemas.validation_results import ActionStepsValidation
+
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
@@ -26,7 +35,9 @@ _EXECUTE_PATH_STEPS: list[str] = [
     "retrieval",
     "analysis",
     "validator",
+    "determination",
     "execution",
+    "finalizer",
 ]
 
 _action_steps_adapter: TypeAdapter[list[ActionStep]] = TypeAdapter(list[ActionStep])
@@ -86,3 +97,138 @@ def test_paper_trade_no_action_path(tmp_path: Path) -> None:
     # Portfolio snapshot and aggregated signals are still written (run up to signal_gate)
     assert (run_dir / "portfolio_snapshot.json").exists()
     assert (run_dir / "aggregated_signals.json").exists()
+
+
+@pytest.fixture(scope="module")
+def execute_run(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, PipelineState]:
+    run_dir = tmp_path_factory.mktemp("execute_determination")
+    final_state = run_pipeline(signals_dir=_SIGNALS_DIR, run_dir=run_dir, overrides=phase4_overrides())
+    return run_dir, final_state
+
+
+def test_paper_trade_execute_path_writes_determination_proceed(
+    execute_run: tuple[Path, PipelineState],
+) -> None:
+    run_dir, _ = execute_run
+    report = _assert_file_valid(run_dir, "determination.json", DeterminationReport)
+    assert report.determination == Determination.PROCEED
+
+
+def test_paper_trade_execute_path_determination_spawns_execution(
+    execute_run: tuple[Path, PipelineState],
+) -> None:
+    run_dir, _ = execute_run
+    report = _assert_file_valid(run_dir, "determination.json", DeterminationReport)
+    assert report.sub_agent_spawned == "execution"
+
+
+def test_paper_trade_execute_path_determination_outcome_success(
+    execute_run: tuple[Path, PipelineState],
+) -> None:
+    run_dir, _ = execute_run
+    report = _assert_file_valid(run_dir, "determination.json", DeterminationReport)
+    assert report.sub_agent_outcome == "success"
+
+
+def test_paper_trade_execute_path_terminal_state_none(
+    execute_run: tuple[Path, PipelineState],
+) -> None:
+    _, final_state = execute_run
+    assert final_state.get("terminal_state") is None
+
+
+class _RecordingEmail:
+    """Injected send_email stub that records every call so a test can assert it was never invoked."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def __call__(self, subject: str, body: str) -> None:
+        self.calls.append((subject, body))
+
+
+def _empty_thesis_agent(*_args: object, **_kwargs: object) -> AnalysisJudgment:
+    """Return a judgment with no theses and no halt — drives the post-processor-empty NO_ACTION path."""
+    return AnalysisJudgment(theses=[], dropped_claims=[], macro_read=[], halt=None)
+
+
+@pytest.fixture
+def post_processor_empty_email() -> _RecordingEmail:
+    return _RecordingEmail()
+
+
+@pytest.fixture
+def post_processor_empty_run(
+    tmp_path: Path, post_processor_empty_email: _RecordingEmail
+) -> tuple[Path, PipelineState]:
+    run_dir = tmp_path / "run"
+    overrides: PipelineOverrides = phase4_overrides()
+    overrides.thesis_agent = _empty_thesis_agent
+    overrides.send_email = post_processor_empty_email
+    final_state = run_pipeline(signals_dir=_SIGNALS_DIR, run_dir=run_dir, overrides=overrides)
+    return run_dir, final_state
+
+
+def test_paper_trade_post_processor_empty_terminal_state_no_action(
+    post_processor_empty_run: tuple[Path, PipelineState],
+) -> None:
+    _, final_state = post_processor_empty_run
+    assert final_state.get("terminal_state") == TerminalState.NO_ACTION
+
+
+def test_paper_trade_post_processor_empty_sends_no_email(
+    post_processor_empty_run: tuple[Path, PipelineState],
+    post_processor_empty_email: _RecordingEmail,
+) -> None:
+    assert post_processor_empty_email.calls == []
+
+
+def test_paper_trade_post_processor_empty_writes_no_determination(
+    post_processor_empty_run: tuple[Path, PipelineState],
+) -> None:
+    run_dir, _ = post_processor_empty_run
+    assert not (run_dir / "determination.json").exists()
+
+
+@pytest.fixture(scope="module")
+def validation_error_run(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> tuple[Path, PipelineState, _RecordingEmail]:
+    run_dir = tmp_path_factory.mktemp("validation_error_determination")
+    email = _RecordingEmail()
+    overrides: PipelineOverrides = phase4_overrides()
+    overrides.manifest = {}
+    overrides.send_email = email
+    final_state = run_pipeline(signals_dir=_SIGNALS_DIR, run_dir=run_dir, overrides=overrides)
+    return run_dir, final_state, email
+
+
+def test_paper_trade_validation_error_writes_determination_halt(
+    validation_error_run: tuple[Path, PipelineState, _RecordingEmail],
+) -> None:
+    run_dir, _, _ = validation_error_run
+    report = _assert_file_valid(run_dir, "determination.json", DeterminationReport)
+    assert report.determination == Determination.HALT
+
+
+def test_paper_trade_validation_error_spawns_notification(
+    validation_error_run: tuple[Path, PipelineState, _RecordingEmail],
+) -> None:
+    run_dir, _, _ = validation_error_run
+    report = _assert_file_valid(run_dir, "determination.json", DeterminationReport)
+    assert report.sub_agent_spawned == "notification"
+
+
+def test_paper_trade_validation_error_has_failed_steps(
+    validation_error_run: tuple[Path, PipelineState, _RecordingEmail],
+) -> None:
+    run_dir, _, _ = validation_error_run
+    report = _assert_file_valid(run_dir, "determination.json", DeterminationReport)
+    assert report.failed_steps
+
+
+def test_paper_trade_validation_error_sends_email(
+    validation_error_run: tuple[Path, PipelineState, _RecordingEmail],
+) -> None:
+    _, _, email = validation_error_run
+    assert email.calls

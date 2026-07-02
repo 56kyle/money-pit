@@ -95,11 +95,8 @@ from money_pit.schemas.enums import (
             {
                 "NO_ACTION",
                 "ANALYSIS_HALT",
-                "VALIDATION_FAILED",
-                "EXECUTED_CLEAN",
-                "PARTIAL_COMPENSATED",
-                "COMPENSATION_FAILED",
-                "EXECUTION_FAILED",
+                "VALIDATION_ERROR",
+                "ORCHESTRATION_ERROR",
             },
         ),
         (Determination, {"PROCEED", "HALT"}),
@@ -110,3 +107,13 @@ def test_enum_has_all_contract_values(
 ) -> None:
     member_values: set[str] = {m.value for m in enum_cls}
     assert expected_values <= member_values
+
+
+def test_terminal_state_is_exactly_the_four_routing_members() -> None:
+    member_values: set[str] = {m.value for m in TerminalState}
+    assert member_values == {
+        "NO_ACTION",
+        "ANALYSIS_HALT",
+        "VALIDATION_ERROR",
+        "ORCHESTRATION_ERROR",
+    }

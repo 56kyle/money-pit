@@ -1,35 +1,19 @@
 """ActionType + judgment → execution_parameters with literal Alpaca MCP field names."""
-import json
 from pathlib import Path
-from typing import cast
+from typing import Literal
 
+import jsonschema
+
+from money_pit.mcp.order_schema import ALPACA_ORDER_SCHEMA_PATH, load_order_schema
 from money_pit.schemas.action_steps import ExecutionParameters
 from money_pit.schemas.enums import ActionType
 
-_SCHEMA_PATH: Path = (
-    Path(__file__).parent.parent.parent.parent / "mcp" / "alpaca_order_schema.json"
-)
-
 _BUY_SIDES: frozenset[ActionType] = frozenset({ActionType.BUY, ActionType.ADD})
 
-
-def _load_alpaca_schema() -> dict[str, object]:
-    """Load and return the pinned Alpaca order JSON schema.
-
-    Raises FileNotFoundError if the schema file has not yet been pinned from
-    the live Alpaca MCP server.
-    """
-    if not _SCHEMA_PATH.exists():
-        raise FileNotFoundError(
-            f"Alpaca order schema not yet pinned. Expected at: {_SCHEMA_PATH}."
-            + " Run the integration step to fetch it from the live Alpaca MCP server."
-        )
-    raw: object = cast(object, json.loads(_SCHEMA_PATH.read_text(encoding="utf-8")))
-    if not isinstance(raw, dict):
-        raise TypeError(
-            f"Expected JSON object in {_SCHEMA_PATH}, got {type(raw).__name__}"
-        )
-    return cast(dict[str, object], raw)
+_SIDE_BUY: Literal["buy"] = "buy"
+_SIDE_SELL: Literal["sell"] = "sell"
+_ORDER_TYPE_MARKET: Literal["market"] = "market"
+_TIME_IN_FORCE_DAY: Literal["day"] = "day"
 
 
 def build_execution_params(
@@ -38,20 +22,25 @@ def build_execution_params(
     symbol: str,
     action_type: ActionType,
     dollar_amount: float,
+    *,
+    schema_path: Path = ALPACA_ORDER_SCHEMA_PATH,
 ) -> ExecutionParameters:
-    """Build an ExecutionParameters instance for the given action step.
+    """Build an ExecutionParameters instance and validate its emitted payload against the pinned schema.
 
-    Raises FileNotFoundError if mcp/alpaca_order_schema.json has not been
-    pinned; this is intentional — it keeps CI red until the schema is locked.
+    Fails closed via load_order_schema (AlpacaOrderSchemaMissingError /
+    AlpacaOrderSchemaMalformedError) if the schema is absent or malformed, and lets
+    jsonschema.ValidationError propagate when the emitted payload violates the schema.
     """
-    _ = _load_alpaca_schema()
-    side: str = "buy" if action_type in _BUY_SIDES else "sell"
-    return ExecutionParameters(
+    schema: dict[str, object] = load_order_schema(schema_path)
+    side: Literal["buy", "sell"] = _SIDE_BUY if action_type in _BUY_SIDES else _SIDE_SELL
+    params: ExecutionParameters = ExecutionParameters(
         symbol=symbol,
         notional=dollar_amount,
         quantity=None,
         side=side,
-        type="market",
-        time_in_force="day",
+        type=_ORDER_TYPE_MARKET,
+        time_in_force=_TIME_IN_FORCE_DAY,
         client_order_id=f"{slug}:{step_id}",
     )
+    jsonschema.validate(instance=params.to_order_payload(), schema=schema)
+    return params

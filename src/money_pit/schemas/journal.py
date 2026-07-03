@@ -1,9 +1,11 @@
 """ExecutionJournalEntry, ExecutionJournal — execution_journal.json contract."""
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
+from pydantic import ConfigDict
 
-from money_pit.schemas.enums import ExecutionOutcome, ExecutionPhase
+from money_pit.schemas.enums import ExecutionOutcome
+from money_pit.schemas.enums import ExecutionPhase
 
 
 class ExecutionJournalEntry(BaseModel):

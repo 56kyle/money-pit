@@ -6,9 +6,9 @@ from money_pit.compute.aggregation import tier_max
 from money_pit.compute.aggregation import union_claims
 from money_pit.constants import AGGREGATED_SIGNALS_JSON_FILENAME
 from money_pit.constants import AGGREGATED_SIGNALS_MD_FILENAME
+from money_pit.contracts import CorroborationAgent
 from money_pit.graph.state import PipelineNode
 from money_pit.graph.state import PipelineState
-from money_pit.pipeline._types import CorroborationAgent
 from money_pit.schemas.aggregation_draft import ClaimRelations
 from money_pit.schemas.enums import ClaimRelationType
 from money_pit.schemas.signals import AggregatedSignals

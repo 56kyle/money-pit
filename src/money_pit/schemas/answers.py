@@ -1,9 +1,13 @@
 """Answer, InitialAnswers — initial_answers.json contract."""
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
+from pydantic import ConfigDict
 
-from money_pit.schemas.enums import Confidence, DataSourceToken, QuestionCategory, SignalTier
+from money_pit.schemas.enums import Confidence
+from money_pit.schemas.enums import DataSourceToken
+from money_pit.schemas.enums import QuestionCategory
+from money_pit.schemas.enums import SignalTier
 from money_pit.schemas.provenance import SourceRef
 
 

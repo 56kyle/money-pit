@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from typing import cast
 
+
 ALPACA_ORDER_SCHEMA_PATH: Path = Path(__file__).parent / "alpaca_order_schema.json"
 
 
@@ -26,7 +27,7 @@ def load_order_schema(path: Path = ALPACA_ORDER_SCHEMA_PATH) -> dict[str, object
             + " Run the integration step to fetch it from the live Alpaca MCP server."
         )
     try:
-        raw: object = cast(object, json.loads(path.read_text(encoding="utf-8")))
+        raw: object = cast("object", json.loads(path.read_text(encoding="utf-8")))
     except json.JSONDecodeError as error:
         raise AlpacaOrderSchemaMalformedError(
             f"Could not parse JSON in {path}: {error}."
@@ -35,4 +36,4 @@ def load_order_schema(path: Path = ALPACA_ORDER_SCHEMA_PATH) -> dict[str, object
         raise AlpacaOrderSchemaMalformedError(
             f"Expected JSON object in {path}, got {type(raw).__name__}."
         )
-    return cast(dict[str, object], raw)
+    return cast("dict[str, object]", raw)

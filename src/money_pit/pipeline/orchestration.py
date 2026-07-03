@@ -1,6 +1,5 @@
 """Scheduler trigger, working-dir creation, slug assignment."""
 import shutil
-from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import datetime
@@ -15,13 +14,16 @@ from money_pit.agents.research_tools import OpenEndedResearchTools
 from money_pit.agents.thesis_judgment import make_thesis_judgment_agent
 from money_pit.config import load_config
 from money_pit.constants import DAILY_SHOW_ROOT
+from money_pit.contracts import AnswerSynthesisAgent
+from money_pit.contracts import ClaimQuestionsAgent
+from money_pit.contracts import CorroborationAgent
+from money_pit.contracts import EmailSender
+from money_pit.contracts import OrderPlacer
+from money_pit.contracts import PortfolioFetcher
+from money_pit.contracts import ThesisAgent
+from money_pit.contracts import ToolManifest
 from money_pit.graph.graph import build_graph
 from money_pit.graph.state import PipelineState
-from money_pit.pipeline._types import AnswerSynthesisAgent
-from money_pit.pipeline._types import ClaimQuestionsAgent
-from money_pit.pipeline._types import CorroborationAgent
-from money_pit.pipeline._types import ThesisAgent
-from money_pit.pipeline._types import ToolManifest
 from money_pit.schemas.action_steps import ExecutionParameters
 from money_pit.schemas.aggregation_draft import ClaimRelations
 from money_pit.schemas.analysis_draft import AnalysisJudgment
@@ -60,11 +62,11 @@ class PipelineOverrides:
     claim_questions_agent: ClaimQuestionsAgent | None = field(default=None)
     answer_synthesis_agent: AnswerSynthesisAgent | None = field(default=None)
     corroboration_agent: CorroborationAgent | None = field(default=None)
-    fetch_portfolio: Callable[[str], PortfolioSnapshot] | None = field(default=None)
+    fetch_portfolio: PortfolioFetcher | None = field(default=None)
     deterministic_tools: DeterministicResearchTools | None = field(default=None)
     open_ended_tools: OpenEndedResearchTools | None = field(default=None)
-    place_order: Callable[[ExecutionParameters], str] | None = field(default=None)
-    send_email: Callable[[str, str], None] | None = field(default=None)
+    place_order: OrderPlacer | None = field(default=None)
+    send_email: EmailSender | None = field(default=None)
     manifest: ToolManifest | None = field(default=None)
 
 
@@ -285,9 +287,9 @@ def phase4_overrides() -> PipelineOverrides:
 class _CapitalCriticalDeps:
     """The three dependencies that move real capital, resolved and guaranteed non-None."""
 
-    fetch_portfolio: Callable[[str], PortfolioSnapshot]
-    place_order: Callable[[ExecutionParameters], str]
-    send_email: Callable[[str, str], None]
+    fetch_portfolio: PortfolioFetcher
+    place_order: OrderPlacer
+    send_email: EmailSender
 
 
 def _require_capital_critical_deps(overrides: PipelineOverrides) -> _CapitalCriticalDeps:
@@ -358,4 +360,4 @@ def run_pipeline(
     }
 
     result = graph.invoke(initial_state)
-    return result  # type: ignore[return-value]  # pyright: ignore[reportReturnType]
+    return result  # pyright: ignore[reportReturnType]

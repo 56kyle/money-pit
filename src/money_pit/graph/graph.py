@@ -1,6 +1,4 @@
 """StateGraph assembly: add_node / add_edge / add_conditional_edges."""
-from collections.abc import Callable
-
 from langgraph.graph import END  # pyright: ignore[reportMissingTypeStubs]
 from langgraph.graph import START  # pyright: ignore[reportMissingTypeStubs]
 from langgraph.graph import StateGraph  # pyright: ignore[reportMissingTypeStubs]
@@ -8,6 +6,14 @@ from langgraph.graph.state import CompiledStateGraph  # pyright: ignore[reportMi
 
 from money_pit.agents.research_tools import DeterministicResearchTools
 from money_pit.config import Config
+from money_pit.contracts import AnswerSynthesisAgent
+from money_pit.contracts import ClaimQuestionsAgent
+from money_pit.contracts import CorroborationAgent
+from money_pit.contracts import EmailSender
+from money_pit.contracts import OrderPlacer
+from money_pit.contracts import PortfolioFetcher
+from money_pit.contracts import ThesisAgent
+from money_pit.contracts import ToolManifest
 from money_pit.graph.edges import EXECUTE
 from money_pit.graph.edges import FINALIZE
 from money_pit.graph.edges import NO_ACTION
@@ -20,11 +26,6 @@ from money_pit.graph.edges import post_notification_router
 from money_pit.graph.edges import signal_gate
 from money_pit.graph.edges import terminal_state_router
 from money_pit.graph.state import PipelineState
-from money_pit.pipeline._types import AnswerSynthesisAgent
-from money_pit.pipeline._types import ClaimQuestionsAgent
-from money_pit.pipeline._types import CorroborationAgent
-from money_pit.pipeline._types import ThesisAgent
-from money_pit.pipeline._types import ToolManifest
 from money_pit.pipeline.aggregator import make_aggregator_node
 from money_pit.pipeline.analysis import make_analysis_node
 from money_pit.pipeline.determination import make_determination_node
@@ -35,9 +36,7 @@ from money_pit.pipeline.questions import make_questions_node
 from money_pit.pipeline.retrieval import make_retrieval_node
 from money_pit.pipeline.snapshot import make_snapshot_node
 from money_pit.pipeline.validator import make_validator_node
-from money_pit.schemas.action_steps import ExecutionParameters
 from money_pit.schemas.enums import TerminalState
-from money_pit.schemas.portfolio import PortfolioSnapshot
 
 
 def _no_action_terminal(state: PipelineState) -> PipelineState:
@@ -50,15 +49,15 @@ def _no_action_terminal(state: PipelineState) -> PipelineState:
 
 def build_graph(
     *,
-    fetch_portfolio: Callable[[str], PortfolioSnapshot],
+    fetch_portfolio: PortfolioFetcher,
     corroboration_agent: CorroborationAgent,
     claim_questions_agent: ClaimQuestionsAgent,
     answer_synthesis_agent: AnswerSynthesisAgent,
     deterministic_tools: DeterministicResearchTools,
     config: Config,
     thesis_agent: ThesisAgent,
-    place_order: Callable[[ExecutionParameters], str],
-    send_email: Callable[[str, str], None],
+    place_order: OrderPlacer,
+    send_email: EmailSender,
     manifest: ToolManifest | None = None,
 ) -> CompiledStateGraph[PipelineState]:
     """Assemble and compile the full money-pit LangGraph pipeline."""

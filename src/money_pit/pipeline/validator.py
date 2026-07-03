@@ -10,10 +10,10 @@ from money_pit.constants import ACTION_STEPS_JSON_FILENAME
 from money_pit.constants import ACTION_STEPS_VALIDATION_JSON_FILENAME
 from money_pit.constants import ACTION_STEPS_VALIDATION_MD_FILENAME
 from money_pit.constants import VALIDATION_STATUS_FILENAME
+from money_pit.contracts import ToolManifest
 from money_pit.graph.state import PipelineNode
 from money_pit.graph.state import PipelineState
 from money_pit.mcp.manifest import pinned_manifest
-from money_pit.pipeline._types import ToolManifest
 from money_pit.schemas.action_steps import ActionStep
 from money_pit.schemas.enums import ValidationStatus
 from money_pit.schemas.validation_results import ActionStepsValidation

@@ -4,9 +4,11 @@ from typing import Literal
 
 import jsonschema
 
-from money_pit.mcp.order_schema import ALPACA_ORDER_SCHEMA_PATH, load_order_schema
+from money_pit.mcp.order_schema import ALPACA_ORDER_SCHEMA_PATH
+from money_pit.mcp.order_schema import load_order_schema
 from money_pit.schemas.action_steps import ExecutionParameters
 from money_pit.schemas.enums import ActionType
+
 
 _BUY_SIDES: frozenset[ActionType] = frozenset({ActionType.BUY, ActionType.ADD})
 

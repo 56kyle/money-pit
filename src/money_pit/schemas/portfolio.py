@@ -1,7 +1,8 @@
 """Position, CorrelatedOverlap, PortfolioSnapshot — portfolio_snapshot.json contract."""
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
+from pydantic import ConfigDict
 
 from money_pit.schemas.enums import FactorTag
 

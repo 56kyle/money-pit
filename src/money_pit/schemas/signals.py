@@ -1,9 +1,12 @@
 """Claim, SignalSet, CorroborationEntry, AggregatedSignals — post-conversion contracts."""
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
+from pydantic import ConfigDict
 
-from money_pit.schemas.enums import ClaimCategory, ClaimRelationType, SignalTier
+from money_pit.schemas.enums import ClaimCategory
+from money_pit.schemas.enums import ClaimRelationType
+from money_pit.schemas.enums import SignalTier
 from money_pit.schemas.provenance import SourceRef
 
 

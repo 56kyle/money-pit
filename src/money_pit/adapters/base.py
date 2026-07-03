@@ -1,8 +1,11 @@
 """Module containing the SourceAdapter ABC used throughout the money_pit package."""
-from abc import ABC, abstractmethod
-from typing import Generic, TypeVar
+from abc import ABC
+from abc import abstractmethod
+from typing import Generic
+from typing import TypeVar
 
 from money_pit.schemas.signals import SignalSet
+
 
 Payload = TypeVar("Payload")
 

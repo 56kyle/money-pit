@@ -1,16 +1,18 @@
 """A3 LLM core: open-ended Brave/EDGAR lookups + answer synthesis."""
 import json
 from pathlib import Path
-from typing import Callable
 
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent
+from pydantic_ai import RunContext
 
 from money_pit.agents.research_tools import OpenEndedResearchTools
 from money_pit.config import Config
+from money_pit.contracts import AnswerSynthesisAgent
 from money_pit.schemas.answer_draft import AnswerDraft
 from money_pit.schemas.enums import QuestionCategory
 from money_pit.schemas.provenance import SourceRef
 from money_pit.schemas.questions import Question
+
 
 _PROMPT_PATH: Path = Path(__file__).parent.parent.parent.parent / "data" / "agents" / "agent_3.md"
 _SYSTEM_PROMPT: str = _PROMPT_PATH.read_text(encoding="utf-8")
@@ -27,7 +29,7 @@ def make_answer_synthesis_agent(
     config: Config,
     *,
     model: str | None = None,
-) -> Callable[[list[Question], list[SourceRef]], list[AnswerDraft]]:
+) -> AnswerSynthesisAgent:
     """Build and return the A3 answer synthesis callable backed by a pydantic-ai Agent.
 
     The returned callable accepts only open-ended question categories and raises on

@@ -3,11 +3,11 @@ import datetime
 from pathlib import Path
 
 from platformdirs import user_config_path
-from platformdirs import user_state_path
 from platformdirs import user_log_path
+from platformdirs import user_state_path
 
 
-_FILE_SAFE_DATETIME_FORMAT: str = "%Y-%m-%d_%H-%M-%S"
+FILE_SAFE_DATETIME_FORMAT: str = "%Y-%m-%d_%H-%M-%S"
 
 APP_NAME: str = "money_pit"
 APP_AUTHOR: str = "56kyle"

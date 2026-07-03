@@ -1,7 +1,8 @@
 """MacroIndicators — five-indicator snapshot assembled by the A4 post-processor for regime classification."""
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
+from pydantic import ConfigDict
 
 
 class MacroIndicators(BaseModel):

@@ -1,5 +1,7 @@
 """Confidence derivation from sources_used (primary/secondary/Brave rule)."""
-from money_pit.schemas.enums import Confidence, DataSourceToken
+from money_pit.schemas.enums import Confidence
+from money_pit.schemas.enums import DataSourceToken
+
 
 _PRIMARY: frozenset[DataSourceToken] = frozenset({
     DataSourceToken.FRED_MCP,

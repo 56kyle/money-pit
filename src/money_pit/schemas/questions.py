@@ -1,9 +1,13 @@
 """Question, SignalSummary, InitialQuestions — initial_questions.json contract."""
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
+from pydantic import ConfigDict
 
-from money_pit.schemas.enums import DataSourceToken, QuestionCategory, SignalTier
+from money_pit.schemas.enums import DataSourceToken
+from money_pit.schemas.enums import QuestionCategory
+from money_pit.schemas.enums import SignalTier
+
 
 INDICATOR_PREFIX: str = "indicator:"
 

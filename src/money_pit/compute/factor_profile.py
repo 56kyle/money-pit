@@ -5,7 +5,7 @@ from money_pit.schemas.portfolio import Position
 
 def aggregate_factor_profile(positions: list[Position]) -> dict[FactorTag, float]:
     total_value = sum(p.current_value for p in positions)
-    result: dict[FactorTag, float] = {t: 0.0 for t in FactorTag}
+    result: dict[FactorTag, float] = dict.fromkeys(FactorTag, 0.0)
     if total_value == 0.0:
         return result
     for pos in positions:

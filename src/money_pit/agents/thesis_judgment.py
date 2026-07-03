@@ -1,10 +1,10 @@
 """A4 LLM core: claim disposition, thesis narratives, scenario estimates, invalidation conditions → AnalysisJudgment."""
-from collections.abc import Callable
 from pathlib import Path
 
 from pydantic_ai import Agent
 
 from money_pit.config import Config
+from money_pit.contracts import ThesisAgent
 from money_pit.schemas.analysis_draft import AnalysisJudgment
 from money_pit.schemas.answers import InitialAnswers
 from money_pit.schemas.portfolio import PortfolioSnapshot
@@ -19,7 +19,7 @@ def make_thesis_judgment_agent(
     config: Config,
     *,
     model: str | None = None,
-) -> Callable[[AggregatedSignals, PortfolioSnapshot, InitialAnswers], AnalysisJudgment]:
+) -> ThesisAgent:
     """Return a callable that runs the A4 thesis judgment agent against the three pipeline inputs."""
     resolved_model: str = f"anthropic:{model or config.llm_model}"
     agent: Agent[None, AnalysisJudgment] = Agent(

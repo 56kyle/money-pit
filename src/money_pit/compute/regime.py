@@ -3,6 +3,7 @@ from money_pit.config import Config
 from money_pit.schemas.enums import RegimeTag
 from money_pit.schemas.macro import MacroIndicators
 
+
 _HIGHER_IS_BETTER: int = 1
 _LOWER_IS_BETTER: int = -1
 

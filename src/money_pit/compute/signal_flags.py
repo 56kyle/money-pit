@@ -22,7 +22,7 @@ def normalize_ticker(raw: str) -> str | None:
 
 
 def count_by_tier(claims: list[Claim]) -> dict[SignalTier, int]:
-    counts: dict[SignalTier, int] = {t: 0 for t in SignalTier}
+    counts: dict[SignalTier, int] = dict.fromkeys(SignalTier, 0)
     for claim in claims:
         counts[claim.tier] += 1
     return counts

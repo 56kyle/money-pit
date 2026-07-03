@@ -1,6 +1,9 @@
 """Claim union, tier max across corroborations, run-level actionability flag."""
 from money_pit.schemas.enums import SignalTier
-from money_pit.schemas.signals import Claim, CorroborationEntry, SignalSet
+from money_pit.schemas.signals import Claim
+from money_pit.schemas.signals import CorroborationEntry
+from money_pit.schemas.signals import SignalSet
+
 
 _TIER_ORDER: dict[SignalTier, int] = {
     SignalTier.HIGH: 3,

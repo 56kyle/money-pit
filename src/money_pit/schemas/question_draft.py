@@ -1,7 +1,8 @@
 """DraftQuestion — A2 LLM output: claim-specific thesis_validation and invalidation_conditions questions only."""
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
+from pydantic import ConfigDict
 
 from money_pit.schemas.enums import QuestionCategory
 

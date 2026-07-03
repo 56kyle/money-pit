@@ -1,9 +1,13 @@
 """AnalysisJudgment container — the §6.5 A4 judgment output consumed by pipeline/analysis.py."""
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel
+from pydantic import ConfigDict
+from pydantic import Field
 
-from money_pit.schemas.enums import ActionType, ConvictionLevel, Step1Disposition
+from money_pit.schemas.enums import ActionType
+from money_pit.schemas.enums import ConvictionLevel
+from money_pit.schemas.enums import Step1Disposition
 
 
 class Scenario(BaseModel):

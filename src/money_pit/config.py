@@ -42,11 +42,11 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> Config:
     alpaca_service: str | None = os.environ.get("MONEY_PIT__ALPACA_SERVICE", None)
 
     if alpaca_service is None:
-        raise ValueError(f"Failed to get alpaca_service from environment variable MONEY_PIT__ALPACA_SERVICE.")
+        raise ValueError("Failed to get alpaca_service from environment variable MONEY_PIT__ALPACA_SERVICE.")
 
     alpaca_username: str | None = os.environ.get("MONEY_PIT__ALPACA_USERNAME", None)
     if alpaca_username is None:
-        raise ValueError(f"Failed to get alpaca_username from environment variable MONEY_PIT__ALPACA_USERNAME.")
+        raise ValueError("Failed to get alpaca_username from environment variable MONEY_PIT__ALPACA_USERNAME.")
 
     return Config(
         alpaca_service=alpaca_service,

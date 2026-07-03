@@ -1,5 +1,6 @@
 """A2 node: template emission, ID assignment, routing-table data_sources, file writes."""
-from datetime import datetime, timezone
+from datetime import datetime
+from datetime import timezone
 from pathlib import Path
 
 from loguru import logger
@@ -10,14 +11,20 @@ from money_pit.constants import AGGREGATED_SIGNALS_JSON_FILENAME
 from money_pit.constants import INITIAL_QUESTIONS_JSON_FILENAME
 from money_pit.constants import INITIAL_QUESTIONS_MD_FILENAME
 from money_pit.constants import PORTFOLIO_SNAPSHOT_FILENAME
+from money_pit.contracts import ClaimQuestionsAgent
 from money_pit.graph.state import PipelineNode
 from money_pit.graph.state import PipelineState
-from money_pit.pipeline._types import ClaimQuestionsAgent
-from money_pit.schemas.enums import QuestionCategory, SignalTier
-from money_pit.schemas.question_draft import DraftQuestion
-from money_pit.schemas.questions import INDICATOR_PREFIX, InitialQuestions, Question, SignalSummary
-from money_pit.schemas.signals import AggregatedSignals, Claim
+from money_pit.schemas.enums import QuestionCategory
+from money_pit.schemas.enums import SignalTier
 from money_pit.schemas.portfolio import PortfolioSnapshot
+from money_pit.schemas.question_draft import DraftQuestion
+from money_pit.schemas.questions import INDICATOR_PREFIX
+from money_pit.schemas.questions import InitialQuestions
+from money_pit.schemas.questions import Question
+from money_pit.schemas.questions import SignalSummary
+from money_pit.schemas.signals import AggregatedSignals
+from money_pit.schemas.signals import Claim
+
 
 _CLAIM_SUMMARY_MAX_LEN: int = 80
 
@@ -195,8 +202,13 @@ def make_questions_node(
     """Return a LangGraph node that generates initial research questions."""
 
     def questions_node(state: PipelineState) -> PipelineState:
-        slug: str = state["slug"]  # pyright: ignore[reportTypedDictNotRequiredAccess]
-        working_dir: Path = Path(state["working_dir"])  # pyright: ignore[reportTypedDictNotRequiredAccess]
+        slug: str | None = state.get("slug")
+        if slug is None:
+            raise ValueError("PipelineState missing required key 'slug'")
+        working_dir_str: str | None = state.get("working_dir")
+        if working_dir_str is None:
+            raise ValueError("PipelineState missing required key 'working_dir'")
+        working_dir: Path = Path(working_dir_str)
 
         aggregated_signals: AggregatedSignals = AggregatedSignals.model_validate_json(
             (working_dir / AGGREGATED_SIGNALS_JSON_FILENAME).read_text(encoding="utf-8")

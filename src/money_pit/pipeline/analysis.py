@@ -16,9 +16,9 @@ from money_pit.constants import ANALYSIS_JUDGMENT_JSON_FILENAME
 from money_pit.constants import ANALYSIS_MD_FILENAME
 from money_pit.constants import INITIAL_ANSWERS_JSON_FILENAME
 from money_pit.constants import PORTFOLIO_SNAPSHOT_FILENAME
+from money_pit.contracts import ThesisAgent
 from money_pit.graph.state import PipelineNode
 from money_pit.graph.state import PipelineState
-from money_pit.pipeline._types import ThesisAgent
 from money_pit.schemas import ExecutionParameters
 from money_pit.schemas.action_steps import ActionStep
 from money_pit.schemas.analysis_draft import AnalysisHalt

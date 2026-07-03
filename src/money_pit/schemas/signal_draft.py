@@ -1,7 +1,8 @@
 """SignalSetDraft — raw A1 LLM output before ticker normalization, date parsing, and schema validation."""
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
+from pydantic import ConfigDict
 
 
 class ClaimDraft(BaseModel):

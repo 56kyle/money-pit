@@ -1,7 +1,8 @@
 """ClaimRelations — aggregator thin LLM output: confirmed agree/disagree labels on pre-clustered claim groups."""
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
+from pydantic import ConfigDict
 
 
 class ClaimRelations(BaseModel):

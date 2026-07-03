@@ -28,4 +28,4 @@ def pinned_manifest(
         raise ManifestUnavailableError(
             f"Pinned tool manifest unavailable: {err}"
         ) from err
-    return {tool: schema for tool in set(ACTION_TYPE_TO_TOOL.values())}
+    return dict.fromkeys(set(ACTION_TYPE_TO_TOOL.values()), schema)

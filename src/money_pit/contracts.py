@@ -1,8 +1,13 @@
-"""Module containing the injected-dependency type aliases used across the money_pit pipeline."""
+"""Neutral home for the cross-layer dependency and contract aliases shared by the agents, pipeline, and graph layers.
+
+Depends only on money_pit.schemas so it stays a cycle-free leaf importable by every layer
+that produces or consumes these callables.
+"""
 from collections.abc import Callable
 from collections.abc import Mapping
 from typing import TypeAlias
 
+from money_pit.schemas.action_steps import ExecutionParameters
 from money_pit.schemas.aggregation_draft import ClaimRelations
 from money_pit.schemas.analysis_draft import AnalysisJudgment
 from money_pit.schemas.answer_draft import AnswerDraft
@@ -20,3 +25,6 @@ CorroborationAgent: TypeAlias = Callable[[list[Claim]], ClaimRelations]
 ClaimQuestionsAgent: TypeAlias = Callable[[list[Claim]], list[DraftQuestion]]
 AnswerSynthesisAgent: TypeAlias = Callable[[list[Question], list[SourceRef]], list[AnswerDraft]]
 ThesisAgent: TypeAlias = Callable[[AggregatedSignals, PortfolioSnapshot, InitialAnswers], AnalysisJudgment]
+PortfolioFetcher: TypeAlias = Callable[[str], PortfolioSnapshot]
+OrderPlacer: TypeAlias = Callable[[ExecutionParameters], str]
+EmailSender: TypeAlias = Callable[[str, str], None]

@@ -1,9 +1,8 @@
 """Tests for money_pit.pipeline.retrieval."""
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from loguru import logger
 from pytest import FixtureRequest
 
 from money_pit.agents.research_tools import DeterministicResearchTools
@@ -342,16 +341,6 @@ def answer_synthesis_agent(
         return answer_synthesis_agent__drafts
 
     return _agent
-
-
-@pytest.fixture
-def loguru_warnings() -> Iterator[list[str]]:
-    captured: list[str] = []
-    sink_id = logger.add(captured.append, level="WARNING", format="{message}")
-    try:
-        yield captured
-    finally:
-        logger.remove(sink_id)
 
 
 @pytest.mark.parametrize(

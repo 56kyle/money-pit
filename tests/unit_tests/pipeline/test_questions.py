@@ -10,11 +10,10 @@ Pins the draft→node→contract pattern for A2:
 - make_questions_node runs each DraftQuestion through the helper (dropping None)
   before merging with the templated questions and writing initial_questions.json.
 """
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from loguru import logger
 from pytest import FixtureRequest
 
 from money_pit.compute.routing import CATEGORY_TO_TOOLS
@@ -204,16 +203,6 @@ def raising_claim_questions_agent() -> Callable[[list[Claim]], list[DraftQuestio
         raise RuntimeError("claim_questions_agent boom")
 
     return _agent
-
-
-@pytest.fixture
-def loguru_warnings() -> Iterator[list[str]]:
-    captured: list[str] = []
-    sink_id = logger.add(captured.append, level="WARNING", format="{message}")
-    try:
-        yield captured
-    finally:
-        logger.remove(sink_id)
 
 
 def test_make_questions_node_with_failing_agent_warns(

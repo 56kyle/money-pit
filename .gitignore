@@ -77,5 +77,6 @@ node_modules/
 body.md
 
 tests/config/
+tests/results/
 
 .claude/

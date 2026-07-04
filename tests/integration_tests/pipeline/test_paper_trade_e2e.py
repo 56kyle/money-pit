@@ -26,7 +26,7 @@ from money_pit.schemas.validation_results import ActionStepsValidation
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
-_SIGNALS_DIR: Path = Path(__file__).parent / "fixtures" / "signals"
+_SIGNALS_DIR: Path = Path(__file__).parents[2] / "data" / "pipeline" / "signals"
 
 _EXECUTE_PATH_STEPS: list[str] = [
     "snapshot",
@@ -82,7 +82,7 @@ def test_paper_trade_execute_path(tmp_path: Path) -> None:
 
 def test_paper_trade_no_action_path(tmp_path: Path) -> None:
     """Pipeline sets NO_ACTION terminal state when signals are not actionable."""
-    no_action_signals = Path(__file__).parent / "fixtures" / "signals" / "no_action_signal.json"
+    no_action_signals = _SIGNALS_DIR / "no_action_signal.json"
     signals_dir = tmp_path / "signals_in"
     signals_dir.mkdir()
     _ = shutil.copy2(no_action_signals, signals_dir / "no_action_signal.json")

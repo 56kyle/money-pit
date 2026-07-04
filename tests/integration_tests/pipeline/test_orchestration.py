@@ -8,7 +8,7 @@ from money_pit.pipeline.orchestration import phase4_overrides
 from money_pit.pipeline.orchestration import run_pipeline
 
 
-_SIGNALS_DIR: Path = Path(__file__).parent / "fixtures" / "signals"
+_SIGNALS_DIR: Path = Path(__file__).parents[2] / "data" / "pipeline" / "signals"
 
 _CAPITAL_CRITICAL_DEPS: list[str] = ["fetch_portfolio", "place_order", "send_email"]
 

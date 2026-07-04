@@ -14,6 +14,9 @@ from money_pit.constants import VALIDATION_STATUS_FILENAME
 from money_pit.contracts import ToolManifest
 from money_pit.graph.state import PipelineNode
 from money_pit.graph.state import PipelineState
+from money_pit.graph.state import require_slug
+from money_pit.graph.state import require_working_dir
+from money_pit.graph.state import with_completed_step
 from money_pit.mcp.manifest import pinned_manifest
 from money_pit.schemas.action_steps import ActionStep
 from money_pit.schemas.enums import ValidationStatus
@@ -120,6 +123,39 @@ def _render_markdown(slug: str, validation: ActionStepsValidation) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _overall_status(validation_steps: list[ValidationStep]) -> str:
+    """Return "validated" when no steps are UNMATCHED, otherwise "validation_failed"."""
+    return (
+        "validated"
+        if not any(vs.status == ValidationStatus.UNMATCHED for vs in validation_steps)
+        else "validation_failed"
+    )
+
+
+def _write_validation_artifacts(
+    working_dir: Path,
+    slug: str,
+    validation: ActionStepsValidation,
+) -> None:
+    """Write the validation JSON, markdown summary, and status report to the working directory."""
+    _ = (working_dir / ACTION_STEPS_VALIDATION_JSON_FILENAME).write_text(
+        validation.model_dump_json(indent=2), encoding="utf-8"
+    )
+    _ = (working_dir / ACTION_STEPS_VALIDATION_MD_FILENAME).write_text(
+        _render_markdown(slug, validation), encoding="utf-8"
+    )
+    unmatched_ids: list[str] = [s.step_id for s in validation.steps if s.status == ValidationStatus.UNMATCHED]
+    status_report: ValidationStatusReport = ValidationStatusReport(
+        status=validation.overall_status,
+        validation_performed=True,
+        unmatched_steps=unmatched_ids,
+        error=None,
+    )
+    _ = (working_dir / VALIDATION_STATUS_FILENAME).write_text(
+        status_report.model_dump_json(indent=2), encoding="utf-8"
+    )
+
+
 def make_validator_node(
     manifest: ToolManifest | None = None,
 ) -> PipelineNode:
@@ -131,47 +167,25 @@ def make_validator_node(
     resolved_manifest: ToolManifest = manifest if manifest is not None else pinned_manifest()
 
     def validator_node(state: PipelineState) -> PipelineState:
-        working_dir_raw: str | None = state.get("working_dir")
-        if working_dir_raw is None:
-            raise ValueError("PipelineState missing required key 'working_dir'")
-        slug: str | None = state.get("slug")
-        if slug is None:
-            raise ValueError("PipelineState missing required key 'slug'")
-        working_dir: Path = Path(working_dir_raw)
+        working_dir: Path = require_working_dir(state)
+        slug: str = require_slug(state)
 
         steps: list[ActionStep] = _action_steps_adapter.validate_json(
             (working_dir / ACTION_STEPS_JSON_FILENAME).read_text(encoding="utf-8")
         )
 
         validation_steps: list[ValidationStep] = [_validate_step(step, slug, resolved_manifest) for step in steps]
-
-        unmatched_ids: list[str] = [vs.step_id for vs in validation_steps if vs.status == ValidationStatus.UNMATCHED]
-        overall_status: str = "validated" if not unmatched_ids else "validation_failed"
+        overall_status: str = _overall_status(validation_steps)
 
         validation: ActionStepsValidation = ActionStepsValidation(
             slug=slug,
             overall_status=overall_status,
             steps=validation_steps,
         )
-        _ = (working_dir / ACTION_STEPS_VALIDATION_JSON_FILENAME).write_text(
-            validation.model_dump_json(indent=2), encoding="utf-8"
-        )
-        _ = (working_dir / ACTION_STEPS_VALIDATION_MD_FILENAME).write_text(
-            _render_markdown(slug, validation), encoding="utf-8"
-        )
-
-        status_report: ValidationStatusReport = ValidationStatusReport(
-            status=overall_status,
-            validation_performed=True,
-            unmatched_steps=unmatched_ids,
-            error=None,
-        )
-        _ = (working_dir / VALIDATION_STATUS_FILENAME).write_text(
-            status_report.model_dump_json(indent=2), encoding="utf-8"
-        )
+        _write_validation_artifacts(working_dir, slug, validation)
 
         result: PipelineState = {
-            "completed_steps": [*(state.get("completed_steps") or []), "validator"],
+            "completed_steps": with_completed_step(state, "validator"),
             "validation_steps": validation_steps,
         }
         return result

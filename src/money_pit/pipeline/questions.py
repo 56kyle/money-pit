@@ -15,6 +15,9 @@ from money_pit.constants import PORTFOLIO_SNAPSHOT_FILENAME
 from money_pit.contracts import ClaimQuestionsAgent
 from money_pit.graph.state import PipelineNode
 from money_pit.graph.state import PipelineState
+from money_pit.graph.state import require_slug
+from money_pit.graph.state import require_working_dir
+from money_pit.graph.state import with_completed_step
 from money_pit.schemas.enums import QuestionCategory
 from money_pit.schemas.enums import SignalTier
 from money_pit.schemas.portfolio import PortfolioSnapshot
@@ -197,26 +200,72 @@ def _render_markdown(result: InitialQuestions) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _load_questions_inputs(working_dir: Path) -> tuple[AggregatedSignals, PortfolioSnapshot]:
+    """Load aggregated signals and portfolio snapshot from the working directory."""
+    aggregated_signals: AggregatedSignals = AggregatedSignals.model_validate_json(
+        (working_dir / AGGREGATED_SIGNALS_JSON_FILENAME).read_text(encoding="utf-8")
+    )
+    portfolio: PortfolioSnapshot = PortfolioSnapshot.model_validate_json(
+        (working_dir / PORTFOLIO_SNAPSHOT_FILENAME).read_text(encoding="utf-8")
+    )
+    return aggregated_signals, portfolio
+
+
+def _make_llm_questions(
+    claim_questions_agent: ClaimQuestionsAgent,
+    high_medium_claims: list[Claim],
+) -> list[Question]:
+    """Return A2 agent-authored questions, soft-failing to an empty list on agent error."""
+    try:
+        drafts: list[DraftQuestion] = claim_questions_agent(high_medium_claims)
+    except Exception:
+        logger.exception("A2 claim questions agent failed; proceeding with no LLM-authored questions")
+        drafts = []
+
+    claims_by_id: dict[str, Claim] = {c.claim_id: c for c in high_medium_claims}
+    return [
+        question
+        for question in (_draft_to_question(draft, claims_by_id) for draft in drafts)
+        if question is not None
+    ]
+
+
+def _build_signal_summary(
+    aggregated_signals: AggregatedSignals,
+    questions_generated: int,
+) -> SignalSummary:
+    """Build the signal-tier summary from claim tier counts and the total question count."""
+    tier_counts: dict[SignalTier, int] = count_by_tier(aggregated_signals.claims)
+    return SignalSummary(
+        high_signal_count=tier_counts[SignalTier.HIGH],
+        medium_signal_count=tier_counts[SignalTier.MEDIUM],
+        low_signal_count=tier_counts[SignalTier.LOW],
+        questions_generated=questions_generated,
+    )
+
+
+def _write_questions_outputs(working_dir: Path, initial_questions: InitialQuestions) -> None:
+    """Write the initial-questions JSON and markdown artifacts to the working directory."""
+    _ = (working_dir / INITIAL_QUESTIONS_JSON_FILENAME).write_text(
+        initial_questions.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+    _ = (working_dir / INITIAL_QUESTIONS_MD_FILENAME).write_text(
+        _render_markdown(initial_questions),
+        encoding="utf-8",
+    )
+
+
 def make_questions_node(
     claim_questions_agent: ClaimQuestionsAgent,
 ) -> PipelineNode:
     """Return a LangGraph node that generates initial research questions."""
 
     def questions_node(state: PipelineState) -> PipelineState:
-        slug: str | None = state.get("slug")
-        if slug is None:
-            raise ValueError("PipelineState missing required key 'slug'")
-        working_dir_str: str | None = state.get("working_dir")
-        if working_dir_str is None:
-            raise ValueError("PipelineState missing required key 'working_dir'")
-        working_dir: Path = Path(working_dir_str)
+        slug: str = require_slug(state)
+        working_dir: Path = require_working_dir(state)
 
-        aggregated_signals: AggregatedSignals = AggregatedSignals.model_validate_json(
-            (working_dir / AGGREGATED_SIGNALS_JSON_FILENAME).read_text(encoding="utf-8")
-        )
-        portfolio: PortfolioSnapshot = PortfolioSnapshot.model_validate_json(
-            (working_dir / PORTFOLIO_SNAPSHOT_FILENAME).read_text(encoding="utf-8")
-        )
+        aggregated_signals, portfolio = _load_questions_inputs(working_dir)
 
         high_medium_claims: list[Claim] = [
             c for c in aggregated_signals.claims if c.tier in (SignalTier.HIGH, SignalTier.MEDIUM)
@@ -225,28 +274,11 @@ def make_questions_node(
         macro_qs: list[Question] = _make_macro_questions()
         current_events_qs: list[Question] = _make_current_events_questions(high_medium_claims)
         portfolio_gap_qs: list[Question] = _make_portfolio_gap_questions(high_medium_claims, portfolio)
-        try:
-            drafts: list[DraftQuestion] = claim_questions_agent(high_medium_claims)
-        except Exception:
-            logger.exception("A2 claim questions agent failed; proceeding with no LLM-authored questions")
-            drafts = []
-
-        claims_by_id: dict[str, Claim] = {c.claim_id: c for c in high_medium_claims}
-        llm_qs: list[Question] = [
-            question
-            for question in (_draft_to_question(draft, claims_by_id) for draft in drafts)
-            if question is not None
-        ]
+        llm_qs: list[Question] = _make_llm_questions(claim_questions_agent, high_medium_claims)
 
         all_questions: list[Question] = _assign_ids(macro_qs + current_events_qs + portfolio_gap_qs + llm_qs)
 
-        tier_counts: dict[SignalTier, int] = count_by_tier(aggregated_signals.claims)
-        signal_summary: SignalSummary = SignalSummary(
-            high_signal_count=tier_counts[SignalTier.HIGH],
-            medium_signal_count=tier_counts[SignalTier.MEDIUM],
-            low_signal_count=tier_counts[SignalTier.LOW],
-            questions_generated=len(all_questions),
-        )
+        signal_summary: SignalSummary = _build_signal_summary(aggregated_signals, len(all_questions))
 
         generated_at: str = datetime.now(timezone.utc).isoformat()
         initial_questions: InitialQuestions = InitialQuestions(
@@ -257,17 +289,8 @@ def make_questions_node(
             error=None,
         )
 
-        _ = (working_dir / INITIAL_QUESTIONS_JSON_FILENAME).write_text(
-            initial_questions.model_dump_json(indent=2),
-            encoding="utf-8",
-        )
-        _ = (working_dir / INITIAL_QUESTIONS_MD_FILENAME).write_text(
-            _render_markdown(initial_questions),
-            encoding="utf-8",
-        )
+        _write_questions_outputs(working_dir, initial_questions)
 
-        prior_steps: list[str] = list(state.get("completed_steps") or [])
-        result: PipelineState = {"completed_steps": prior_steps + ["questions"]}
-        return result
+        return {"completed_steps": with_completed_step(state, "questions")}
 
     return questions_node

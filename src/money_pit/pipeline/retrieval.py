@@ -13,6 +13,9 @@ from money_pit.constants import INITIAL_QUESTIONS_JSON_FILENAME
 from money_pit.contracts import AnswerSynthesisAgent
 from money_pit.graph.state import PipelineNode
 from money_pit.graph.state import PipelineState
+from money_pit.graph.state import require_slug
+from money_pit.graph.state import require_working_dir
+from money_pit.graph.state import with_completed_step
 from money_pit.schemas.answer_draft import AnswerDraft
 from money_pit.schemas.answers import Answer
 from money_pit.schemas.answers import InitialAnswers
@@ -131,6 +134,71 @@ def _deterministic_answer(question: Question, data_retrieved: dict[str, object] 
     )
 
 
+def _load_retrieval_inputs(working_dir: Path) -> tuple[InitialQuestions, AggregatedSignals]:
+    """Load the A2 questions and aggregated signals for a retrieval run."""
+    initial_questions = InitialQuestions.model_validate_json(
+        (working_dir / INITIAL_QUESTIONS_JSON_FILENAME).read_text(encoding="utf-8")
+    )
+    aggregated_signals = AggregatedSignals.model_validate_json(
+        (working_dir / AGGREGATED_SIGNALS_JSON_FILENAME).read_text(encoding="utf-8")
+    )
+    return initial_questions, aggregated_signals
+
+
+def _answer_deterministic(
+    deterministic_questions: list[Question],
+    deterministic_tools: DeterministicResearchTools,
+) -> list[Answer]:
+    """Fetch and answer the deterministic questions via code-owned research tools."""
+    deterministic_pairs: list[tuple[Question, dict[str, object] | None]] = [
+        (q, _fetch_deterministic(q, deterministic_tools)) for q in deterministic_questions
+    ]
+    return [_deterministic_answer(q, data_retrieved) for q, data_retrieved in deterministic_pairs]
+
+
+def _answer_open_ended(
+    answer_synthesis_agent: AnswerSynthesisAgent,
+    open_ended_questions: list[Question],
+    sources: list[SourceRef],
+) -> list[Answer]:
+    """Synthesize open-ended answers via the A3 agent, soft-failing to an empty list."""
+    question_by_id: dict[str, Question] = {q.id: q for q in open_ended_questions}
+    try:
+        drafts: list[AnswerDraft] = answer_synthesis_agent(open_ended_questions, sources)
+    except Exception:
+        logger.exception("A3 answer synthesis agent failed; proceeding with no open-ended answers")
+        drafts = []
+
+    llm_answers: list[Answer] = []
+    for draft in drafts:
+        question = question_by_id.get(draft.question_id)
+        if question is None:
+            logger.warning(
+                "Dropping A3 draft with unmatched question_id {question_id}",
+                question_id=draft.question_id,
+            )
+            continue
+        llm_answers.append(_draft_to_answer(draft, question))
+    return llm_answers
+
+
+def _write_retrieval_outputs(
+    working_dir: Path,
+    slug: str,
+    initial_answers: InitialAnswers,
+    all_answers: list[Answer],
+) -> None:
+    """Write the initial_answers.json and initial_answers.md retrieval artifacts."""
+    _ = (working_dir / INITIAL_ANSWERS_JSON_FILENAME).write_text(
+        initial_answers.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+    _ = (working_dir / INITIAL_ANSWERS_MD_FILENAME).write_text(
+        _render_markdown(slug, all_answers),
+        encoding="utf-8",
+    )
+
+
 def make_retrieval_node(
     answer_synthesis_agent: AnswerSynthesisAgent,
     deterministic_tools: DeterministicResearchTools,
@@ -138,64 +206,25 @@ def make_retrieval_node(
     """Return a LangGraph node that answers research questions via agent retrieval."""
 
     def retrieval_node(state: PipelineState) -> PipelineState:
-        working_dir_str = state.get("working_dir")
-        slug = state.get("slug")
-        if working_dir_str is None or slug is None:
-            raise ValueError("retrieval_node requires 'working_dir' and 'slug' in state")
-        working_dir = Path(working_dir_str)
+        working_dir = require_working_dir(state)
+        slug = require_slug(state)
 
-        initial_questions = InitialQuestions.model_validate_json(
-            (working_dir / INITIAL_QUESTIONS_JSON_FILENAME).read_text(encoding="utf-8")
-        )
-        aggregated_signals = AggregatedSignals.model_validate_json(
-            (working_dir / AGGREGATED_SIGNALS_JSON_FILENAME).read_text(encoding="utf-8")
-        )
-
+        initial_questions, aggregated_signals = _load_retrieval_inputs(working_dir)
         questions: list[Question] = initial_questions.questions
         sources: list[SourceRef] = aggregated_signals.sources
 
         deterministic_questions: list[Question] = [q for q in questions if q.category in _DETERMINISTIC_CATEGORIES]
         open_ended_questions: list[Question] = [q for q in questions if q.category not in _DETERMINISTIC_CATEGORIES]
 
-        deterministic_pairs: list[tuple[Question, dict[str, object] | None]] = [
-            (q, _fetch_deterministic(q, deterministic_tools)) for q in deterministic_questions
-        ]
-
-        deterministic_answers: list[Answer] = [
-            _deterministic_answer(q, data_retrieved) for q, data_retrieved in deterministic_pairs
-        ]
-
-        question_by_id: dict[str, Question] = {q.id: q for q in open_ended_questions}
-        try:
-            drafts: list[AnswerDraft] = answer_synthesis_agent(open_ended_questions, sources)
-        except Exception:
-            logger.exception("A3 answer synthesis agent failed; proceeding with no open-ended answers")
-            drafts = []
-
-        llm_answers: list[Answer] = []
-        for draft in drafts:
-            question = question_by_id.get(draft.question_id)
-            if question is None:
-                logger.warning(
-                    "Dropping A3 draft with unmatched question_id {question_id}",
-                    question_id=draft.question_id,
-                )
-                continue
-            llm_answers.append(_draft_to_answer(draft, question))
+        deterministic_answers: list[Answer] = _answer_deterministic(deterministic_questions, deterministic_tools)
+        llm_answers: list[Answer] = _answer_open_ended(answer_synthesis_agent, open_ended_questions, sources)
 
         all_answers: list[Answer] = deterministic_answers + llm_answers
         initial_answers = InitialAnswers(slug=slug, sources=sources, answers=all_answers)
 
-        _ = (working_dir / INITIAL_ANSWERS_JSON_FILENAME).write_text(
-            initial_answers.model_dump_json(indent=2),
-            encoding="utf-8",
-        )
-        _ = (working_dir / INITIAL_ANSWERS_MD_FILENAME).write_text(
-            _render_markdown(slug, all_answers),
-            encoding="utf-8",
-        )
+        _write_retrieval_outputs(working_dir, slug, initial_answers, all_answers)
 
-        result: PipelineState = {"completed_steps": list(state.get("completed_steps") or []) + ["retrieval"]}
+        result: PipelineState = {"completed_steps": with_completed_step(state, "retrieval")}
         return result
 
     return retrieval_node

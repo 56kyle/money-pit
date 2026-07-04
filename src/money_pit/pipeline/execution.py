@@ -11,6 +11,9 @@ from money_pit.constants import ACTION_STEPS_JSON_FILENAME
 from money_pit.constants import EXECUTION_JOURNAL_FILENAME
 from money_pit.graph.state import PipelineNode
 from money_pit.graph.state import PipelineState
+from money_pit.graph.state import require_slug
+from money_pit.graph.state import require_working_dir
+from money_pit.graph.state import with_completed_step
 from money_pit.schemas.action_steps import ActionStep
 from money_pit.schemas.action_steps import ExecutionParameters
 from money_pit.schemas.enums import ExecutionOutcome
@@ -56,6 +59,45 @@ def _write_journal(
     _ = (working_dir / EXECUTION_JOURNAL_FILENAME).write_text(journal.model_dump_json(indent=2), encoding="utf-8")
 
 
+def _reject_atomic_groups(steps: list[ActionStep]) -> None:
+    """Fail closed before placing any order when a step carries a non-null group_id (ADR 0003)."""
+    if any(step.group_id is not None for step in steps):
+        raise AtomicGroupNotSupportedError(
+            "Atomic-group execution (non-null group_id) is not supported pre-Phase-7 (ADR 0003)."
+        )
+
+
+def _submit_step(
+    step: ActionStep, place_order: Callable[[ExecutionParameters], str]
+) -> ExecutionJournalEntry:
+    """Submit one independent leg, failing it closed on OrderSubmissionError and letting any other error propagate."""
+    intended: dict[str, object] = step.execution_parameters.to_order_payload()
+    phase: ExecutionPhase = ExecutionPhase.SUBMITTED
+    broker_order_id: str | None = None
+    error: str | None = None
+    try:
+        broker_order_id = place_order(step.execution_parameters)
+    except OrderSubmissionError as exc:
+        phase = ExecutionPhase.FAILED
+        broker_order_id = None
+        error = str(exc)
+    return ExecutionJournalEntry(
+        step_id=step.step_id,
+        group_id=step.group_id,
+        client_order_id=step.execution_parameters.client_order_id,
+        phase=phase,
+        intended=intended,
+        broker_order_id=broker_order_id,
+        status=None,
+        filled_qty=None,
+        filled_avg_price=None,
+        realized_notional=None,
+        compensation_of=None,
+        error=error,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+    )
+
+
 def make_execution_node(
     place_order: Callable[[ExecutionParameters], str],
 ) -> PipelineNode:
@@ -67,67 +109,23 @@ def make_execution_node(
     """
 
     def execution_node(state: PipelineState) -> PipelineState:
-        slug: str | None = state.get("slug")
-        if slug is None:
-            raise ValueError("PipelineState missing required key 'slug'")
-        working_dir_raw: str | None = state.get("working_dir")
-        if working_dir_raw is None:
-            raise ValueError("PipelineState missing required key 'working_dir'")
-        working_dir: Path = Path(working_dir_raw)
+        slug: str = require_slug(state)
+        working_dir: Path = require_working_dir(state)
 
         steps: list[ActionStep] = _action_steps_adapter.validate_json(
             (working_dir / ACTION_STEPS_JSON_FILENAME).read_text(encoding="utf-8")
         )
-
-        if any(step.group_id is not None for step in steps):
-            raise AtomicGroupNotSupportedError(
-                "Atomic-group execution (non-null group_id) is not supported pre-Phase-7 (ADR 0003)."
-            )
+        _reject_atomic_groups(steps)
 
         entries: list[ExecutionJournalEntry] = []
         for step in steps:
-            intended: dict[str, object] = step.execution_parameters.to_order_payload()
-            try:
-                broker_order_id: str = place_order(step.execution_parameters)
-            except OrderSubmissionError as exc:
-                entry: ExecutionJournalEntry = ExecutionJournalEntry(
-                    step_id=step.step_id,
-                    group_id=step.group_id,
-                    client_order_id=step.execution_parameters.client_order_id,
-                    phase=ExecutionPhase.FAILED,
-                    intended=intended,
-                    broker_order_id=None,
-                    status=None,
-                    filled_qty=None,
-                    filled_avg_price=None,
-                    realized_notional=None,
-                    compensation_of=None,
-                    error=str(exc),
-                    timestamp=datetime.now(timezone.utc).isoformat(),
-                )
-            else:
-                entry: ExecutionJournalEntry = ExecutionJournalEntry(
-                    step_id=step.step_id,
-                    group_id=step.group_id,
-                    client_order_id=step.execution_parameters.client_order_id,
-                    phase=ExecutionPhase.SUBMITTED,
-                    intended=intended,
-                    broker_order_id=broker_order_id,
-                    status=None,
-                    filled_qty=None,
-                    filled_avg_price=None,
-                    realized_notional=None,
-                    compensation_of=None,
-                    error=None,
-                    timestamp=datetime.now(timezone.utc).isoformat(),
-                )
-            entries.append(entry)
+            entries.append(_submit_step(step, place_order))
             _write_journal(working_dir, slug, entries, outcome=None)
 
         _write_journal(working_dir, slug, entries, outcome=_derive_outcome(entries))
 
         result: PipelineState = {
-            "completed_steps": list(state.get("completed_steps") or []) + ["execution"],
+            "completed_steps": with_completed_step(state, "execution"),
         }
         return result
 

@@ -19,6 +19,9 @@ from money_pit.constants import DETERMINATION_MD_FILENAME
 from money_pit.constants import EXECUTION_JOURNAL_FILENAME
 from money_pit.graph.state import PipelineNode
 from money_pit.graph.state import PipelineState
+from money_pit.graph.state import require_slug
+from money_pit.graph.state import require_working_dir
+from money_pit.graph.state import with_completed_step
 from money_pit.schemas.determination import DeterminationReport
 from money_pit.schemas.enums import Determination
 from money_pit.schemas.enums import ExecutionOutcome
@@ -89,11 +92,8 @@ def make_determination_node() -> PipelineNode:
     """Return the node that recomputes the go/no-go from the persisted validation and routes."""
 
     def determination_node(state: PipelineState) -> PipelineState:
-        working_dir_raw: str | None = state.get("working_dir")
-        if working_dir_raw is None:
-            raise ValueError("PipelineState missing required key 'working_dir'")
-        working_dir: Path = Path(working_dir_raw)
-        completed: list[str] = [*(state.get("completed_steps") or []), "determination"]
+        working_dir: Path = require_working_dir(state)
+        completed: list[str] = with_completed_step(state, "determination")
 
         try:
             validation: ActionStepsValidation = load_validation(working_dir)
@@ -167,17 +167,17 @@ def _render_report_md(report: DeterminationReport) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _write_determination_report(working_dir: Path, report: DeterminationReport) -> None:
+    _ = (working_dir / DETERMINATION_JSON_FILENAME).write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    _ = (working_dir / DETERMINATION_MD_FILENAME).write_text(_render_report_md(report), encoding="utf-8")
+
+
 def make_finalizer_node() -> PipelineNode:
     """Return the node that writes the single determination.json/.md record after the sub-agent runs."""
 
     def finalizer_node(state: PipelineState) -> PipelineState:
-        slug: str | None = state.get("slug")
-        if slug is None:
-            raise ValueError("PipelineState missing required key 'slug'")
-        working_dir_raw: str | None = state.get("working_dir")
-        if working_dir_raw is None:
-            raise ValueError("PipelineState missing required key 'working_dir'")
-        working_dir: Path = Path(working_dir_raw)
+        slug: str = require_slug(state)
+        working_dir: Path = require_working_dir(state)
 
         determination: Determination | None = state.get("determination")
         if determination is None:
@@ -194,11 +194,10 @@ def make_finalizer_node() -> PipelineNode:
             sub_agent_error=None,
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
-        _ = (working_dir / DETERMINATION_JSON_FILENAME).write_text(report.model_dump_json(indent=2), encoding="utf-8")
-        _ = (working_dir / DETERMINATION_MD_FILENAME).write_text(_render_report_md(report), encoding="utf-8")
+        _write_determination_report(working_dir, report)
 
         return {
-            "completed_steps": [*(state.get("completed_steps") or []), "finalizer"],
+            "completed_steps": with_completed_step(state, "finalizer"),
         }
 
     return finalizer_node

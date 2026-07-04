@@ -9,6 +9,9 @@ from money_pit.constants import ACTION_STEPS_JSON_FILENAME
 from money_pit.constants import ACTION_STEPS_VALIDATION_JSON_FILENAME
 from money_pit.graph.state import PipelineNode
 from money_pit.graph.state import PipelineState
+from money_pit.graph.state import require_slug
+from money_pit.graph.state import require_working_dir
+from money_pit.graph.state import with_completed_step
 from money_pit.schemas.action_steps import ActionStep
 from money_pit.schemas.enums import TerminalState
 from money_pit.schemas.enums import ValidationStatus
@@ -64,36 +67,37 @@ def _build_body(
     return "\n".join(lines)
 
 
+def _load_notification_inputs(
+    working_dir: Path,
+) -> tuple[list[ActionStep], ActionStepsValidation | None]:
+    """Load the optional action-steps and validation artifacts, defaulting each when absent."""
+    action_steps: list[ActionStep] = []
+    if (action_steps_path := working_dir / ACTION_STEPS_JSON_FILENAME).exists():
+        action_steps = _action_steps_ta.validate_json(action_steps_path.read_text(encoding="utf-8"))
+
+    validation: ActionStepsValidation | None = None
+    if (validation_path := working_dir / ACTION_STEPS_VALIDATION_JSON_FILENAME).exists():
+        validation = ActionStepsValidation.model_validate_json(validation_path.read_text(encoding="utf-8"))
+
+    return action_steps, validation
+
+
 def make_notification_node(
     send_email: Callable[[str, str], None],
 ) -> PipelineNode:
     """Return a LangGraph node that sends an email summary when execution does not proceed."""
 
     def notification_node(state: PipelineState) -> PipelineState:
-        slug: str | None = state.get("slug")
-        if slug is None:
-            raise ValueError("PipelineState missing required key 'slug'")
-        working_dir_str: str | None = state.get("working_dir")
-        if working_dir_str is None:
-            raise ValueError("PipelineState missing required key 'working_dir'")
-        working_dir: Path = Path(working_dir_str)
+        slug: str = require_slug(state)
+        working_dir: Path = require_working_dir(state)
         terminal_state: TerminalState | None = state.get("terminal_state")
 
-        action_steps: list[ActionStep] = []
-        if (action_steps_path := working_dir / ACTION_STEPS_JSON_FILENAME).exists():
-            action_steps = _action_steps_ta.validate_json(action_steps_path.read_text(encoding="utf-8"))
-
-        validation: ActionStepsValidation | None = None
-        if (validation_path := working_dir / ACTION_STEPS_VALIDATION_JSON_FILENAME).exists():
-            validation = ActionStepsValidation.model_validate_json(validation_path.read_text(encoding="utf-8"))
+        action_steps, validation = _load_notification_inputs(working_dir)
 
         subject: str = _build_subject(slug, terminal_state, validation)
         body: str = _build_body(slug, terminal_state, action_steps, validation)
         send_email(subject, body)
 
-        result: PipelineState = {
-            "completed_steps": list(state.get("completed_steps") or []) + ["notification"],
-        }
-        return result
+        return {"completed_steps": with_completed_step(state, "notification")}
 
     return notification_node

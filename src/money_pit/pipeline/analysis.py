@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from typing import NamedTuple
 from typing import Optional
 
 from loguru import logger
@@ -20,11 +21,15 @@ from money_pit.constants import PORTFOLIO_SNAPSHOT_FILENAME
 from money_pit.contracts import ThesisAgent
 from money_pit.graph.state import PipelineNode
 from money_pit.graph.state import PipelineState
+from money_pit.graph.state import require_slug
+from money_pit.graph.state import require_working_dir
+from money_pit.graph.state import with_completed_step
 from money_pit.schemas import ExecutionParameters
 from money_pit.schemas.action_steps import ActionStep
 from money_pit.schemas.analysis_draft import AnalysisHalt
 from money_pit.schemas.analysis_draft import AnalysisJudgment
 from money_pit.schemas.analysis_draft import ScenarioTable
+from money_pit.schemas.analysis_draft import ThesisJudgment
 from money_pit.schemas.answers import Answer
 from money_pit.schemas.answers import InitialAnswers
 from money_pit.schemas.enums import QuestionCategory
@@ -179,6 +184,138 @@ def _write_action_steps(working_dir: Path, slug: str, action_steps: list[ActionS
     )
 
 
+class _Headrooms(NamedTuple):
+    sector: float
+    cash: float
+    overlap: float
+
+
+def _load_analysis_inputs(
+    working_dir: Path,
+) -> tuple[AggregatedSignals, PortfolioSnapshot, InitialAnswers]:
+    aggregated_signals: AggregatedSignals = AggregatedSignals.model_validate_json(
+        (working_dir / AGGREGATED_SIGNALS_JSON_FILENAME).read_text(encoding="utf-8")
+    )
+    portfolio_snapshot: PortfolioSnapshot = PortfolioSnapshot.model_validate_json(
+        (working_dir / PORTFOLIO_SNAPSHOT_FILENAME).read_text(encoding="utf-8")
+    )
+    initial_answers: InitialAnswers = InitialAnswers.model_validate_json(
+        (working_dir / INITIAL_ANSWERS_JSON_FILENAME).read_text(encoding="utf-8")
+    )
+    return aggregated_signals, portfolio_snapshot, initial_answers
+
+
+def _run_and_persist_thesis_judgment(
+    thesis_agent: ThesisAgent,
+    aggregated_signals: AggregatedSignals,
+    portfolio_snapshot: PortfolioSnapshot,
+    initial_answers: InitialAnswers,
+    working_dir: Path,
+) -> AnalysisJudgment:
+    """Run A4 judgment, falling back to a halt container on agent failure."""
+    try:
+        container: AnalysisJudgment = thesis_agent(aggregated_signals, portfolio_snapshot, initial_answers)
+    except Exception:
+        logger.exception("A4 thesis judgment agent failed; halting analysis")
+        container = AnalysisJudgment(
+            theses=[],
+            dropped_claims=[],
+            macro_read=[],
+            halt=AnalysisHalt(reason=_AGENT_EXCEPTION_HALT_REASON),
+        )
+    _ = (working_dir / ANALYSIS_JUDGMENT_JSON_FILENAME).write_text(
+        json.dumps(container.model_dump(mode="json"), indent=2),
+        encoding="utf-8",
+    )
+    return container
+
+
+def _compute_headrooms(config: Config, portfolio_snapshot: PortfolioSnapshot) -> _Headrooms:
+    return _Headrooms(
+        sector=config.sector_cap * portfolio_snapshot.total_account_value,
+        cash=max(
+            0.0,
+            portfolio_snapshot.available_cash - config.cash_min * portfolio_snapshot.total_account_value,
+        ),
+        overlap=config.overlap_limit * portfolio_snapshot.total_account_value,
+    )
+
+
+def _build_action_step(
+    step_id: str,
+    thesis: ThesisJudgment,
+    regime_tag: RegimeTag,
+    execution_parameters: ExecutionParameters,
+) -> ActionStep:
+    return ActionStep(
+        step_id=step_id,
+        instrument=thesis.instrument,
+        action_type=thesis.action_type,
+        description=thesis.description,
+        group_id=thesis.group_id,
+        execution_parameters=execution_parameters,
+        one_sentence_thesis=thesis.one_sentence_thesis,
+        regime_tag=regime_tag,
+        expected_value=thesis.expected_value,
+        scenario_table=thesis.scenario_table,
+        invalidation_conditions=thesis.invalidation_conditions,
+        sizing_rationale=thesis.sizing_rationale,
+        conviction=thesis.conviction,
+    )
+
+
+def _materialize_action_steps(
+    container: AnalysisJudgment,
+    config: Config,
+    portfolio_snapshot: PortfolioSnapshot,
+    regime_tag: RegimeTag,
+    slug: str,
+) -> list[ActionStep]:
+    """Size each surviving thesis into an ActionStep, dropping any the sizer declines."""
+    regime_uncertain: bool = regime_tag == RegimeTag.UNCERTAIN
+    headrooms: _Headrooms = _compute_headrooms(config, portfolio_snapshot)
+
+    action_steps: list[ActionStep] = []
+    for i, thesis in enumerate(container.theses):
+        verified: bool = thesis.disposition == Step1Disposition.SUPPORTED
+        scenarios: list[tuple[float, float]] = _to_scenario_list(thesis.scenario_table)
+        dollar_amount: Optional[float] = size_position(
+            scenarios,
+            portfolio_snapshot.total_account_value,
+            config,
+            verified,
+            regime_uncertain,
+            headrooms.sector,
+            headrooms.cash,
+            headrooms.overlap,
+        )
+        if dollar_amount is None:
+            continue
+
+        step_id: str = f"A{i + 1:03d}"
+        execution_parameters: ExecutionParameters = build_execution_params(
+            step_id, slug, thesis.instrument, thesis.action_type, dollar_amount
+        )
+        action_steps.append(_build_action_step(step_id, thesis, regime_tag, execution_parameters))
+
+    return action_steps
+
+
+def _persist_analysis_outputs(
+    working_dir: Path,
+    slug: str,
+    container: AnalysisJudgment,
+    regime_tag: RegimeTag,
+    action_steps: list[ActionStep],
+) -> None:
+    """Write action_steps.json/.md and analysis.md for both the halt and normal paths."""
+    _write_action_steps(working_dir, slug, action_steps)
+    _ = (working_dir / ANALYSIS_MD_FILENAME).write_text(
+        _render_analysis_md(slug, container, regime_tag, action_steps),
+        encoding="utf-8",
+    )
+
+
 def make_analysis_node(
     config: Config,
     thesis_agent: ThesisAgent,
@@ -186,118 +323,37 @@ def make_analysis_node(
     """Return a LangGraph node that runs A4 judgment and the deterministic post-processor."""
 
     def analysis_node(state: PipelineState) -> PipelineState:
-        working_dir_str = state.get("working_dir")
-        if working_dir_str is None:
-            raise ValueError("PipelineState missing required key 'working_dir'")
-        slug: Optional[str] = state.get("slug")
-        if slug is None:
-            raise ValueError("PipelineState missing required key 'slug'")
-        working_dir: Path = Path(working_dir_str)
+        working_dir: Path = require_working_dir(state)
+        slug: str = require_slug(state)
 
-        aggregated_signals: AggregatedSignals = AggregatedSignals.model_validate_json(
-            (working_dir / AGGREGATED_SIGNALS_JSON_FILENAME).read_text(encoding="utf-8")
-        )
-        portfolio_snapshot: PortfolioSnapshot = PortfolioSnapshot.model_validate_json(
-            (working_dir / PORTFOLIO_SNAPSHOT_FILENAME).read_text(encoding="utf-8")
-        )
-        initial_answers: InitialAnswers = InitialAnswers.model_validate_json(
-            (working_dir / INITIAL_ANSWERS_JSON_FILENAME).read_text(encoding="utf-8")
-        )
-
-        try:
-            container: AnalysisJudgment = thesis_agent(aggregated_signals, portfolio_snapshot, initial_answers)
-        except Exception:
-            logger.exception("A4 thesis judgment agent failed; halting analysis")
-            container = AnalysisJudgment(
-                theses=[],
-                dropped_claims=[],
-                macro_read=[],
-                halt=AnalysisHalt(reason=_AGENT_EXCEPTION_HALT_REASON),
-            )
-
-        _ = (working_dir / ANALYSIS_JUDGMENT_JSON_FILENAME).write_text(
-            json.dumps(container.model_dump(mode="json"), indent=2),
-            encoding="utf-8",
+        aggregated_signals, portfolio_snapshot, initial_answers = _load_analysis_inputs(working_dir)
+        container: AnalysisJudgment = _run_and_persist_thesis_judgment(
+            thesis_agent, aggregated_signals, portfolio_snapshot, initial_answers, working_dir
         )
 
         macro_indicators: MacroIndicators = _extract_macro_indicators(initial_answers.answers)
         regime_tag: RegimeTag = classify_regime(macro_indicators, config)
 
         if container.halt is not None:
-            action_steps: list[ActionStep] = []
-            _write_action_steps(working_dir, slug, action_steps)
-            _ = (working_dir / ANALYSIS_MD_FILENAME).write_text(
-                _render_analysis_md(slug, container, regime_tag, action_steps),
-                encoding="utf-8",
-            )
+            _persist_analysis_outputs(working_dir, slug, container, regime_tag, [])
             return {
                 "terminal_state": TerminalState.ANALYSIS_HALT,
-                "completed_steps": [*(state.get("completed_steps") or []), "analysis"],
+                "completed_steps": with_completed_step(state, "analysis"),
             }
 
-        regime_uncertain: bool = regime_tag == RegimeTag.UNCERTAIN
-
-        action_steps = []
-        for i, thesis in enumerate(container.theses):
-            verified: bool = thesis.disposition == Step1Disposition.SUPPORTED
-            scenarios: list[tuple[float, float]] = _to_scenario_list(thesis.scenario_table)
-            sector_headroom: float = config.sector_cap * portfolio_snapshot.total_account_value
-            cash_headroom: float = max(
-                0.0,
-                portfolio_snapshot.available_cash - config.cash_min * portfolio_snapshot.total_account_value,
-            )
-            overlap_headroom: float = config.overlap_limit * portfolio_snapshot.total_account_value
-
-            dollar_amount: Optional[float] = size_position(
-                scenarios,
-                portfolio_snapshot.total_account_value,
-                config,
-                verified,
-                regime_uncertain,
-                sector_headroom,
-                cash_headroom,
-                overlap_headroom,
-            )
-            if dollar_amount is None:
-                continue
-
-            step_id: str = f"A{i + 1:03d}"
-            execution_parameters: ExecutionParameters = build_execution_params(
-                step_id, slug, thesis.instrument, thesis.action_type, dollar_amount
-            )
-
-            action_steps.append(
-                ActionStep(
-                    step_id=step_id,
-                    instrument=thesis.instrument,
-                    action_type=thesis.action_type,
-                    description=thesis.description,
-                    group_id=thesis.group_id,
-                    execution_parameters=execution_parameters,
-                    one_sentence_thesis=thesis.one_sentence_thesis,
-                    regime_tag=regime_tag,
-                    expected_value=thesis.expected_value,
-                    scenario_table=thesis.scenario_table,
-                    invalidation_conditions=thesis.invalidation_conditions,
-                    sizing_rationale=thesis.sizing_rationale,
-                    conviction=thesis.conviction,
-                )
-            )
-
-        _write_action_steps(working_dir, slug, action_steps)
-        _ = (working_dir / ANALYSIS_MD_FILENAME).write_text(
-            _render_analysis_md(slug, container, regime_tag, action_steps),
-            encoding="utf-8",
+        action_steps: list[ActionStep] = _materialize_action_steps(
+            container, config, portfolio_snapshot, regime_tag, slug
         )
+        _persist_analysis_outputs(working_dir, slug, container, regime_tag, action_steps)
 
         if not action_steps:
             return {
                 "terminal_state": TerminalState.NO_ACTION,
-                "completed_steps": [*(state.get("completed_steps") or []), "analysis"],
+                "completed_steps": with_completed_step(state, "analysis"),
             }
 
         return {
-            "completed_steps": [*(state.get("completed_steps") or []), "analysis"],
+            "completed_steps": with_completed_step(state, "analysis"),
         }
 
     return analysis_node

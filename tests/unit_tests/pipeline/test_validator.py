@@ -15,6 +15,7 @@ from pytest import FixtureRequest
 from money_pit.compute.tool_map import ACTION_TYPE_TO_TOOL
 from money_pit.mcp import manifest as mcp_manifest
 from money_pit.mcp.order_schema import load_order_schema
+from money_pit.pipeline.validator import _overall_status
 from money_pit.pipeline.validator import _validate_step
 from money_pit.schemas.action_steps import ActionStep
 from money_pit.schemas.action_steps import ExecutionParameters
@@ -24,8 +25,19 @@ from money_pit.schemas.enums import ActionType
 from money_pit.schemas.enums import ConvictionLevel
 from money_pit.schemas.enums import RegimeTag
 from money_pit.schemas.enums import ValidationStatus
+from money_pit.schemas.validation_results import ValidationStep
 
 _SLUG = "2026-01-01_00-00-00"
+
+
+def _make_validation_step(step_id: str, status: ValidationStatus) -> ValidationStep:
+    return ValidationStep(
+        step_id=step_id,
+        status=status,
+        tool_sequence=None,
+        compensation_sequence=None,
+        gap_description=None if status == ValidationStatus.MATCHED else "gap",
+    )
 
 
 @pytest.fixture
@@ -167,3 +179,25 @@ def test__validate_step_with_client_order_id_mismatch(
 
     assert result.status == ValidationStatus.UNMATCHED
     assert result.gap_description is not None
+
+
+def test__overall_status_with_all_matched() -> None:
+    steps = [
+        _make_validation_step("A001", ValidationStatus.MATCHED),
+        _make_validation_step("A002", ValidationStatus.MATCHED),
+    ]
+
+    assert _overall_status(steps) == "validated"
+
+
+def test__overall_status_with_one_unmatched() -> None:
+    steps = [
+        _make_validation_step("A001", ValidationStatus.MATCHED),
+        _make_validation_step("A002", ValidationStatus.UNMATCHED),
+    ]
+
+    assert _overall_status(steps) == "validation_failed"
+
+
+def test__overall_status_with_empty_steps() -> None:
+    assert _overall_status([]) == "validated"

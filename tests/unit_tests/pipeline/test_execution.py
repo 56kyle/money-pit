@@ -14,6 +14,8 @@ from money_pit.pipeline.execution import (
     AtomicGroupNotSupportedError,
     OrderSubmissionError,
     _derive_outcome,
+    _reject_atomic_groups,
+    _submit_step,
     make_execution_node,
 )
 from money_pit.schemas.action_steps import ActionStep, ExecutionParameters
@@ -261,3 +263,51 @@ def test_make_execution_node_with_all_success_fill_markers_none(happy_journal: E
         entry.filled_qty is None and entry.filled_avg_price is None and entry.realized_notional is None
         for entry in happy_journal.entries
     )
+
+
+def test__submit_step_with_success_phase() -> None:
+    entry = _submit_step(_make_action_step("A001"), _StubPlaceOrder())
+    assert entry.phase == ExecutionPhase.SUBMITTED
+
+
+def test__submit_step_with_success_broker_order_id() -> None:
+    entry = _submit_step(_make_action_step("A001"), _StubPlaceOrder())
+    assert entry.broker_order_id is not None
+
+
+def test__submit_step_with_success_error() -> None:
+    entry = _submit_step(_make_action_step("A001"), _StubPlaceOrder())
+    assert entry.error is None
+
+
+def test__submit_step_with_rejection_phase() -> None:
+    place_order = _StubPlaceOrder(failures={0: OrderSubmissionError("rejected")})
+    entry = _submit_step(_make_action_step("A001"), place_order)
+    assert entry.phase == ExecutionPhase.FAILED
+
+
+def test__submit_step_with_rejection_broker_order_id() -> None:
+    place_order = _StubPlaceOrder(failures={0: OrderSubmissionError("rejected")})
+    entry = _submit_step(_make_action_step("A001"), place_order)
+    assert entry.broker_order_id is None
+
+
+def test__submit_step_with_rejection_error() -> None:
+    place_order = _StubPlaceOrder(failures={0: OrderSubmissionError("rejected")})
+    entry = _submit_step(_make_action_step("A001"), place_order)
+    assert entry.error is not None
+
+
+def test__submit_step_with_unexpected_error_propagates() -> None:
+    place_order = _StubPlaceOrder(failures={0: RuntimeError("bug")})
+    with pytest.raises(RuntimeError):
+        _ = _submit_step(_make_action_step("A001"), place_order)
+
+
+def test__reject_atomic_groups_with_group_id_raises() -> None:
+    with pytest.raises(AtomicGroupNotSupportedError):
+        _reject_atomic_groups([_make_action_step("A001", group_id="G1")])
+
+
+def test__reject_atomic_groups_with_no_group_ids_returns_none() -> None:
+    assert _reject_atomic_groups([_make_action_step("A001")]) is None

@@ -17,7 +17,12 @@ from pytest import FixtureRequest
 
 from money_pit.compute.regime import classify_regime
 from money_pit.config import Config
-from money_pit.pipeline.analysis import _extract_macro_indicators, make_analysis_node
+from money_pit.pipeline.analysis import (
+    _compute_headrooms,
+    _extract_macro_indicators,
+    _materialize_action_steps,
+    make_analysis_node,
+)
 from money_pit.schemas.action_steps import ActionStep
 from money_pit.schemas.analysis_draft import (
     AnalysisHalt,
@@ -34,6 +39,7 @@ from money_pit.schemas.enums import (
     Confidence,
     ConvictionLevel,
     QuestionCategory,
+    RegimeTag,
     Step1Disposition,
     TerminalState,
 )
@@ -142,6 +148,41 @@ def _stub_agent(container: AnalysisJudgment) -> Callable[..., AnalysisJudgment]:
         return container
 
     return _agent
+
+
+def _raising_agent() -> Callable[..., AnalysisJudgment]:
+    def _agent(
+        _signals: AggregatedSignals,
+        _portfolio: PortfolioSnapshot,
+        _answers: InitialAnswers,
+    ) -> AnalysisJudgment:
+        raise RuntimeError("A4 thesis judgment agent boom")
+
+    return _agent
+
+
+def _config(**overrides: object) -> Config:
+    defaults: dict[str, object] = {
+        "alpaca_service": "stub",
+        "alpaca_username": "stub",
+        "max_position_weight": 1.0,
+        "sector_cap": 1.0,
+        "overlap_limit": 1.0,
+        "cash_min": 0.0,
+    }
+    return Config(**{**defaults, **overrides})
+
+
+def _portfolio(*, total_account_value: float, available_cash: float) -> PortfolioSnapshot:
+    return PortfolioSnapshot(
+        slug=_SLUG,
+        as_of="2026-07-02T00:00:00Z",
+        total_account_value=total_account_value,
+        available_cash=available_cash,
+        positions=[],
+        sector_weights={},
+        correlated_overlaps=[],
+    )
 
 
 @pytest.fixture
@@ -325,3 +366,63 @@ def test_make_analysis_node_with_dropped_claim_renders_it_in_analysis_md(
     rendered = (analysis_working_dir / "analysis.md").read_text(encoding="utf-8")
     assert dropped.claim_id in rendered
     assert dropped.reason in rendered
+
+
+def test__compute_headrooms_with_known_values_returns_products() -> None:
+    config = _config(sector_cap=0.25, overlap_limit=0.30, cash_min=0.05)
+    portfolio = _portfolio(total_account_value=100000.0, available_cash=50000.0)
+    result = _compute_headrooms(config, portfolio)
+    assert (result.sector, result.cash, result.overlap) == (25000.0, 45000.0, 30000.0)
+
+
+def test__compute_headrooms_with_cash_min_exceeding_available_cash_floors_at_zero() -> None:
+    config = _config(cash_min=0.5)
+    portfolio = _portfolio(total_account_value=100000.0, available_cash=10000.0)
+    result = _compute_headrooms(config, portfolio)
+    assert result.cash == 0.0
+
+
+def test__materialize_action_steps_with_sized_theses_assigns_ordered_step_ids() -> None:
+    config = _config()
+    portfolio = _portfolio(total_account_value=100000.0, available_cash=100000.0)
+    container = AnalysisJudgment(
+        theses=[
+            _thesis("NVDA", Step1Disposition.SUPPORTED, claim_id="c-1"),
+            _thesis("AMD", Step1Disposition.SUPPORTED, claim_id="c-2"),
+        ],
+        dropped_claims=[],
+        macro_read=[],
+        halt=None,
+    )
+    steps = _materialize_action_steps(container, config, portfolio, RegimeTag.GROWTH_ACCELERATING, _SLUG)
+    assert [step.step_id for step in steps] == ["A001", "A002"]
+
+
+def test__materialize_action_steps_with_ev_below_gate_yields_no_action_steps() -> None:
+    config = _config(ev_gate=1.0)
+    portfolio = _portfolio(total_account_value=100000.0, available_cash=100000.0)
+    container = AnalysisJudgment(
+        theses=[
+            _thesis("NVDA", Step1Disposition.SUPPORTED, claim_id="c-1"),
+            _thesis("AMD", Step1Disposition.SUPPORTED, claim_id="c-2"),
+        ],
+        dropped_claims=[],
+        macro_read=[],
+        halt=None,
+    )
+    steps = _materialize_action_steps(container, config, portfolio, RegimeTag.GROWTH_ACCELERATING, _SLUG)
+    assert steps == []
+
+
+def test_make_analysis_node_with_agent_exception_sets_analysis_halt(config: Config, analysis_working_dir: Path) -> None:
+    node = make_analysis_node(config, _raising_agent())
+    result = node({"slug": _SLUG, "working_dir": str(analysis_working_dir)})
+    assert result.get("terminal_state") == TerminalState.ANALYSIS_HALT
+
+
+def test_make_analysis_node_with_agent_exception_writes_empty_action_steps(
+    config: Config, analysis_working_dir: Path
+) -> None:
+    node = make_analysis_node(config, _raising_agent())
+    _ = node({"slug": _SLUG, "working_dir": str(analysis_working_dir)})
+    assert _read_action_steps(analysis_working_dir) == []

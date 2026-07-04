@@ -1,4 +1,5 @@
 """ValidationStep, ActionStepsValidation, ValidationStatusReport — A5 output contracts."""
+
 from typing import ClassVar
 
 from pydantic import BaseModel

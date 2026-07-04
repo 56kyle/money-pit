@@ -1,4 +1,5 @@
 """Scheduler trigger, working-dir creation, slug assignment."""
+
 import shutil
 from dataclasses import dataclass
 from dataclasses import field
@@ -45,8 +46,7 @@ from money_pit.schemas.signals import Claim
 
 
 _MISSING_DEP_MESSAGE: str = (
-    "run_pipeline requires a real {name}; supply it via PipelineOverrides "
-    "or use phase4_overrides() for tests."
+    "run_pipeline requires a real {name}; supply it via PipelineOverrides or use phase4_overrides() for tests."
 )
 
 
@@ -224,11 +224,7 @@ def _phase4_thesis_agent(
 ) -> AnalysisJudgment:
     """Return a container with one SUPPORTED stub thesis for the first eligible claim, else empty."""
     qualifying_claim: Claim | None = next(
-        (
-            c
-            for c in aggregated_signals.claims
-            if c.tier in (SignalTier.HIGH, SignalTier.MEDIUM) and c.tickers_affected
-        ),
+        (c for c in aggregated_signals.claims if c.tier in (SignalTier.HIGH, SignalTier.MEDIUM) and c.tickers_affected),
         None,
     )
     if qualifying_claim is None:
@@ -244,13 +240,34 @@ def _phase4_thesis_agent(
         conviction=ConvictionLevel.MEDIUM,
         scenario_table=ScenarioTable(
             bull=Scenario.model_validate(
-                {"probability": 30, "return": 0.20, "timeframe": None, "confirming_metric": None, "mechanism": None, "max_drawdown": None}
+                {
+                    "probability": 30,
+                    "return": 0.20,
+                    "timeframe": None,
+                    "confirming_metric": None,
+                    "mechanism": None,
+                    "max_drawdown": None,
+                }
             ),
             base=Scenario.model_validate(
-                {"probability": 50, "return": 0.08, "timeframe": None, "confirming_metric": None, "mechanism": None, "max_drawdown": None}
+                {
+                    "probability": 50,
+                    "return": 0.08,
+                    "timeframe": None,
+                    "confirming_metric": None,
+                    "mechanism": None,
+                    "max_drawdown": None,
+                }
             ),
             bear=Scenario.model_validate(
-                {"probability": 20, "return": -0.10, "timeframe": None, "confirming_metric": None, "mechanism": None, "max_drawdown": None}
+                {
+                    "probability": 20,
+                    "return": -0.10,
+                    "timeframe": None,
+                    "confirming_metric": None,
+                    "mechanism": None,
+                    "max_drawdown": None,
+                }
             ),
         ),
         invalidation_conditions=[],

@@ -5,6 +5,7 @@ for the closed Alpaca write-tool set — it is not a live view of any running se
 replaces the default provider with live introspection of registered MCP servers; until then
 A5 validates against this fixed set so its existence check is honest rather than assumed.
 """
+
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -25,7 +26,5 @@ def pinned_manifest(
     try:
         schema: dict[str, object] = load_order_schema(schema_path)
     except AlpacaOrderSchemaError as err:
-        raise ManifestUnavailableError(
-            f"Pinned tool manifest unavailable: {err}"
-        ) from err
+        raise ManifestUnavailableError(f"Pinned tool manifest unavailable: {err}") from err
     return dict.fromkeys(set(ACTION_TYPE_TO_TOOL.values()), schema)

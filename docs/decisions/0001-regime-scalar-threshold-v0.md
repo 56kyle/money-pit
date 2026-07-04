@@ -16,15 +16,15 @@ How should the v0 regime classifier discretize a scalar reading into a signal (-
 
 ## Decision Drivers
 
-* `MacroIndicators` is a single-reading snapshot; there is no trailing series available at classification time.
-* Each of the five macro indicators has a well-established, structurally meaningful neutrality boundary (not an arbitrary hyperparameter) that is domain-stable across market cycles.
-* `regime_lookback` and the z-score approach remain viable for v1 once A3 is extended to retrieve or accumulate historical observations.
+- `MacroIndicators` is a single-reading snapshot; there is no trailing series available at classification time.
+- Each of the five macro indicators has a well-established, structurally meaningful neutrality boundary (not an arbitrary hyperparameter) that is domain-stable across market cycles.
+- `regime_lookback` and the z-score approach remain viable for v1 once A3 is extended to retrieve or accumulate historical observations.
 
 ## Considered Options
 
-* Structural thresholds
-* Z-score from trailing window
-* Percentile rank
+- Structural thresholds
+- Z-score from trailing window
+- Percentile rank
 
 ## Decision Outcome
 
@@ -32,23 +32,23 @@ Chosen option: "Structural thresholds", because it is the only approach compatib
 
 The five structural thresholds:
 
-| Indicator | Threshold | Rationale |
-|---|---|---|
-| `yield_curve` (T10Y2Y) | 0.0 pct pts | Inversion boundary |
-| `credit_spreads` (HY OAS) | 3.0 pct pts | Long-run neutral for HY spreads |
-| `pmi` (ISM Mfg) | 50.0 | ISM expansion/contraction boundary |
-| `earnings_revisions` (fwd-EPS breadth) | 0.0 | Zero breadth = flat revisions |
-| `inflation` (CPILFESL YoY) | 2.5% | Long-run Fed target |
+| Indicator                              | Threshold   | Rationale                          |
+| -------------------------------------- | ----------- | ---------------------------------- |
+| `yield_curve` (T10Y2Y)                 | 0.0 pct pts | Inversion boundary                 |
+| `credit_spreads` (HY OAS)              | 3.0 pct pts | Long-run neutral for HY spreads    |
+| `pmi` (ISM Mfg)                        | 50.0        | ISM expansion/contraction boundary |
+| `earnings_revisions` (fwd-EPS breadth) | 0.0         | Zero breadth = flat revisions      |
+| `inflation` (CPILFESL YoY)             | 2.5%        | Long-run Fed target                |
 
 Orientations are structural (not configurable): `yield_curve`, `pmi`, `earnings_revisions` are higher-is-better; `credit_spreads` and `inflation` are lower-is-better. `regime_band` (default 0.5) defines the neutral zone half-width.
 
 ### Consequences
 
-* Good, because no historical series is required at classification time — the function is pure and stateless.
-* Good, because structural thresholds are domain-interpretable and do not drift with market regimes the way z-scores do.
-* Bad, because absolute levels are more regime-sensitive than z-scores; a PMI of 49.5 may be meaningfully different in 1982 versus 2024.
-* Bad, because `regime_lookback` is unused in v0; the `RECOVERY` rule (which needs prior-period state comparison) is deferred.
-* Neutral, because `RECOVERY` resolves to `GROWTH_ACCELERATING` in v0 when all growth signals are strong — an acceptable approximation for the early pipeline.
+- Good, because no historical series is required at classification time — the function is pure and stateless.
+- Good, because structural thresholds are domain-interpretable and do not drift with market regimes the way z-scores do.
+- Bad, because absolute levels are more regime-sensitive than z-scores; a PMI of 49.5 may be meaningfully different in 1982 versus 2024.
+- Bad, because `regime_lookback` is unused in v0; the `RECOVERY` rule (which needs prior-period state comparison) is deferred.
+- Neutral, because `RECOVERY` resolves to `GROWTH_ACCELERATING` in v0 when all growth signals are strong — an acceptable approximation for the early pipeline.
 
 ### Confirmation
 
@@ -58,21 +58,21 @@ Orientations are structural (not configurable): `yield_curve`, `pmi`, `earnings_
 
 ### Structural thresholds
 
-* Good, because compatible with the current `MacroIndicators` single-scalar contract.
-* Good, because thresholds encode genuine economic meaning (ISM 50, yield-curve inversion) that a reviewer can validate without data.
-* Bad, because absolute levels do not adapt to secular shifts in rates, spreads, or inflation regimes.
+- Good, because compatible with the current `MacroIndicators` single-scalar contract.
+- Good, because thresholds encode genuine economic meaning (ISM 50, yield-curve inversion) that a reviewer can validate without data.
+- Bad, because absolute levels do not adapt to secular shifts in rates, spreads, or inflation regimes.
 
 ### Z-score from trailing window
 
-* Good, because z-scores are regime-adaptive and reduce sensitivity to secular level shifts.
-* Bad, because requires `MacroIndicators` to carry a trailing series, which contradicts `pipeline_contracts.md §8a`.
-* Bad, because `regime_lookback` as a config integer provides no guidance on how to retrieve or store the history.
+- Good, because z-scores are regime-adaptive and reduce sensitivity to secular level shifts.
+- Bad, because requires `MacroIndicators` to carry a trailing series, which contradicts `pipeline_contracts.md §8a`.
+- Bad, because `regime_lookback` as a config integer provides no guidance on how to retrieve or store the history.
 
 ### Percentile rank
 
-* Good, because more robust than z-scores when the distribution is non-normal.
-* Bad, because requires a reference dataset available at classification time.
-* Bad, because same data-availability problem as z-scores in v0.
+- Good, because more robust than z-scores when the distribution is non-normal.
+- Bad, because requires a reference dataset available at classification time.
+- Bad, because same data-availability problem as z-scores in v0.
 
 ## More Information
 

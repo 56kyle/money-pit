@@ -1,4 +1,5 @@
 """EV = ΣP*R, EV gate, constraint extraction, position sizing, clamps."""
+
 from money_pit.config import Config
 
 

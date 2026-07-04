@@ -5,6 +5,7 @@ ActionType, the per-step tool lookup in A5 cannot KeyError for a validly-parsed 
 the reachable capability-failure paths are a manifest that omits the tool or an unavailable
 manifest — never a failed lookup. This is why A5's tool-lookup path is not faked in a test.
 """
+
 import pytest
 
 from money_pit.compute.execution_params import _BUY_SIDES

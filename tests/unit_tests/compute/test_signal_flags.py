@@ -1,4 +1,5 @@
 """Tests for money_pit.compute.signal_flags."""
+
 from collections.abc import Callable
 
 import pytest

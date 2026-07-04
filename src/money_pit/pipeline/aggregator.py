@@ -1,4 +1,5 @@
 """Node factory that merges source SignalSets, corroborates claims, and writes AggregatedSignals."""
+
 from pathlib import Path
 
 from money_pit.compute.aggregation import compute_run_actionable
@@ -31,9 +32,7 @@ def _render_aggregated_md(aggregated: AggregatedSignals) -> str:
     if aggregated.claims:
         for claim in aggregated.claims:
             tickers: str = ", ".join(claim.tickers_affected) or "none"
-            lines.append(
-                f"- **{claim.claim_id}** [{claim.tier.value}] ({tickers}): {claim.claim}"
-            )
+            lines.append(f"- **{claim.claim_id}** [{claim.tier.value}] ({tickers}): {claim.claim}")
     else:
         lines.append("- No claims.")
 

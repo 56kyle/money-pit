@@ -1,4 +1,5 @@
 """Fixtures used in integration tests."""
+
 import os
 
 import pytest

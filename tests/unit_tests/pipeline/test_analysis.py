@@ -7,6 +7,7 @@ Pins wave S3 / ADR 0005:
 - empty theses with no halt drives NO_ACTION;
 - analysis.md is rendered deterministically from the container, carrying every dropped claim.
 """
+
 from collections.abc import Callable
 from pathlib import Path
 
@@ -186,9 +187,7 @@ def analysis_working_dir(tmp_path: Path, analysis_working_dir__macro_answers: li
     _ = (tmp_path / "portfolio_snapshot.json").write_text(
         portfolio_snapshot.model_dump_json(indent=2), encoding="utf-8"
     )
-    _ = (tmp_path / "initial_answers.json").write_text(
-        initial_answers.model_dump_json(indent=2), encoding="utf-8"
-    )
+    _ = (tmp_path / "initial_answers.json").write_text(initial_answers.model_dump_json(indent=2), encoding="utf-8")
     return tmp_path
 
 
@@ -198,9 +197,7 @@ def _run_node(config: Config, container: AnalysisJudgment, working_dir: Path) ->
 
 
 def _read_action_steps(working_dir: Path) -> list[ActionStep]:
-    return _ACTION_STEPS_ADAPTER.validate_json(
-        (working_dir / "action_steps.json").read_text(encoding="utf-8")
-    )
+    return _ACTION_STEPS_ADAPTER.validate_json((working_dir / "action_steps.json").read_text(encoding="utf-8"))
 
 
 def test__extract_macro_indicators_with_valid_answer_populates_indicator() -> None:
@@ -224,9 +221,7 @@ def test__extract_macro_indicators_with_non_macro_regime_category_skips_it() -> 
 
 
 def test__extract_macro_indicators_with_non_indicator_signal_source_skips_it() -> None:
-    result = _extract_macro_indicators(
-        [_answer(signal_source="raw:pmi", data_retrieved={"value": 55.0})]
-    )
+    result = _extract_macro_indicators([_answer(signal_source="raw:pmi", data_retrieved={"value": 55.0})])
     assert result.pmi is None
 
 
@@ -241,9 +236,7 @@ def test__extract_macro_indicators_with_unknown_indicator_name_skips_it() -> Non
 def test__extract_macro_indicators_with_non_numeric_value_leaves_none(
     data_retrieved: dict[str, object] | None,
 ) -> None:
-    result = _extract_macro_indicators(
-        [_answer(signal_source=f"{INDICATOR_PREFIX}pmi", data_retrieved=data_retrieved)]
-    )
+    result = _extract_macro_indicators([_answer(signal_source=f"{INDICATOR_PREFIX}pmi", data_retrieved=data_retrieved)])
     assert result.pmi is None
 
 
@@ -253,9 +246,7 @@ def test__extract_macro_indicators_with_absent_indicator_leaves_none(indicator: 
     assert getattr(result, indicator) is None
 
 
-def test_make_analysis_node_with_disposition_sizes_supported_larger(
-    config: Config, analysis_working_dir: Path
-) -> None:
+def test_make_analysis_node_with_disposition_sizes_supported_larger(config: Config, analysis_working_dir: Path) -> None:
     container = AnalysisJudgment(
         theses=[
             _thesis("NVDA", Step1Disposition.SUPPORTED, claim_id="c-supported"),
@@ -270,9 +261,7 @@ def test_make_analysis_node_with_disposition_sizes_supported_larger(
     assert steps["NVDA"].execution_parameters.notional > steps["AMD"].execution_parameters.notional
 
 
-@pytest.mark.parametrize(
-    "analysis_working_dir__macro_answers", [_GROWTH_ACCELERATING_ANSWERS], indirect=True
-)
+@pytest.mark.parametrize("analysis_working_dir__macro_answers", [_GROWTH_ACCELERATING_ANSWERS], indirect=True)
 def test_make_analysis_node_with_contradictory_macro_read_ignores_it_for_regime(
     config: Config, analysis_working_dir: Path
 ) -> None:
@@ -305,9 +294,7 @@ def test_make_analysis_node_with_halt_sets_analysis_halt(config: Config, analysi
     assert result.get("terminal_state") == TerminalState.ANALYSIS_HALT
 
 
-def test_make_analysis_node_with_halt_writes_empty_action_steps(
-    config: Config, analysis_working_dir: Path
-) -> None:
+def test_make_analysis_node_with_halt_writes_empty_action_steps(config: Config, analysis_working_dir: Path) -> None:
     container = AnalysisJudgment(
         theses=[],
         dropped_claims=[],
@@ -318,9 +305,7 @@ def test_make_analysis_node_with_halt_writes_empty_action_steps(
     assert _read_action_steps(analysis_working_dir) == []
 
 
-def test_make_analysis_node_with_empty_theses_sets_no_action(
-    config: Config, analysis_working_dir: Path
-) -> None:
+def test_make_analysis_node_with_empty_theses_sets_no_action(config: Config, analysis_working_dir: Path) -> None:
     container = AnalysisJudgment(theses=[], dropped_claims=[], macro_read=[], halt=None)
     result = _run_node(config, container, analysis_working_dir)
     assert result.get("terminal_state") == TerminalState.NO_ACTION

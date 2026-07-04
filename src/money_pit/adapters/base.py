@@ -1,4 +1,5 @@
 """Module containing the SourceAdapter ABC used throughout the money_pit package."""
+
 from abc import ABC
 from abc import abstractmethod
 from typing import Generic
@@ -14,5 +15,4 @@ class SourceAdapter(ABC, Generic[Payload]):
     """Abstract base class every source adapter must subclass."""
 
     @abstractmethod
-    def process(self, payload: Payload) -> SignalSet:
-        ...
+    def process(self, payload: Payload) -> SignalSet: ...

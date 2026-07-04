@@ -12,6 +12,7 @@ all-MATCHED -> no halting terminal_state) and the finalizer node's fail-closed s
 Assertions target Determination / TerminalState / literal return values and exception TYPES,
 never message text.
 """
+
 from pathlib import Path
 from typing import Callable
 
@@ -82,9 +83,7 @@ def test_recompute_determination_with_all_matched() -> None:
     ],
 )
 def test_recompute_determination_with_any_unmatched(statuses: list[ValidationStatus]) -> None:
-    validation = _make_validation(
-        [_make_validation_step(f"A{i + 1:03d}", status) for i, status in enumerate(statuses)]
-    )
+    validation = _make_validation([_make_validation_step(f"A{i + 1:03d}", status) for i, status in enumerate(statuses)])
     assert recompute_determination(validation) == Determination.HALT
 
 
@@ -101,15 +100,11 @@ def valid_validation() -> ActionStepsValidation:
 
 @pytest.fixture
 def validation_working_dir(tmp_path: Path, valid_validation: ActionStepsValidation) -> Path:
-    _ = (tmp_path / _VALIDATION_FILENAME).write_text(
-        valid_validation.model_dump_json(indent=2), encoding="utf-8"
-    )
+    _ = (tmp_path / _VALIDATION_FILENAME).write_text(valid_validation.model_dump_json(indent=2), encoding="utf-8")
     return tmp_path
 
 
-def test_load_validation_with_valid_file(
-    validation_working_dir: Path, valid_validation: ActionStepsValidation
-) -> None:
+def test_load_validation_with_valid_file(validation_working_dir: Path, valid_validation: ActionStepsValidation) -> None:
     assert load_validation(validation_working_dir) == valid_validation
 
 
@@ -145,22 +140,16 @@ def test_map_execution_outcome(outcome: ExecutionOutcome | None, expected: str) 
 
 
 def _write_validation(working_dir: Path, validation: ActionStepsValidation) -> None:
-    _ = (working_dir / _VALIDATION_FILENAME).write_text(
-        validation.model_dump_json(indent=2), encoding="utf-8"
-    )
+    _ = (working_dir / _VALIDATION_FILENAME).write_text(validation.model_dump_json(indent=2), encoding="utf-8")
 
 
 def _write_journal(working_dir: Path, outcome: ExecutionOutcome) -> None:
     journal = ExecutionJournal(slug=_SLUG, outcome=outcome, entries=[])
-    _ = (working_dir / _JOURNAL_FILENAME).write_text(
-        journal.model_dump_json(indent=2), encoding="utf-8"
-    )
+    _ = (working_dir / _JOURNAL_FILENAME).write_text(journal.model_dump_json(indent=2), encoding="utf-8")
 
 
 def _read_report(working_dir: Path) -> DeterminationReport:
-    return DeterminationReport.model_validate_json(
-        (working_dir / _REPORT_JSON_FILENAME).read_text(encoding="utf-8")
-    )
+    return DeterminationReport.model_validate_json((working_dir / _REPORT_JSON_FILENAME).read_text(encoding="utf-8"))
 
 
 @pytest.fixture
@@ -251,9 +240,7 @@ def test_make_determination_node_with_all_matched_leaves_terminal_state_unset(
     assert result.get("terminal_state") is None
 
 
-def _finalizer_state(
-    working_dir: Path, determination: Determination, sub_agent_spawned: str | None
-) -> PipelineState:
+def _finalizer_state(working_dir: Path, determination: Determination, sub_agent_spawned: str | None) -> PipelineState:
     return {
         "slug": _SLUG,
         "working_dir": str(working_dir),
@@ -282,9 +269,7 @@ def test_make_finalizer_node_with_execution_and_clean_journal_reports_success(
     finalizer_node: Callable[[PipelineState], dict[str, object]],
     clean_journal_working_dir: Path,
 ) -> None:
-    _ = finalizer_node(
-        _finalizer_state(clean_journal_working_dir, Determination.PROCEED, _SUB_AGENT_EXECUTION)
-    )
+    _ = finalizer_node(_finalizer_state(clean_journal_working_dir, Determination.PROCEED, _SUB_AGENT_EXECUTION))
     assert _read_report(clean_journal_working_dir).sub_agent_outcome == _SUCCESS
 
 

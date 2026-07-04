@@ -5,6 +5,7 @@ falls back to a conventional default path but can be overridden per-test via
 indirect parametrization (`request.param`), matching the `__`-suffixed
 param-default idiom used elsewhere in this test suite.
 """
+
 from pathlib import Path
 
 import pytest

@@ -1,4 +1,5 @@
 """Tests for money_pit.compute.aggregation."""
+
 from collections.abc import Callable
 
 from money_pit.compute.aggregation import compute_run_actionable, tier_max, union_claims

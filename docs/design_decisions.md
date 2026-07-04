@@ -4,8 +4,8 @@ These resolve the **blocking** open decisions so the `compute/` modules can be b
 
 **Governing principle (per owner): no magic numbers.** A threshold is never a bare literal in
 `compute/` code. Wherever a cutoff is meaningful only relative to context, it is **derived from the
-data's own distribution** rather than fixed; the few values that remain fixed are either *spec* (an
-explicit, auditable decision table) or *risk policy* (hard limits the owner sets), and those live in
+data's own distribution** rather than fixed; the few values that remain fixed are either _spec_ (an
+explicit, auditable decision table) or _risk policy_ (hard limits the owner sets), and those live in
 `Config`, surfaced and overridable — never inline. The result is a small, named configuration surface
 (see the last section) instead of constants scattered through the deterministic layer.
 
@@ -17,7 +17,7 @@ and `compute/sizing.py`); the rest stand as in architecture §15.
 
 ---
 
-## 1. Macro regime classification → `compute/regime.py`  (§15 #2)
+## 1. Macro regime classification → `compute/regime.py` (§15 #2)
 
 **Two layers: data-driven discretization (tunable) + a fixed truth table (spec).** The fragile version
 of this would hardcode levels like "PMI > 50" or "spreads > 400bps." Those are only meaningful against
@@ -37,16 +37,16 @@ it around zero:
   **orientation** (so "expansionary" is always `+1` regardless of whether high raw values are good).
 - Insufficient history or a stale series → `missing`.
 
-Config knobs (the *only* tunables here): `regime_lookback` (trailing window) and `regime_band`
+Config knobs (the _only_ tunables here): `regime_lookback` (trailing window) and `regime_band`
 (neutral-zone half-width, in z units). `orientation` is a fixed per-indicator property, not a tunable:
 
-| indicator | source | orientation (what `+1` means) |
-|---|---|---|
-| yield-curve shape | FRED `T10Y2Y` | steeper = `+1` |
-| credit spreads | FRED `BAMLH0A0HYM2` (HY OAS) | **tighter** = `+1` (inverted polarity) |
-| PMI | ISM Mfg / S&P Global | higher & rising = `+1` |
-| earnings revisions | fwd-EPS revision breadth | up = `+1` |
-| inflation | FRED `CPILFESL` YoY or ISM prices-paid | **cooling** = `+1` (inverted polarity) |
+| indicator          | source                                 | orientation (what `+1` means)          |
+| ------------------ | -------------------------------------- | -------------------------------------- |
+| yield-curve shape  | FRED `T10Y2Y`                          | steeper = `+1`                         |
+| credit spreads     | FRED `BAMLH0A0HYM2` (HY OAS)           | **tighter** = `+1` (inverted polarity) |
+| PMI                | ISM Mfg / S&P Global                   | higher & rising = `+1`                 |
+| earnings revisions | fwd-EPS revision breadth               | up = `+1`                              |
+| inflation          | FRED `CPILFESL` YoY or ISM prices-paid | **cooling** = `+1` (inverted polarity) |
 
 > The fifth (inflation) indicator is required: the other four are all growth/stress signals, so without
 > it `STAGFLATION` can never be distinguished from ordinary deceleration and would silently collapse to
@@ -59,19 +59,19 @@ This is intentionally fixed — it is the specification, the opposite of a magic
 distribution to derive it from. Signals are `[curve, credit, pmi, earnings, inflation] ∈ {+1,0,-1}`;
 `growth = pmi + earnings`. Ordered, first full match wins:
 
-| # | tag | curve | credit | pmi | earnings | inflation | signature |
-|---|---|---|---|---|---|---|---|
-| 0 | `UNCERTAIN` | — any indicator `missing` — | | | | | insufficient/stale data |
-| 1 | `LATE_CYCLE_STRESS` | `-1` | `-1` | `≤0` | `≤0` | any | inverted curve + widening credit, growth rolling over |
-| 2 | `STAGFLATION` | any | `≤0` | `≤0` | `≤0` | `-1` | growth weak **and** inflation hot |
-| 3 | `GROWTH_ACCELERATING` | `≥0` | `≥0` | `+1` | `+1` | `≥0` | demand & profits rising, no credit stress, inflation not hot |
-| 4 | `RECOVERY` | `+1` | `+1` | `≥0` | `≥0` | `≥0` | steep + tightening + an up-inflection (pmi/earnings moved `-1`→`≥0` within lookback) |
-| 5 | `GROWTH_DECELERATING` | any | `≥0` | `≤0` | `≤0` | `≥0` | softening without acute stress or hot inflation |
-| — | **conflict guard** | | | | | | if `(curve+credit) ≥ +1` while `growth ≤ -1`, or `(curve+credit) ≤ -1` while `growth ≥ +1` → `UNCERTAIN` |
-| 6 | signed-sum fallback | | | | | | `total = curve+credit+pmi+earnings`: `>+1`→`GROWTH_ACCELERATING`; `<-1`→`GROWTH_DECELERATING`; else `UNCERTAIN` |
+| #   | tag                   | curve                       | credit | pmi  | earnings | inflation | signature                                                                                                       |
+| --- | --------------------- | --------------------------- | ------ | ---- | -------- | --------- | --------------------------------------------------------------------------------------------------------------- |
+| 0   | `UNCERTAIN`           | — any indicator `missing` — |        |      |          |           | insufficient/stale data                                                                                         |
+| 1   | `LATE_CYCLE_STRESS`   | `-1`                        | `-1`   | `≤0` | `≤0`     | any       | inverted curve + widening credit, growth rolling over                                                           |
+| 2   | `STAGFLATION`         | any                         | `≤0`   | `≤0` | `≤0`     | `-1`      | growth weak **and** inflation hot                                                                               |
+| 3   | `GROWTH_ACCELERATING` | `≥0`                        | `≥0`   | `+1` | `+1`     | `≥0`      | demand & profits rising, no credit stress, inflation not hot                                                    |
+| 4   | `RECOVERY`            | `+1`                        | `+1`   | `≥0` | `≥0`     | `≥0`      | steep + tightening + an up-inflection (pmi/earnings moved `-1`→`≥0` within lookback)                            |
+| 5   | `GROWTH_DECELERATING` | any                         | `≥0`   | `≤0` | `≤0`     | `≥0`      | softening without acute stress or hot inflation                                                                 |
+| —   | **conflict guard**    |                             |        |      |          |           | if `(curve+credit) ≥ +1` while `growth ≤ -1`, or `(curve+credit) ≤ -1` while `growth ≥ +1` → `UNCERTAIN`        |
+| 6   | signed-sum fallback   |                             |        |      |          |           | `total = curve+credit+pmi+earnings`: `>+1`→`GROWTH_ACCELERATING`; `<-1`→`GROWTH_DECELERATING`; else `UNCERTAIN` |
 
 Notes for the ADR: rule order matters (acute stress and the inflation overlay must win before the plain
-growth paths). Every tag requires a *positive* signature; anything unmatched is `UNCERTAIN` by
+growth paths). Every tag requires a _positive_ signature; anything unmatched is `UNCERTAIN` by
 construction — the conservative default — and the audit log records which indicators conflicted or were
 missing. **RECOVERY** is the one rule needing trailing state (the inflection); if you don't want to
 carry prior-period state in v0, drop rule 4 and early-cycle conditions resolve to `GROWTH_ACCELERATING`,
@@ -83,7 +83,7 @@ indicator values across runs.
 
 ---
 
-## 2. Position sizing → `compute/sizing.py`  (§15 #3)
+## 2. Position sizing → `compute/sizing.py` (§15 #3)
 
 **Continuous fractional-Kelly. No EV bands, no multiplier stairs.** The three-cutoff / `1.5×/1.0×/0.5×`
 scheme was exactly the arbitrary, discontinuous hardcoding to avoid (an EV of 5.99% vs 6.01% should not
@@ -122,7 +122,7 @@ dollars = w · total_account_value         # then clamp to §3 sector / cash / o
   before sizing. Diversification emerges from the caps + the modest fractional-Kelly weights rather than
   from a fixed "÷20" base, which is removed.
 
-**Exits.** `BUY`/`ADD` size *to* the Kelly target (ADD tops up toward it). `TRIM` reduces *toward* the
+**Exits.** `BUY`/`ADD` size _to_ the Kelly target (ADD tops up toward it). `TRIM` reduces _toward_ the
 lower Kelly target implied by the weakened thesis; `SELL` is a full exit. The field translation
 (notional vs quantity) is §4.
 
@@ -134,33 +134,33 @@ not know. Good-reason prompt change, per the reconciliation rule.
 
 ---
 
-## 3. Snapshot vs. live reads  (§15 #4) — **RESOLVED**
+## 3. Snapshot vs. live reads (§15 #4) — **RESOLVED**
 
 The run-start `portfolio_snapshot.json` is the single source of truth for all sizing and constraint math
 within a run. Live Alpaca reads serve only the current-price element of a question and the actual order
 moment — never sizing/concentration decisions. A run's arithmetic stays reproducible against a frozen
 snapshot.
 
-## 4. Sell / trim translation  (§15 #5) — **RESOLVED**
+## 4. Sell / trim translation (§15 #5) — **RESOLVED**
 
 `SELL` (full exit) closes the position by **quantity** (snapshot `quantity`) to avoid fractional dust.
 `TRIM` uses **notional** (dollars to remove) if the official Alpaca order tool accepts notional sells,
 else converts to quantity via the snapshot price. Entries are Kelly-sized (§2);
 `compute/execution_params.py` emits whichever field the official order schema literally defines (§7).
 
-## 5. Atomic groups at N=1  (§15 #9) — **STUB**
+## 5. Atomic groups at N=1 (§15 #9) — **STUB**
 
 At N=1 the analysis produces single-name independent decisions; interdependent legs are rare. v0: A4
 emits `group_id = null` for every step. Build `pipeline/execution.py` independent-path first; the
 pre-flight/compensation branch (§7a of contracts) is wired but exercised only once `group_id` is
 populated. Define grouping criteria when the first interdependent thesis appears or N>1 makes them likely.
 
-## 6. Tier reconciliation  (§15 #15) — **RESOLVED (inert at N=1)**
+## 6. Tier reconciliation (§15 #15) — **RESOLVED (inert at N=1)**
 
 `max` tier across a corroborated claim, with corroboration raising A4 Step-1 confidence. Inert until N>1
 — same horizon as the corroboration stub.
 
-## 7. Alpaca order schema  (§15 #1) — **deployment prerequisite**
+## 7. Alpaca order schema (§15 #1) — **deployment prerequisite**
 
 ## 8. Step ID origin — **post-processor assigns, not A4**
 
@@ -185,14 +185,14 @@ The anti-hardcoding payoff: the deterministic layer carries **no** bare cutoffs.
 named field in `Config` with a documented default; everything fixed is either the regime truth table
 (spec) or a hard risk limit (policy).
 
-| knob | governs | kind |
-|---|---|---|
-| `regime_lookback` | trailing window for indicator discretization | tuning |
-| `regime_band` | neutral-zone half-width (z units) | tuning |
-| `kelly_fraction` | the single global risk dial for sizing | risk dial |
-| `max_position_weight` | hard per-name cap | risk policy |
-| `haircut_unverified`, `haircut_uncertain` | multiplicative size penalties | risk policy |
-| `ev_gate` (= 3%) | entry go/no-go floor | risk policy |
-| `sector_cap` (= 25%), cash, overlap | concentration limits | risk policy |
+| knob                                      | governs                                      | kind        |
+| ----------------------------------------- | -------------------------------------------- | ----------- |
+| `regime_lookback`                         | trailing window for indicator discretization | tuning      |
+| `regime_band`                             | neutral-zone half-width (z units)            | tuning      |
+| `kelly_fraction`                          | the single global risk dial for sizing       | risk dial   |
+| `max_position_weight`                     | hard per-name cap                            | risk policy |
+| `haircut_unverified`, `haircut_uncertain` | multiplicative size penalties                | risk policy |
+| `ev_gate` (= 3%)                          | entry go/no-go floor                         | risk policy |
+| `sector_cap` (= 25%), cash, overlap       | concentration limits                         | risk policy |
 
 Fixed, by design: the regime truth table (§1b) and indicator orientations (§1a) — spec, not magic.

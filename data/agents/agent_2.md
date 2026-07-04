@@ -10,7 +10,7 @@ You are one part of a two-part stage. A deterministic node wraps you: it does th
 
 The Question Generation stage is split between you (the LLM core) and a deterministic node. The split is deliberate and absolute.
 
-**What you author** — only the *claim-specific* questions in exactly two categories:
+**What you author** — only the _claim-specific_ questions in exactly two categories:
 
 - `thesis_validation` — questions that test whether a specific claim is currently supported by data (§3.1).
 - `invalidation_conditions` — questions that surface the data needed to define what would make a claim wrong (§3.5).
@@ -126,12 +126,12 @@ An empty result is the array `[]`.
 
 Every element of the array is a JSON object with **exactly** these four fields, and no others. Any additional field (`id`, `signal_tier`, `data_sources`, `answer`, or anything else) is invalid — the node derives all of those and will reject unexpected fields.
 
-| Field | Requirement |
-|---|---|
-| `category` | Exactly one of (snake_case): `thesis_validation` or `invalidation_conditions`. No other value is permitted here — the other three categories are node-owned. |
-| `question` | The question text as a specific, externally-answerable query, anchored to the claim's substance. |
+| Field           | Requirement                                                                                                                                                                                                                            |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `category`      | Exactly one of (snake_case): `thesis_validation` or `invalidation_conditions`. No other value is permitted here — the other three categories are node-owned.                                                                           |
+| `question`      | The question text as a specific, externally-answerable query, anchored to the claim's substance.                                                                                                                                       |
 | `signal_source` | The `claim_id` of the claim that motivated this question, copied **verbatim** from the input (e.g. `yt:abc:S003`). It must match an input claim exactly; a question whose `signal_source` names no input claim is dropped by the node. |
-| `rationale` | One to two sentences on why this must be answered before a responsible portfolio decision. |
+| `rationale`     | One to two sentences on why this must be answered before a responsible portfolio decision.                                                                                                                                             |
 
 ---
 

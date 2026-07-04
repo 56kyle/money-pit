@@ -12,6 +12,7 @@ build_execution_params before validation runs — so PipelineOverrides exposes n
 produces an UNMATCHED step. Pinning that observable half is deferred until either PipelineOverrides
 gains a manifest/validation seam or the finalizer node's signature is fixed.
 """
+
 from pathlib import Path
 
 from money_pit.pipeline.determination import load_validation, recompute_determination
@@ -36,9 +37,7 @@ def _write_validation_error(working_dir: Path) -> None:
             ),
         ],
     )
-    _ = (working_dir / _VALIDATION_FILENAME).write_text(
-        validation.model_dump_json(indent=2), encoding="utf-8"
-    )
+    _ = (working_dir / _VALIDATION_FILENAME).write_text(validation.model_dump_json(indent=2), encoding="utf-8")
 
 
 def test_determination_seam_with_validation_error_halts(tmp_path: Path) -> None:

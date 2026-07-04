@@ -1,4 +1,5 @@
 """End-to-end integration test: paper-trade run with stub agents completes all expected nodes."""
+
 import shutil
 from pathlib import Path
 from typing import TypeVar
@@ -64,9 +65,7 @@ def test_paper_trade_execute_path(tmp_path: Path, pipeline_signals_dir: Path) ->
     _ = _assert_file_valid(run_dir, "action_steps_validation.json", ActionStepsValidation)
     _ = _assert_file_valid(run_dir, "execution_journal.json", ExecutionJournal)
 
-    action_steps = _action_steps_adapter.validate_json(
-        (run_dir / "action_steps.json").read_text(encoding="utf-8")
-    )
+    action_steps = _action_steps_adapter.validate_json((run_dir / "action_steps.json").read_text(encoding="utf-8"))
     assert len(action_steps) >= 1, "Expected at least one action step on the execute path"
     assert all(s.step_failed is None for s in action_steps), "All action steps must have step_failed=None"
 
@@ -98,9 +97,7 @@ def test_paper_trade_no_action_path(tmp_path: Path, pipeline_signals_dir: Path) 
 
 
 @pytest.fixture(scope="module")
-def execute_run(
-    tmp_path_factory: pytest.TempPathFactory, pipeline_signals_dir: Path
-) -> tuple[Path, PipelineState]:
+def execute_run(tmp_path_factory: pytest.TempPathFactory, pipeline_signals_dir: Path) -> tuple[Path, PipelineState]:
     run_dir = tmp_path_factory.mktemp("execute_determination")
     final_state = run_pipeline(signals_dir=pipeline_signals_dir, run_dir=run_dir, overrides=phase4_overrides())
     return run_dir, final_state

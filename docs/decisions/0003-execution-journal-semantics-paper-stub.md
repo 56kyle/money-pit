@@ -9,7 +9,7 @@
 `pipeline/execution.py` submits validated orders and records `execution_journal.json`. Until
 the real Alpaca write integration lands (Phase 7), the injected
 `place_order: Callable[[ExecutionParameters], str]` returns only a broker order id — a
-successful call proves *"submitted"*, not *"filled"*. The pre-remediation node wrote the
+successful call proves _"submitted"_, not _"filled"_. The pre-remediation node wrote the
 journal once at the end, hard-coded every entry `phase=SUBMITTED` and the run
 `outcome=EXECUTED_CLEAN`, and did not handle submission failure — so a mid-loop crash left no
 record and a rejected leg was still reported as clean success (`docs/reviews/phase-1-6-findings.md`

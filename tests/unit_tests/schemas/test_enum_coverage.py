@@ -1,4 +1,5 @@
 """Drift guard: asserts every contract-specified string literal is present in the corresponding enum."""
+
 import pytest
 
 from money_pit.schemas.enums import (
@@ -102,9 +103,7 @@ from money_pit.schemas.enums import (
         (Determination, {"PROCEED", "HALT"}),
     ],
 )
-def test_enum_has_all_contract_values(
-    enum_cls: type, expected_values: set[str]
-) -> None:
+def test_enum_has_all_contract_values(enum_cls: type, expected_values: set[str]) -> None:
     member_values: set[str] = {m.value for m in enum_cls}
     assert expected_values <= member_values
 

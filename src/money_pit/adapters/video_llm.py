@@ -1,4 +1,5 @@
 """A1 LLM core: multimodal/text → SignalSetDraft. Encapsulated inside the video adapter."""
+
 from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
@@ -44,11 +45,7 @@ def _build_user_message(payload: VideoPayload) -> str:
         + payload.source_ref.model_dump_json(indent=2)
         + "\n\n## Transcript\n"
         + payload.transcript
-        + (
-            "\n\n## On-Screen Text\n" + "\n".join(payload.on_screen_text)
-            if payload.on_screen_text
-            else ""
-        )
+        + ("\n\n## On-Screen Text\n" + "\n".join(payload.on_screen_text) if payload.on_screen_text else "")
         + "\n\n## Transcript Provenance\n"
         + f"Source: {payload.transcript_source.value}, word-level timestamps: {payload.has_word_timestamps}"
     )

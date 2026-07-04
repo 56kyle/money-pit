@@ -1,4 +1,5 @@
 """Module responsible for handling config used throughout the money_pit package."""
+
 import os
 from functools import lru_cache
 from pathlib import Path

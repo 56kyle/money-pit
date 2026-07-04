@@ -10,6 +10,7 @@ Pins the draft→node→contract pattern for A2:
 - make_questions_node runs each DraftQuestion through the helper (dropping None)
   before merging with the templated questions and writing initial_questions.json.
 """
+
 from collections.abc import Callable
 from pathlib import Path
 
@@ -170,9 +171,7 @@ def initial_questions(
 def test_make_questions_node_converts_known_claim_draft_data_sources(
     initial_questions: InitialQuestions,
 ) -> None:
-    thesis_qs = [
-        q for q in initial_questions.questions if q.category == QuestionCategory.THESIS_VALIDATION
-    ]
+    thesis_qs = [q for q in initial_questions.questions if q.category == QuestionCategory.THESIS_VALIDATION]
 
     assert len(thesis_qs) == 1
     assert thesis_qs[0].data_sources == CATEGORY_TO_TOOLS[QuestionCategory.THESIS_VALIDATION]
@@ -181,9 +180,7 @@ def test_make_questions_node_converts_known_claim_draft_data_sources(
 def test_make_questions_node_converts_known_claim_draft_signal_tier(
     initial_questions: InitialQuestions,
 ) -> None:
-    thesis_qs = [
-        q for q in initial_questions.questions if q.category == QuestionCategory.THESIS_VALIDATION
-    ]
+    thesis_qs = [q for q in initial_questions.questions if q.category == QuestionCategory.THESIS_VALIDATION]
 
     assert len(thesis_qs) == 1
     assert thesis_qs[0].signal_tier == SignalTier.HIGH

@@ -6,6 +6,7 @@ and client_order_id checks (the injected behavioral_match_agent predicate is gon
 real ActionStep / ExecutionParameters values and real dicts throughout. Assertions target
 exception TYPES and ValidationStatus enum values, never gap-message text.
 """
+
 from pathlib import Path
 
 import pytest
@@ -38,9 +39,7 @@ def action_step__step_id(request: FixtureRequest) -> str:
 
 
 @pytest.fixture
-def action_step__client_order_id(
-    request: FixtureRequest, slug: str, action_step__step_id: str
-) -> str:
+def action_step__client_order_id(request: FixtureRequest, slug: str, action_step__step_id: str) -> str:
     return getattr(request, "param", f"{slug}:{action_step__step_id}")
 
 
@@ -160,9 +159,7 @@ def test__validate_step_with_schema_mismatch(action_step: ActionStep, slug: str)
     assert result.gap_description is not None
 
 
-@pytest.mark.parametrize(
-    "action_step__client_order_id", ["not-the-expected-id"], indirect=True
-)
+@pytest.mark.parametrize("action_step__client_order_id", ["not-the-expected-id"], indirect=True)
 def test__validate_step_with_client_order_id_mismatch(
     action_step: ActionStep, slug: str, matched_manifest: dict[str, dict[str, object]]
 ) -> None:

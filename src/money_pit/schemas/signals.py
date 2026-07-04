@@ -1,4 +1,5 @@
 """Claim, SignalSet, CorroborationEntry, AggregatedSignals — post-conversion contracts."""
+
 from typing import ClassVar
 
 from pydantic import BaseModel

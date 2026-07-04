@@ -1,4 +1,5 @@
 """Calls Alpaca read MCP, writes portfolio_snapshot.json."""
+
 from collections.abc import Callable
 from pathlib import Path
 

@@ -15,7 +15,7 @@ The architecture is sound and the read/write safety boundary holds by constructi
 `execution` receives an order callable; no pipeline node imports another). But phases 1-6 —
 broad-stroke generated before the specialized Python agents existed — eroded the
 **determinism and auditability** principles under implementation pressure. Every theme below
-is an instance of that erosion. Nothing live-trades incorrectly *today* (execution is a
+is an instance of that erosion. Nothing live-trades incorrectly _today_ (execution is a
 paper stub; the Alpaca schema keeps the path half-gated), but the spine cannot yet be
 trusted with capital: it has no failure-mode tests, and two safety-critical nodes report
 success they have not earned.
@@ -28,9 +28,10 @@ the failure-mode test that proves the node fails closed.
 ## Cross-cutting themes
 
 ### T1 — The draft→node→contract LLM-boundary pattern was never applied
+
 `[BLOCKER-class · schemas, compute, agents]`
 
-A2/A3/A4 agents declare the on-disk *contract* type as `output_type`, so the model authors
+A2/A3/A4 agents declare the on-disk _contract_ type as `output_type`, so the model authors
 deterministic fields: `confidence` (§9: code-derived), `Q###` ids, `data_sources` routing,
 carry-through `category`/`signal_source`/`signal_tier` joins, plus draft-schema fields
 `requires_validation`, `has_actionable_content`, `source_context`. The purpose-built
@@ -48,6 +49,7 @@ carry-through `category`/`signal_source`/`signal_tier` joins, plus draft-schema 
 **Fix:** switch agents to draft output types; derive the deterministic fields in nodes.
 
 ### T2 — Required audit artifacts never written; A6 reads memory not files
+
 `[MAJOR · graph, pipeline]`
 
 `determination.json/.md` (the §6.7/§12 audit anchor), `analysis.md` (full A4 reasoning incl.
@@ -59,6 +61,7 @@ every dropped claim), and `aggregated_signals.md` are never produced. `determina
 `.md`/`analysis.md` companions.
 
 ### T3 — Terminal-state routing: 2 outcomes where the spec needs 4
+
 `[MAJOR · graph/edges.py, schemas/enums.py, pipeline/analysis.py]`
 
 Post-processor `NO_ACTION` routes to `notification` (emails) while signal-gate `NO_ACTION`
@@ -66,7 +69,7 @@ routes silently to `END` — same state, two behaviors. `VALIDATION_ERROR` /
 `ORCHESTRATION_ERROR` terminals are never set/unreachable; parse-failure collapses into the
 validation-error email branch. In schemas: `TerminalState` (`enums.py:112-119`) has
 `VALIDATION_FAILED` (canonical is **`VALIDATION_ERROR`**, architecture §10), omits
-**`ORCHESTRATION_ERROR`**, and carries `EXECUTION_FAILED` (an execution *outcome* per §0, not
+**`ORCHESTRATION_ERROR`**, and carries `EXECUTION_FAILED` (an execution _outcome_ per §0, not
 a §10 terminal state). The §6a halt object is unrepresentable (`ActionStep.step_failed` is
 `Literal[None]`; `AnalysisJudgment` has `claim_id`, not the `step_id` the router keys on).
 
@@ -74,10 +77,11 @@ a §10 terminal state). The §6a halt object is unrepresentable (`ActionStep.ste
 and parse-failure→ORCHESTRATION_ERROR branches.
 
 ### T4 — The two safety-critical nodes are stubs that misreport state
+
 `[MAJOR · pipeline/execution.py, pipeline/validator.py]`
 
 - `execution.py:34-63` places every order in a plain loop, writes the journal **once at the
-  end** (a mid-loop crash leaves *no* record — defeats the §7a incremental-journal
+  end** (a mid-loop crash leaves _no_ record — defeats the §7a incremental-journal
   guarantee), and hardcodes `outcome=EXECUTED_CLEAN` even if a leg is rejected. No terminus
   marker.
 - `validator.py` (A5) has its tool-existence check stubbed (`mcp/manifest.py` empty) and
@@ -90,14 +94,15 @@ journaling + honest outcome derivation (execution); revert the predicate to a `t
 config lookup (validator). Leave the genuinely Phase-7-dependent pieces as **explicitly
 marked, fail-closed** bounded stubs: atomic-group compensation (unreachable at N=1, with a
 test that flips red when `group_id` populates); the manifest existence check (unverifiable →
-UNMATCHED/HALT, never a silent pass). *A safety gate that cannot run its check must not
-answer "safe."*
+UNMATCHED/HALT, never a silent pass). _A safety gate that cannot run its check must not
+answer "safe."_
 
 ### T5 — Production entrypoint silently mixes real and stub dependencies
+
 `[MAJOR · pipeline/orchestration.py:306-309]`
 
 `run_pipeline` defaults `fetch_portfolio`/`place_order`/`send_email` to Phase-4 stubs (fake
-$100k empty account, paper placer, no-op email) *while constructing real LLM agents*. A
+$100k empty account, paper placer, no-op email) _while constructing real LLM agents_. A
 caller injecting a real `place_order` but forgetting `fetch_portfolio` would size real orders
 against a fabricated account, silently.
 
@@ -105,11 +110,12 @@ against a fabricated account, silently.
 `phase4_overrides()` test path.
 
 ### T6 — Alpaca schema single-source is wrong, misplaced, and silently masking Phase-7 gate 1
+
 `[MAJOR · compute/execution_params.py:9-11, pipeline/validator.py:20-22]`
 
 Both modules independently compute a 4-`.parent` path → `<repo-root>/mcp/alpaca_order_schema.json`
 (docs pin `src/money_pit/mcp/`; the repo-root location won't ship in the wheel). They agree
-only by duplicated literal. A stub file *actually exists* at that wrong location, so the
+only by duplicated literal. A stub file _actually exists_ at that wrong location, so the
 intended "CI-red until pinned" gate is **silently green**, and `execution_params` loads the
 schema then discards it, emitting hardcoded keys it never validates against.
 
@@ -117,6 +123,7 @@ schema then discards it, emitting hardcoded keys it never validates against.
 under the package; validate/derive emitted keys from the loaded schema.
 
 ### T7 — Scattered magic values / un-centralized cross-node string contracts
+
 `[MINOR (several) · compute, pipeline, agents, config]`
 
 The `indicator:` prefix + five indicator names triplicated across `questions`/`retrieval`/
@@ -129,7 +136,7 @@ and no log (violates "fail closed, notify loudly"); notification subject + worki
 (`runs/` vs `data/daily_show/`) drift from pinned conventions; `episode_summary` should be
 `summary`; loose `str` where enums belong; placeholder `data_sources: ["none"]` unrepresentable.
 
-*Latent trap (not an active bug):* the `ActionSteps` object-wrapper (`schemas/action_steps.py:45`)
+_Latent trap (not an active bug):_ the `ActionSteps` object-wrapper (`schemas/action_steps.py:45`)
 would emit `{steps:[...]}` and make A5 HALT — but the node serializes a list directly
 (`analysis.py:204-205`), so the wrapper is dead. Retire it so no one uses it later.
 
@@ -137,13 +144,13 @@ would emit `{steps:[...]}` and make A5 HALT — but the node serializes a list d
 
 ## Phase-7 readiness & test-debt (the five gates)
 
-| Gate | Status | Note |
-|---|---|---|
-| **1/3 · order-schema pin** | ❌ broken & masked | Wrong path, misplaced outside `src/`, silently green, duplicated, emission never validated against it. Fix in P1/T6 before Phase 7. |
-| **3 · manifest ↔ A5 agreement** | ❌ not ready | `manifest.py` empty; A5 tool-existence stubbed; behavioral-match an LLM no-op. The 4→5→6 literal seam can't be verified end-to-end yet. |
+| Gate                                 | Status                            | Note                                                                                                                                                                                                                                                                   |
+| ------------------------------------ | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1/3 · order-schema pin**           | ❌ broken & masked                | Wrong path, misplaced outside `src/`, silently green, duplicated, emission never validated against it. Fix in P1/T6 before Phase 7.                                                                                                                                    |
+| **3 · manifest ↔ A5 agreement**      | ❌ not ready                      | `manifest.py` empty; A5 tool-existence stubbed; behavioral-match an LLM no-op. The 4→5→6 literal seam can't be verified end-to-end yet.                                                                                                                                |
 | **4 · ResearchTools ↔ ResearchDeps** | ⚠️ clean port, unmanaged terminus | Satisfiable structurally today, but convergence is only a docstring promise. Make the protocols the single shared source both `agents/` and `mcp/clients.py` import; add a `@runtime_checkable` conformance test so a Phase-7 rename fails a test, not silently forks. |
-| **2 · read/write negative test** | ✅ intact / ❌ untested | Boundary safe by construction; no negative test asserts the read path can't reach `place_order`. Author at Phase 7. |
-| **5 · email_server isolation** | ❌ untested | No import-graph check. Author at Phase 7 (import-linter / module-graph test). |
+| **2 · read/write negative test**     | ✅ intact / ❌ untested           | Boundary safe by construction; no negative test asserts the read path can't reach `place_order`. Author at Phase 7.                                                                                                                                                    |
+| **5 · email_server isolation**       | ❌ untested                       | No import-graph check. Author at Phase 7 (import-linter / module-graph test).                                                                                                                                                                                          |
 
 ---
 

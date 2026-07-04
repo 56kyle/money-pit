@@ -1,4 +1,5 @@
 """Tests for build_execution_params — positive path and schema-source fail-closed contract."""
+
 import json
 from pathlib import Path
 
@@ -21,9 +22,7 @@ from money_pit.schemas.enums import ActionType
         (ActionType.TRIM, "sell"),
     ],
 )
-def test_build_execution_params_side(
-    action_type: ActionType, expected_side: str
-) -> None:
+def test_build_execution_params_side(action_type: ActionType, expected_side: str) -> None:
     result = build_execution_params(
         step_id="A001",
         slug="2026-01-01_00-00-00",
@@ -82,9 +81,7 @@ def order_schema__required(request: FixtureRequest) -> list[str]:
 
 
 @pytest.fixture
-def order_schema(
-    request: FixtureRequest, order_schema__required: list[str]
-) -> dict[str, object]:
+def order_schema(request: FixtureRequest, order_schema__required: list[str]) -> dict[str, object]:
     return getattr(
         request,
         "param",

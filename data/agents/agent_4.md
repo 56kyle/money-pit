@@ -101,7 +101,7 @@ For each thesis surviving Step 4, construct three scenarios with independent int
 
 - **Bull** — the outcome if the thesis plays out faster or more completely than expected. State the specific confirming metric, the expected return as a decimal fraction (e.g. `0.20` for +20%), and the timeframe.
 - **Base** — the central expectation. State the path, the confirming metric(s), the expected return as a decimal fraction, and the timeframe.
-- **Bear** — the specific mechanism by which the thesis is *wrong*. Not merely "the stock falls," but what specific information would have been incorrect or what specific event would have changed the outcome. State the expected loss as a negative decimal fraction (e.g. `-0.15` for -15%) and the maximum drawdown estimate as a positive decimal fraction representing peak-to-trough decline.
+- **Bear** — the specific mechanism by which the thesis is _wrong_. Not merely "the stock falls," but what specific information would have been incorrect or what specific event would have changed the outcome. State the expected loss as a negative decimal fraction (e.g. `-0.15` for -15%) and the maximum drawdown estimate as a positive decimal fraction representing peak-to-trough decline.
 
 Assign a probability to each scenario as an integer on a 0–100 scale. The three probabilities must sum to exactly 100. Compute **expected value** as the probability-weighted sum of the three scenario returns:
 
@@ -161,34 +161,51 @@ Each thesis that survives all seven steps becomes one element of the container's
       "expected_value": 0,
       "conviction": "HIGH | MEDIUM | LOW",
       "scenario_table": {
-        "bull": { "probability": 0, "return": 0, "timeframe": "string", "confirming_metric": "string", "mechanism": null, "max_drawdown": null },
-        "base": { "probability": 0, "return": 0, "timeframe": "string", "confirming_metric": "string", "mechanism": null, "max_drawdown": null },
-        "bear": { "probability": 0, "return": 0, "timeframe": null, "confirming_metric": null, "mechanism": "string", "max_drawdown": 0 }
+        "bull": {
+          "probability": 0,
+          "return": 0,
+          "timeframe": "string",
+          "confirming_metric": "string",
+          "mechanism": null,
+          "max_drawdown": null
+        },
+        "base": {
+          "probability": 0,
+          "return": 0,
+          "timeframe": "string",
+          "confirming_metric": "string",
+          "mechanism": null,
+          "max_drawdown": null
+        },
+        "bear": {
+          "probability": 0,
+          "return": 0,
+          "timeframe": null,
+          "confirming_metric": null,
+          "mechanism": "string",
+          "max_drawdown": 0
+        }
       },
-      "invalidation_conditions": [
-        { "condition": "string", "action": "string" }
-      ],
+      "invalidation_conditions": [{ "condition": "string", "action": "string" }],
       "sizing_rationale": "string",
       "disposition": "SUPPORTED | UNVERIFIED"
     }
   ],
-  "dropped_claims": [
-    { "claim_id": "string", "reason": "string" }
-  ],
-  "macro_read": [
-    { "indicator": "string", "reading": "string", "favorable": true }
-  ],
+  "dropped_claims": [{ "claim_id": "string", "reason": "string" }],
+  "macro_read": [{ "indicator": "string", "reading": "string", "favorable": true }],
   "halt": null
 }
 ```
 
 Container field rules:
+
 - `theses` — one object per surviving thesis (may be empty). Each thesis object's field rules follow below.
 - `dropped_claims` — one object per claim you discarded, each with the originating `claim_id` and a specific `reason` (may be empty). Every contradicted or later-dropped claim goes here.
 - `macro_read` — one object per regime indicator you read, each with `indicator`, `reading`, and `favorable` (`true`/`false`/`null`); see Step 2.
 - `halt` — `null` in every non-halt terminal state; an object `{"reason": "string"}` only when a mandatory step could not be completed (see Halt Protocol). When `halt` is non-null, `theses` must be empty.
 
 Thesis object field rules:
+
 - `claim_id` — the `claim_id` from `aggregated_signals.json` that originated this thesis; the join key the post-processor uses to correlate judgment to claim. You assign this.
 - `instrument` — the ticker symbol; you assign this.
 - `action_type` — one of `BUY | SELL | TRIM | ADD`; you assign this.

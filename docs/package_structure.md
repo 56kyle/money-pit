@@ -141,7 +141,3 @@ After scaffolding (creating empty `__init__.py` files and stub modules):
 - `tests/unit_tests/compute/` — one test file per `compute/` module (highest-value target)
 - `tests/integration_tests/pipeline/` — per-node integration tests with stubbed agents
 - `tests/acceptance_tests/` — end-to-end paper-trading runs
-
-
-
-

@@ -4,6 +4,7 @@ Pins the loose-str -> SignalTier tightening: signal_tier must be a real SignalTi
 (coerced from its value or accepted as the enum), and an unknown tier string is rejected at
 construction. Red today because the field is an unconstrained `str`.
 """
+
 import pytest
 from pydantic import ValidationError
 

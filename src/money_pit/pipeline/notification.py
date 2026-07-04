@@ -1,4 +1,5 @@
 """Notification sub-agent: email templating per terminal state, send_email call."""
+
 from collections.abc import Callable
 from pathlib import Path
 
@@ -35,9 +36,7 @@ def _build_body(
     action_steps: list[ActionStep],
     validation: ActionStepsValidation | None,
 ) -> str:
-    terminal_label: str = (
-        terminal_state.value if terminal_state is not None else "none (validation gate)"
-    )
+    terminal_label: str = terminal_state.value if terminal_state is not None else "none (validation gate)"
     lines: list[str] = [
         f"Slug: {slug}",
         f"Terminal state: {terminal_label}",
@@ -82,15 +81,11 @@ def make_notification_node(
 
         action_steps: list[ActionStep] = []
         if (action_steps_path := working_dir / ACTION_STEPS_JSON_FILENAME).exists():
-            action_steps = _action_steps_ta.validate_json(
-                action_steps_path.read_text(encoding="utf-8")
-            )
+            action_steps = _action_steps_ta.validate_json(action_steps_path.read_text(encoding="utf-8"))
 
         validation: ActionStepsValidation | None = None
         if (validation_path := working_dir / ACTION_STEPS_VALIDATION_JSON_FILENAME).exists():
-            validation = ActionStepsValidation.model_validate_json(
-                validation_path.read_text(encoding="utf-8")
-            )
+            validation = ActionStepsValidation.model_validate_json(validation_path.read_text(encoding="utf-8"))
 
         subject: str = _build_subject(slug, terminal_state, validation)
         body: str = _build_body(slug, terminal_state, action_steps, validation)

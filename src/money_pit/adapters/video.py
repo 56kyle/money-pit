@@ -1,4 +1,5 @@
 """VideoAdapter: accepts a pre-built VideoPayload, persists it before LLM classification, and post-processes SignalSetDraft → SignalSet."""
+
 from collections.abc import Callable
 from pathlib import Path
 

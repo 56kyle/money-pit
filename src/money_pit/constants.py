@@ -1,4 +1,5 @@
 """Module containing constants used throughout the money_pit package."""
+
 import datetime
 from pathlib import Path
 

@@ -3,6 +3,7 @@
 Depends only on money_pit.schemas so it stays a cycle-free leaf importable by every layer
 that produces or consumes these callables.
 """
+
 from collections.abc import Callable
 from collections.abc import Mapping
 from typing import TypeAlias

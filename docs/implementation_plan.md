@@ -13,6 +13,7 @@ Architecture phase is complete. All six agent prompts, `docs/design_decisions.md
 ## Current State
 
 **Phase 1 (`schemas/`) — COMPLETE.**
+
 - All 17 schema files implemented (Pydantic v2, `frozen=True`, `extra='forbid'`, `ClassVar[ConfigDict]`)
 - `schemas/macro.py` created; `schemas/__init__.py` re-exports all 49 public types
 - `Config` extended with 10 regime/sizing knobs + 5 indicator threshold fields (env var overrides, sensible defaults)
@@ -21,17 +22,20 @@ Architecture phase is complete. All six agent prompts, `docs/design_decisions.md
 - `tests/conftest.py` updated: `pytest-repo-structure` plugin is optional
 
 **Phase 2 (`compute/`) — COMPLETE.**
+
 - All 9 compute modules implemented; `compute/tool_map.py` created as a new file
 - 96 unit tests passing; basedpyright 0 errors, 0 warnings
 - `docs/decisions/0001-regime-scalar-threshold-v0.md` (MADR v4) written alongside `regime.py`
 - Shared test fixtures extracted to `tests/unit_tests/compute/conftest.py`
 
 **Phase 3 (`graph/edges.py`) — COMPLETE.**
+
 - `PipelineState` TypedDict (`graph/state.py`), three gate functions (`graph/edges.py`) implemented
 - 13 unit tests passing; basedpyright 0 errors, 0 warnings
 - Routing string constants (`PROCEED`, `NO_ACTION`, `VALIDATE`, `HALT`, `EXECUTE`, `NOTIFY`) defined in `edges.py`
 
 **Phase 4 (deterministic spine) — COMPLETE.**
+
 - 10 pipeline nodes implemented: `snapshot`, `aggregator`, `questions`, `retrieval`, `analysis`, `validator`, `execution`, `notification` + inline `no_action_terminal`
 - `graph/graph.py` assembles `StateGraph[PipelineState]` with all conditional edges
 - `pipeline/orchestration.py` wires Phase 4 stubs and exposes `run_pipeline()`
@@ -41,6 +45,7 @@ Architecture phase is complete. All six agent prompts, `docs/design_decisions.md
 - basedpyright: 0 errors across all pipeline modules (LangGraph stub warnings are structural noise)
 
 **Phase 5 (LLM cores) — COMPLETE.**
+
 - Pydantic AI 2.1.0 agents implemented for A2 (claim_questions), A3 (answer_synthesis), A4 (thesis_judgment)
 - System prompts loaded verbatim from `data/agents/agent_N.md` at module import time
 - `DeterministicResearchTools` and `OpenEndedResearchTools` Protocols defined in `agents/research_tools.py`
@@ -50,6 +55,7 @@ Architecture phase is complete. All six agent prompts, `docs/design_decisions.md
 - 112/112 tests passing; 0 basedpyright errors
 
 **Phase 6 (Source Adapters) — COMPLETE.**
+
 - `adapters/base.py`: `SourceAdapter[T]` generic ABC; ADR in `docs/decisions/0002-source-adapter-pattern.md`
 - `adapters/video_llm.py`: `VideoPayload` Pydantic model + `TranscriptSource` enum + `make_video_llm_agent` A1 factory loading `data/agents/agent_1.md`
 - `adapters/video.py`: `VideoAdapter(SourceAdapter[VideoPayload])` — pre-LLM persistence, `SignalSetDraft → SignalSet` post-processing
@@ -63,6 +69,7 @@ Architecture phase is complete. All six agent prompts, `docs/design_decisions.md
 ## Phase 1: `schemas/` — COMPLETE
 
 All 17 schema files implemented in dependency order. Key constraints:
+
 - `(str, Enum)` base class throughout (not `StrEnum`) — Python 3.10 compat + basedpyright clean
 - `model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")` on every model
 - `schemas/macro.py` (`MacroIndicators`) isolated so `compute/regime.py` doesn't import answer contracts
@@ -81,13 +88,13 @@ Pure functions, no I/O, no LLM. Key design decisions resolved:
 
 **v0 resolution:** `discretize(value, threshold, orientation, band) -> int | None`. Five structural thresholds:
 
-| indicator | threshold | orientation |
-|---|---|---|
-| `yield_curve` (T10Y2Y) | 0.0 | +1 |
-| `credit_spreads` (HY OAS pct pts) | 3.0 | -1 |
-| `pmi` (ISM Mfg) | 50.0 | +1 |
-| `earnings_revisions` (breadth fraction) | 0.0 | +1 |
-| `inflation` (CPILFESL YoY %) | 2.5 | -1 |
+| indicator                               | threshold | orientation |
+| --------------------------------------- | --------- | ----------- |
+| `yield_curve` (T10Y2Y)                  | 0.0       | +1          |
+| `credit_spreads` (HY OAS pct pts)       | 3.0       | -1          |
+| `pmi` (ISM Mfg)                         | 50.0      | +1          |
+| `earnings_revisions` (breadth fraction) | 0.0       | +1          |
+| `inflation` (CPILFESL YoY %)            | 2.5       | -1          |
 
 `regime_lookback` unused in v0. `RECOVERY` rule dropped (needs prior-period state). ADR: `docs/decisions/0001-regime-scalar-threshold-v0.md`.
 
@@ -95,16 +102,16 @@ Pure functions, no I/O, no LLM. Key design decisions resolved:
 
 `growth = pmi + earnings`. Ordered, first match wins:
 
-| Rule | Tag | Condition |
-|---|---|---|
-| 0 | UNCERTAIN | any indicator None |
-| 1 | LATE_CYCLE_STRESS | curve==-1 AND credit==-1 AND pmi<=0 AND earnings<=0 |
-| 2 | STAGFLATION | credit<=0 AND pmi<=0 AND earnings<=0 AND inflation==-1 |
-| 3 | GROWTH_ACCELERATING | curve>=0 AND credit>=0 AND pmi==1 AND earnings==1 AND inflation>=0 |
-| 4 | RECOVERY | DROPPED in v0 |
-| 5 | GROWTH_DECELERATING | credit>=0 AND pmi<=0 AND earnings<=0 AND inflation>=0 |
-| guard | UNCERTAIN | (curve+credit)>=1 while growth<=-1, or (curve+credit)<=-1 while growth>=1 |
-| fallback | varies | total=curve+credit+pmi+earnings: >1→GROWTH_ACCELERATING; <-1→GROWTH_DECELERATING; else UNCERTAIN |
+| Rule     | Tag                 | Condition                                                                                        |
+| -------- | ------------------- | ------------------------------------------------------------------------------------------------ |
+| 0        | UNCERTAIN           | any indicator None                                                                               |
+| 1        | LATE_CYCLE_STRESS   | curve==-1 AND credit==-1 AND pmi<=0 AND earnings<=0                                              |
+| 2        | STAGFLATION         | credit<=0 AND pmi<=0 AND earnings<=0 AND inflation==-1                                           |
+| 3        | GROWTH_ACCELERATING | curve>=0 AND credit>=0 AND pmi==1 AND earnings==1 AND inflation>=0                               |
+| 4        | RECOVERY            | DROPPED in v0                                                                                    |
+| 5        | GROWTH_DECELERATING | credit>=0 AND pmi<=0 AND earnings<=0 AND inflation>=0                                            |
+| guard    | UNCERTAIN           | (curve+credit)>=1 while growth<=-1, or (curve+credit)<=-1 while growth>=1                        |
+| fallback | varies              | total=curve+credit+pmi+earnings: >1→GROWTH_ACCELERATING; <-1→GROWTH_DECELERATING; else UNCERTAIN |
 
 ### Sizing (`sizing.py`)
 
@@ -139,6 +146,7 @@ def determination_gate(state: PipelineState) -> str: # → "execute" | "notify"
 `PipelineState` is a `TypedDict` defined in `graph/state.py` (Phase 4). For Phase 3 tests, define a minimal inline dict or stub.
 
 **Tests** (`tests/unit_tests/graph/test_edges.py`):
+
 - `signal_gate`: `has_actionable_content=True` → "proceed"; `False` → "no_action"
 - `terminal_state_router`: `terminal_state` set → "halt"; not set → "validate"
 - `determination_gate`: all steps `MATCHED` → "execute"; any `UNMATCHED` → "notify"; empty steps → "notify"
@@ -209,14 +217,14 @@ Prior-journal reconciliation: reads `execution_journal.json`, checks for in-flig
 
 ## Key Checkpoints
 
-| Checkpoint | Criterion |
-|---|---|
-| schemas/ complete ✓ | `python -c "from money_pit import schemas"` clean; basedpyright clean; enum guard passes |
-| compute/ complete ✓ | All property tests green; every reachable regime tag covered; 96 tests passing |
-| gates complete ✓ | Three `graph/edges.py` gate tests pass on hand-built JSON |
-| spine green | End-to-end paper-trade run with stub agents; all working-dir files schema-valid; zero LLM calls |
-| schema pinned | `mcp/alpaca_order_schema.json` populated from live Alpaca MCP; `execution_params` validates against it |
-| full pipeline | End-to-end with real agents on paper-trading account; `determination.json` written; email or execution triggered correctly |
+| Checkpoint          | Criterion                                                                                                                  |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| schemas/ complete ✓ | `python -c "from money_pit import schemas"` clean; basedpyright clean; enum guard passes                                   |
+| compute/ complete ✓ | All property tests green; every reachable regime tag covered; 96 tests passing                                             |
+| gates complete ✓    | Three `graph/edges.py` gate tests pass on hand-built JSON                                                                  |
+| spine green         | End-to-end paper-trade run with stub agents; all working-dir files schema-valid; zero LLM calls                            |
+| schema pinned       | `mcp/alpaca_order_schema.json` populated from live Alpaca MCP; `execution_params` validates against it                     |
+| full pipeline       | End-to-end with real agents on paper-trading account; `determination.json` written; email or execution triggered correctly |
 
 ---
 

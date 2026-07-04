@@ -3,6 +3,7 @@
 Pins wave S1 / ADR 0003: outcome derivation, per-leg fail-and-continue, incremental
 crash-survivable journaling, and the fail-closed atomic-group terminus.
 """
+
 from pathlib import Path
 
 import pytest
@@ -140,9 +141,7 @@ def execution_working_dir(tmp_path: Path, execution_working_dir__steps: list[Act
 
 
 def _read_journal(working_dir: Path) -> ExecutionJournal:
-    return ExecutionJournal.model_validate_json(
-        (working_dir / "execution_journal.json").read_text(encoding="utf-8")
-    )
+    return ExecutionJournal.model_validate_json((working_dir / "execution_journal.json").read_text(encoding="utf-8"))
 
 
 @pytest.fixture
@@ -259,8 +258,6 @@ def test_make_execution_node_with_all_success_phases(happy_journal: ExecutionJou
 
 def test_make_execution_node_with_all_success_fill_markers_none(happy_journal: ExecutionJournal) -> None:
     assert all(
-        entry.filled_qty is None
-        and entry.filled_avg_price is None
-        and entry.realized_notional is None
+        entry.filled_qty is None and entry.filled_avg_price is None and entry.realized_notional is None
         for entry in happy_journal.entries
     )

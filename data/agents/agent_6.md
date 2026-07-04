@@ -22,6 +22,7 @@ data/daily_show/{YYYY-MM-DD_HH-MM-SS}/
 ```
 
 The graph state passed into your node includes:
+
 - `working_dir` — the absolute path to the run directory above
 - a completion record for all prior pipeline steps
 
@@ -137,11 +138,13 @@ override, or reason about a sub-agent's internal behavior.
 ### 5.1 Execution Sub-agent (spawned on `PROCEED`)
 
 **You pass in:**
+
 - `working_dir` — the run directory path
 - the **validated action steps JSON** (the validated steps the Execution
   Sub-agent will act on)
 
 **You expect back:**
+
 - a terminal completion status indicating `success` or `failure`
 - on failure or timeout, an error description string
 
@@ -151,6 +154,7 @@ record whatever terminal status the sub-agent returns.
 ### 5.2 Email Notification Sub-agent (spawned on `HALT`)
 
 **You pass in:**
+
 - `working_dir` — the run directory path
 - `slug` — the run slug from the validation JSON
 - `recipient` — the owner email address: **`56kyleoliver@gmail.com`**
@@ -158,6 +162,7 @@ record whatever terminal status the sub-agent returns.
   markdown as supplementary context)
 
 **You expect back:**
+
 - explicit confirmation that the notification email was sent (`success`)
 - on failure or timeout, an error description string (`failure`)
 
@@ -172,9 +177,11 @@ cases: write what you can to `determination.json`, surface the error to the
 graph state, and **never silently continue**.
 
 ### 6.1 Validation JSON malformed or missing
+
 If `action_steps_validation.json` cannot be found, cannot be read, fails to
 parse, fails schema expectations, has a missing/empty/non-array `steps`, or
 contains an unrecognized `status` value:
+
 - `HALT`. Do **not** proceed to execution under any circumstance.
 - **Do not spawn the Email Notification Sub-agent.** A 6.1 failure means the
   report is unreadable, so you cannot reliably populate the slug, recipient,
@@ -190,12 +197,14 @@ contains an unrecognized `status` value:
   otherwise surface the error rather than fabricating data.
 
 ### 6.2 `overall_status` contradicts per-step statuses
+
 Trust the **per-step statuses**, never the summary field. If `overall_status`
 says `PASS` but a step is `UNMATCHED`, the determination is `HALT`.
 If `overall_status` says `FAIL` but all steps are `MATCHED`, the determination
 is `PROCEED`. Log the contradiction as a decision point with its reason.
 
 ### 6.3 Spawned sub-agent fails or times out
+
 - Record the failure in `determination.json`: set `sub_agent_outcome` to
   `"failure"` and populate `sub_agent_error` with the error/timeout string.
 - Surface the error to the graph state so the orchestration layer can handle
@@ -208,6 +217,7 @@ is `PROCEED`. Log the contradiction as a decision point with its reason.
   above. Do not invent or apply your own timeout window.
 
 ### 6.4 Any unexpected exception
+
 - `HALT` the node's forward progress.
 - Record what you can in `determination.json`.
 - Surface the exception to the graph state.
@@ -235,6 +245,7 @@ is `PROCEED`. Log the contradiction as a decision point with its reason.
 
 Log each of the following as a discrete decision point, each with an explicit
 `reason`, to the graph state and/or run logs:
+
 - which validation file was read and whether it parsed
 - the per-step status tally and the recomputed determination
 - any contradiction between `overall_status` and per-step statuses
@@ -268,6 +279,7 @@ may follow second). It conforms to this schema:
 ```
 
 Field rules:
+
 - `slug` — from the validation JSON. If unreadable per §6.1, surface the error
   rather than fabricating; populate only if it could actually be read.
 - `determination` — `PROCEED` only if every step is `MATCHED`; otherwise

@@ -1,4 +1,5 @@
 """Shared fixtures for pipeline unit tests."""
+
 from collections.abc import Iterator
 
 import pytest

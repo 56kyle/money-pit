@@ -34,8 +34,7 @@ never default to the passing answer.**
 **1. A5 validates against a static manifest of the closed Alpaca write-tool set.** The manifest
 is `{"place_order": <the pinned alpaca_order_schema>}` — the only tool `ACTION_TYPE_TO_TOOL`
 targets — assembled from `mcp.order_schema.load_order_schema()`. Existence check: the router's
-tool name is a key in the manifest. Schema-acceptance check: `jsonschema.validate(params,
-manifest[tool])`. This is **contract-level** existence (does the selected tool appear in the
+tool name is a key in the manifest. Schema-acceptance check: `jsonschema.validate(params, manifest[tool])`. This is **contract-level** existence (does the selected tool appear in the
 pinned write-tool set), **not** runtime availability (a live server is up and exposes it) — the
 latter is the honest Phase-7 deferral.
 
@@ -72,8 +71,7 @@ accepted, mirroring ADR 0003's journal split (conformance now, introspection def
 ### Confirmation
 
 Tests: a manifest omitting `place_order` → step `UNMATCHED` with an honest gap; an unavailable
-manifest → `ManifestUnavailableError` (fail-closed); the invariant `set(ACTION_TYPE_TO_TOOL) ==
-set(ActionType)`; and the emitted params still validate against `manifest["place_order"]`
+manifest → `ManifestUnavailableError` (fail-closed); the invariant `set(ACTION_TYPE_TO_TOOL) == set(ActionType)`; and the emitted params still validate against `manifest["place_order"]`
 (preserving the P1 single-source). The static→live terminus is signalled when introspection
 replaces the static default.
 

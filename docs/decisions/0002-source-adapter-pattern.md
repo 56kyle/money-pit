@@ -20,17 +20,17 @@ Phase 6 introduces the source adapter layer: a thin translation tier that sits b
 
 ## Decision Drivers
 
-* Each source type has a structurally distinct payload; collapsing them to `Any` discards that contract.
-* Adapters should be stateless (hold configuration only) so that a single instance can be reused across runs.
-* Video fetching and transcription are expensive; LLM classification is cheap to retry. The two costs should be independently recoverable.
-* The test seam for `VideoAdapter` should be a concrete, inspectable intermediate — not a mock of a download or transcription call.
-* `SourceAdapter.process()` must take a single payload argument to conform to the adapter pattern's interface.
+- Each source type has a structurally distinct payload; collapsing them to `Any` discards that contract.
+- Adapters should be stateless (hold configuration only) so that a single instance can be reused across runs.
+- Video fetching and transcription are expensive; LLM classification is cheap to retry. The two costs should be independently recoverable.
+- The test seam for `VideoAdapter` should be a concrete, inspectable intermediate — not a mock of a download or transcription call.
+- `SourceAdapter.process()` must take a single payload argument to conform to the adapter pattern's interface.
 
 ## Considered Options
 
-* **Adapter interface**: `SourceAdapter[T]` generic ABC vs. `process(payload: Any)` with no type parameter
-* **Slug placement**: `VideoPayload.slug` (on payload) vs. `VideoAdapter.__init__(slug=...)` (on constructor)
-* **Intermediate persistence**: write `video_payload.json` before LLM call vs. keep both steps in memory
+- **Adapter interface**: `SourceAdapter[T]` generic ABC vs. `process(payload: Any)` with no type parameter
+- **Slug placement**: `VideoPayload.slug` (on payload) vs. `VideoAdapter.__init__(slug=...)` (on constructor)
+- **Intermediate persistence**: write `video_payload.json` before LLM call vs. keep both steps in memory
 
 ## Decision Outcome
 
@@ -44,12 +44,12 @@ All three chosen options form a coherent whole:
 
 ### Consequences
 
-* Good, because `SourceAdapter[VideoPayload]` is visible to the type checker and to readers — the interface is the contract.
-* Good, because stateless adapters have a clear, stable lifetime: construct once, call `process()` many times with different payloads.
-* Good, because LLM retries (e.g., after a bad classification) are cheap: re-read the cached `video_payload.json` and re-call the agent. No re-download.
-* Good, because the test seam is a hand-authored `VideoPayload` JSON fixture, not a mock of network or GPU calls.
-* Bad, because the `Generic[Payload]` pattern requires callers to instantiate the correct concrete type; there is no runtime enforcement of the type parameter.
-* Bad, because `video_payload.json` written to `cache_dir` creates an implicit dependency on the filesystem that pure in-memory tests must account for.
+- Good, because `SourceAdapter[VideoPayload]` is visible to the type checker and to readers — the interface is the contract.
+- Good, because stateless adapters have a clear, stable lifetime: construct once, call `process()` many times with different payloads.
+- Good, because LLM retries (e.g., after a bad classification) are cheap: re-read the cached `video_payload.json` and re-call the agent. No re-download.
+- Good, because the test seam is a hand-authored `VideoPayload` JSON fixture, not a mock of network or GPU calls.
+- Bad, because the `Generic[Payload]` pattern requires callers to instantiate the correct concrete type; there is no runtime enforcement of the type parameter.
+- Bad, because `video_payload.json` written to `cache_dir` creates an implicit dependency on the filesystem that pure in-memory tests must account for.
 
 ### Confirmation
 
@@ -59,39 +59,39 @@ The test fixture pattern (`VideoPayload` loaded from a hand-authored JSON file) 
 
 ### `SourceAdapter[T]` generic ABC
 
-* Good, because `VideoAdapter.process(payload: VideoPayload)` is statically verifiable — a caller passing a `TextPayload` is a type error, not a silent runtime failure.
-* Good, because the generic parameter makes each adapter's contract self-documenting without a comment.
-* Bad, because `Generic[Payload]` adds a layer of abstraction that may be unfamiliar to readers who expect a simpler ABC.
+- Good, because `VideoAdapter.process(payload: VideoPayload)` is statically verifiable — a caller passing a `TextPayload` is a type error, not a silent runtime failure.
+- Good, because the generic parameter makes each adapter's contract self-documenting without a comment.
+- Bad, because `Generic[Payload]` adds a layer of abstraction that may be unfamiliar to readers who expect a simpler ABC.
 
 ### `process(payload: Any)` with no type parameter
 
-* Good, because it is simple — one base class, no type parameter, no import of `Generic`.
-* Bad, because the distinction between `VideoPayload`, `TextPayload`, and `PDFPayload` is lost at the interface boundary; the type checker cannot catch a mismatched payload.
-* Bad, because the docstring or a comment would be the only contract documentation, violating the project naming and commenting ethos.
+- Good, because it is simple — one base class, no type parameter, no import of `Generic`.
+- Bad, because the distinction between `VideoPayload`, `TextPayload`, and `PDFPayload` is lost at the interface boundary; the type checker cannot catch a mismatched payload.
+- Bad, because the docstring or a comment would be the only contract documentation, violating the project naming and commenting ethos.
 
 ### Slug on `VideoPayload`
 
-* Good, because the payload is self-contained: everything the LLM agent needs (transcript, keyframes, slug) arrives in one argument.
-* Good, because the adapter is stateless and reusable across runs without re-instantiation.
-* Neutral, because it requires callers to set `slug` on the payload before calling `process()`, which is an extra step but an explicit one.
+- Good, because the payload is self-contained: everything the LLM agent needs (transcript, keyframes, slug) arrives in one argument.
+- Good, because the adapter is stateless and reusable across runs without re-instantiation.
+- Neutral, because it requires callers to set `slug` on the payload before calling `process()`, which is an extra step but an explicit one.
 
 ### Slug on `VideoAdapter.__init__`
 
-* Good, because the constructor signature makes clear that the adapter is bound to a specific run.
-* Bad, because adapter lifetime is now coupled to run lifetime — a new adapter instance per run, which contradicts the configuration-only intent.
-* Bad, because a single adapter instance can no longer be reused across runs without mutation or re-construction.
+- Good, because the constructor signature makes clear that the adapter is bound to a specific run.
+- Bad, because adapter lifetime is now coupled to run lifetime — a new adapter instance per run, which contradicts the configuration-only intent.
+- Bad, because a single adapter instance can no longer be reused across runs without mutation or re-construction.
 
 ### Persist `video_payload.json` before LLM call
 
-* Good, because fetch cost (network, GPU) and classification cost (LLM tokens) are independently retryable.
-* Good, because the persisted file is the concrete test seam: hand-author it in tests, point `process()` at a fixture directory, verify LLM behavior without any I/O.
-* Bad, because it introduces a write to `cache_dir` as a side effect of `process()`, which must be accounted for in isolation tests.
+- Good, because fetch cost (network, GPU) and classification cost (LLM tokens) are independently retryable.
+- Good, because the persisted file is the concrete test seam: hand-author it in tests, point `process()` at a fixture directory, verify LLM behavior without any I/O.
+- Bad, because it introduces a write to `cache_dir` as a side effect of `process()`, which must be accounted for in isolation tests.
 
 ### Keep both steps in memory
 
-* Good, because `process()` is a pure function with no filesystem side effects.
-* Bad, because a failed LLM call after a successful (expensive) transcription requires a full re-fetch and re-transcription on retry.
-* Bad, because the test seam becomes the download and transcription calls, which require heavier mocking to bypass.
+- Good, because `process()` is a pure function with no filesystem side effects.
+- Bad, because a failed LLM call after a successful (expensive) transcription requires a full re-fetch and re-transcription on retry.
+- Bad, because the test seam becomes the download and transcription calls, which require heavier mocking to bypass.
 
 ## More Information
 

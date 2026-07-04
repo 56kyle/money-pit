@@ -1,4 +1,5 @@
 """Execution sub-agent: independent-path order submission with a crash-survivable journal."""
+
 from collections.abc import Callable
 from datetime import datetime
 from datetime import timezone
@@ -52,9 +53,7 @@ def _write_journal(
     working_dir: Path, slug: str, entries: list[ExecutionJournalEntry], outcome: ExecutionOutcome | None
 ) -> None:
     journal: ExecutionJournal = ExecutionJournal(slug=slug, outcome=outcome, entries=entries)
-    _ = (working_dir / EXECUTION_JOURNAL_FILENAME).write_text(
-        journal.model_dump_json(indent=2), encoding="utf-8"
-    )
+    _ = (working_dir / EXECUTION_JOURNAL_FILENAME).write_text(journal.model_dump_json(indent=2), encoding="utf-8")
 
 
 def make_execution_node(

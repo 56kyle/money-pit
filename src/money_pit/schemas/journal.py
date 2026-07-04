@@ -1,4 +1,5 @@
 """ExecutionJournalEntry, ExecutionJournal — execution_journal.json contract."""
+
 from typing import ClassVar
 
 from pydantic import BaseModel

@@ -1,4 +1,5 @@
 """A5: manifest existence + jsonschema checks, action_type→tool routing, three-file write."""
+
 from pathlib import Path
 
 import jsonschema
@@ -86,8 +87,7 @@ def _validate_step(
             tool_sequence=tool_sequence,
             compensation_sequence=compensation_sequence,
             gap_description=(
-                f"client_order_id '{step.execution_parameters.client_order_id}'"
-                f" does not match expected '{expected_id}'"
+                f"client_order_id '{step.execution_parameters.client_order_id}' does not match expected '{expected_id}'"
             ),
         )
 
@@ -102,9 +102,7 @@ def _validate_step(
 
 def _render_markdown(slug: str, validation: ActionStepsValidation) -> str:
     """Return a human-readable markdown summary of an ActionStepsValidation."""
-    status_label: str = (
-        "VALIDATED" if validation.overall_status == "validated" else "VALIDATION FAILED"
-    )
+    status_label: str = "VALIDATED" if validation.overall_status == "validated" else "VALIDATION FAILED"
     lines: list[str] = [
         f"# Action Steps Validation — {slug}",
         "",
@@ -130,9 +128,7 @@ def make_validator_node(
     With the default `manifest=None`, `pinned_manifest()` is resolved eagerly at
     construction and can therefore raise `ManifestUnavailableError` at graph-build time.
     """
-    resolved_manifest: ToolManifest = (
-        manifest if manifest is not None else pinned_manifest()
-    )
+    resolved_manifest: ToolManifest = manifest if manifest is not None else pinned_manifest()
 
     def validator_node(state: PipelineState) -> PipelineState:
         working_dir_raw: str | None = state.get("working_dir")
@@ -147,15 +143,9 @@ def make_validator_node(
             (working_dir / ACTION_STEPS_JSON_FILENAME).read_text(encoding="utf-8")
         )
 
-        validation_steps: list[ValidationStep] = [
-            _validate_step(step, slug, resolved_manifest) for step in steps
-        ]
+        validation_steps: list[ValidationStep] = [_validate_step(step, slug, resolved_manifest) for step in steps]
 
-        unmatched_ids: list[str] = [
-            vs.step_id
-            for vs in validation_steps
-            if vs.status == ValidationStatus.UNMATCHED
-        ]
+        unmatched_ids: list[str] = [vs.step_id for vs in validation_steps if vs.status == ValidationStatus.UNMATCHED]
         overall_status: str = "validated" if not unmatched_ids else "validation_failed"
 
         validation: ActionStepsValidation = ActionStepsValidation(

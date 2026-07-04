@@ -1,4 +1,5 @@
 """Module containing the pinned Alpaca order schema path, loader, and fail-closed errors for the money_pit package."""
+
 import json
 from pathlib import Path
 from typing import cast
@@ -29,11 +30,7 @@ def load_order_schema(path: Path = ALPACA_ORDER_SCHEMA_PATH) -> dict[str, object
     try:
         raw: object = cast("object", json.loads(path.read_text(encoding="utf-8")))
     except json.JSONDecodeError as error:
-        raise AlpacaOrderSchemaMalformedError(
-            f"Could not parse JSON in {path}: {error}."
-        ) from error
+        raise AlpacaOrderSchemaMalformedError(f"Could not parse JSON in {path}: {error}.") from error
     if not isinstance(raw, dict):
-        raise AlpacaOrderSchemaMalformedError(
-            f"Expected JSON object in {path}, got {type(raw).__name__}."
-        )
+        raise AlpacaOrderSchemaMalformedError(f"Expected JSON object in {path}, got {type(raw).__name__}.")
     return cast("dict[str, object]", raw)

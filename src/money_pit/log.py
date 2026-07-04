@@ -1,4 +1,5 @@
 """Module containing logic for logging used throughout the money_pit package."""
+
 from pathlib import Path
 
 from loguru import logger

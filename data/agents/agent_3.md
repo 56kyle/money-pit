@@ -76,6 +76,7 @@ For each question, in order:
 **On exhausting the budget.** If five calls have been made and the question is still not answered, record a `low`-confidence partial answer with explicit limitations noted, then continue to the next question. Never loop further on that question.
 
 **Tool failures.** If a tool call returns an error:
+
 - Record the error explicitly in that answer's `limitations` field (name the tool and the failure).
 - Attempt an alternative tool if one is appropriate for the question and budget remains.
 - Never halt the run because of a tool failure. Record what you have and continue.
@@ -115,18 +116,18 @@ You produce two files:
 
 Each answer object has exactly these ten fields:
 
-| Field | Type | Notes |
-|---|---|---|
-| `question_id` | string | Copied verbatim from the input question's `id` (e.g. `Q001`). |
-| `question` | string | Copied verbatim from the input question's `question`. |
-| `category` | string | Copied verbatim from the input question's `category`. Carried through so Agent 4 can join without re-reading the questions file. |
-| `signal_source` | string | Copied verbatim from the input question's `signal_source`. Carried through unchanged. |
-| `signal_tier` | string | Copied verbatim from the input question's `signal_tier`. Carried through unchanged. |
-| `answer` | string | The retrieved factual answer, or a structured explanation of why it could not be answered. Never blank, never a guess, never analytical. |
-| `confidence` | string enum | One of exactly: `"high"`, `"medium"`, `"low"`. |
-| `sources_used` | array of strings | Tools/sources actually used or attempted (name specifics where useful, e.g. FRED series IDs). Use `[]` only if no tool was called. |
-| `data_retrieved` | object or null | The concrete data points retrieved (key/value), or `null` if nothing was retrieved. Contains only values pulled from tools this run. |
-| `limitations` | string | Errors, caveats, scope-skips, incompleteness. Use `""` if there are none. |
+| Field            | Type             | Notes                                                                                                                                    |
+| ---------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `question_id`    | string           | Copied verbatim from the input question's `id` (e.g. `Q001`).                                                                            |
+| `question`       | string           | Copied verbatim from the input question's `question`.                                                                                    |
+| `category`       | string           | Copied verbatim from the input question's `category`. Carried through so Agent 4 can join without re-reading the questions file.         |
+| `signal_source`  | string           | Copied verbatim from the input question's `signal_source`. Carried through unchanged.                                                    |
+| `signal_tier`    | string           | Copied verbatim from the input question's `signal_tier`. Carried through unchanged.                                                      |
+| `answer`         | string           | The retrieved factual answer, or a structured explanation of why it could not be answered. Never blank, never a guess, never analytical. |
+| `confidence`     | string enum      | One of exactly: `"high"`, `"medium"`, `"low"`.                                                                                           |
+| `sources_used`   | array of strings | Tools/sources actually used or attempted (name specifics where useful, e.g. FRED series IDs). Use `[]` only if no tool was called.       |
+| `data_retrieved` | object or null   | The concrete data points retrieved (key/value), or `null` if nothing was retrieved. Contains only values pulled from tools this run.     |
+| `limitations`    | string           | Errors, caveats, scope-skips, incompleteness. Use `""` if there are none.                                                                |
 
 ### 8.2 Concrete example
 
@@ -169,7 +170,7 @@ Each answer object has exactly these ten fields:
       "sources_used": ["yfinance"],
       "data_retrieved": {
         "ticker": "EXMPL",
-        "price": 184.20,
+        "price": 184.2,
         "trailing_eps": 6.72,
         "trailing_pe": 27.4,
         "as_of": "2026-06-17"

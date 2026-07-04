@@ -1,4 +1,5 @@
 """Every canonical enum used throughout the money_pit pipeline boundary contracts."""
+
 from enum import Enum
 
 

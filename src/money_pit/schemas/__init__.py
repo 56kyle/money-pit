@@ -1,4 +1,5 @@
 """Subpackage containing all boundary-contract schemas used throughout the money_pit package."""
+
 from money_pit.schemas.action_steps import ActionStep
 from money_pit.schemas.action_steps import ExecutionParameters
 from money_pit.schemas.aggregation_draft import ClaimRelations

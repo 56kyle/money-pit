@@ -1,4 +1,5 @@
 """Shared fixtures for compute unit tests."""
+
 from collections.abc import Callable
 
 import pytest

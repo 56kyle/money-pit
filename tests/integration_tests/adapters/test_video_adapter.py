@@ -1,4 +1,5 @@
 """Integration tests for VideoAdapter: VideoPayload → persist → stub agent → SignalSet."""
+
 import json
 from collections.abc import Callable
 from pathlib import Path

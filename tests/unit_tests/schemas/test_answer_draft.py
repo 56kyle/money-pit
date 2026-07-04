@@ -1,4 +1,5 @@
 """Tests for money_pit.schemas.answer_draft."""
+
 import pytest
 from pydantic import ValidationError
 

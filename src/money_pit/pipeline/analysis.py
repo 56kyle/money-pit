@@ -1,4 +1,5 @@
 """A4 node: calls agents/thesis_judgment + compute/ post-processor functions, writes action_steps.json."""
+
 import json
 from pathlib import Path
 from typing import Optional
@@ -54,7 +55,7 @@ def _extract_macro_indicators(answers: list[Answer]) -> MacroIndicators:
             continue
         if not ans.signal_source.startswith(INDICATOR_PREFIX):
             continue
-        name = ans.signal_source[len(INDICATOR_PREFIX):]
+        name = ans.signal_source[len(INDICATOR_PREFIX) :]
         if name not in values:
             continue
         data = ans.data_retrieved
@@ -94,14 +95,16 @@ def _render_action_steps_md(slug: str, action_steps: list[ActionStep]) -> str:
     for step in action_steps:
         notional = step.execution_parameters.notional
         notional_str = f"${notional:.2f}" if notional is not None else "N/A"
-        lines.extend([
-            f"## {step.step_id} — {step.action_type.value} {step.instrument}",
-            f"**{step.description}**",
-            f"Regime: {step.regime_tag.value} | EV: {step.expected_value:.1%} | Conviction: {step.conviction.value}",
-            f"Dollar amount: {notional_str}",
-            f"Thesis: {step.one_sentence_thesis}",
-            "",
-        ])
+        lines.extend(
+            [
+                f"## {step.step_id} — {step.action_type.value} {step.instrument}",
+                f"**{step.description}**",
+                f"Regime: {step.regime_tag.value} | EV: {step.expected_value:.1%} | Conviction: {step.conviction.value}",
+                f"Dollar amount: {notional_str}",
+                f"Thesis: {step.one_sentence_thesis}",
+                "",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -122,9 +125,7 @@ def _render_analysis_md(
     lines.append("## Macro Read")
     if container.macro_read:
         for reading in container.macro_read:
-            lines.append(
-                f"- **{reading.indicator}** ({_favorable_label(reading.favorable)}): {reading.reading}"
-            )
+            lines.append(f"- **{reading.indicator}** ({_favorable_label(reading.favorable)}): {reading.reading}")
     else:
         lines.append("- No macro indicators reported.")
     lines.append("")
@@ -140,14 +141,16 @@ def _render_analysis_md(
     lines.append("## Surviving Theses")
     if container.theses:
         for thesis in container.theses:
-            lines.extend([
-                f"### {thesis.claim_id} — {thesis.action_type.value} {thesis.instrument} ({thesis.disposition.value})",
-                f"**{thesis.description}**",
-                f"Thesis: {thesis.one_sentence_thesis}",
-                f"EV: {thesis.expected_value:.1%} | Conviction: {thesis.conviction.value}",
-                f"Sizing rationale: {thesis.sizing_rationale}",
-                "",
-            ])
+            lines.extend(
+                [
+                    f"### {thesis.claim_id} — {thesis.action_type.value} {thesis.instrument} ({thesis.disposition.value})",
+                    f"**{thesis.description}**",
+                    f"Thesis: {thesis.one_sentence_thesis}",
+                    f"EV: {thesis.expected_value:.1%} | Conviction: {thesis.conviction.value}",
+                    f"Sizing rationale: {thesis.sizing_rationale}",
+                    "",
+                ]
+            )
     else:
         lines.extend(["- No theses survived.", ""])
 
@@ -156,9 +159,7 @@ def _render_analysis_md(
         for step in action_steps:
             notional = step.execution_parameters.notional
             notional_str = f"${notional:.2f}" if notional is not None else "N/A"
-            lines.append(
-                f"- {step.step_id}: {step.action_type.value} {step.instrument} ({notional_str})"
-            )
+            lines.append(f"- {step.step_id}: {step.action_type.value} {step.instrument} ({notional_str})")
     else:
         lines.append("- No action steps produced.")
     lines.append("")
@@ -204,9 +205,7 @@ def make_analysis_node(
         )
 
         try:
-            container: AnalysisJudgment = thesis_agent(
-                aggregated_signals, portfolio_snapshot, initial_answers
-            )
+            container: AnalysisJudgment = thesis_agent(aggregated_signals, portfolio_snapshot, initial_answers)
         except Exception:
             logger.exception("A4 thesis judgment agent failed; halting analysis")
             container = AnalysisJudgment(
@@ -245,8 +244,7 @@ def make_analysis_node(
             sector_headroom: float = config.sector_cap * portfolio_snapshot.total_account_value
             cash_headroom: float = max(
                 0.0,
-                portfolio_snapshot.available_cash
-                - config.cash_min * portfolio_snapshot.total_account_value,
+                portfolio_snapshot.available_cash - config.cash_min * portfolio_snapshot.total_account_value,
             )
             overlap_headroom: float = config.overlap_limit * portfolio_snapshot.total_account_value
 

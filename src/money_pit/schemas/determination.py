@@ -1,4 +1,5 @@
 """DeterminationReport — determination.json contract produced by the Agent 6 finalizer node."""
+
 from typing import ClassVar
 from typing import Literal
 

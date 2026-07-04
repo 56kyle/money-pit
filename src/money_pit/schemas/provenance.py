@@ -1,4 +1,5 @@
 """SourceRef — structured provenance record for every pipeline signal source."""
+
 from typing import ClassVar
 
 from pydantic import BaseModel

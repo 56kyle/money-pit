@@ -126,9 +126,10 @@ If a claim plausibly fits more than one category, choose the one that best descr
 Classify every substantive claim into exactly one tier. Apply these definitions rigorously.
 
 **High-signal** — The claim is **specific, falsifiable, and mechanistic**, and all three properties are present:
-- *Specific* — references concrete numbers, named metrics, specific timeframes, or named data points.
-- *Falsifiable* — could in principle be checked against reality.
-- *Mechanistic* — states a causal link to price ("X happened, which is why the stock did Y", or "if X then price Y because Z").
+
+- _Specific_ — references concrete numbers, named metrics, specific timeframes, or named data points.
+- _Falsifiable_ — could in principle be checked against reality.
+- _Mechanistic_ — states a causal link to price ("X happened, which is why the stock did Y", or "if X then price Y because Z").
 
 If **any one** of the three properties is absent, it is **not** high-signal. A precise number with no stated mechanism is not high-signal. A confident causal story with no concrete anchor is not high-signal.
 
@@ -202,22 +203,26 @@ Every classified claim that appears in the JSON must also appear here with a mat
 In every case below you must still return **both** fenced blocks in the correct format, populate every field you legitimately can, and explain the situation clearly in `summary` and in the markdown. Never silently fail, never return malformed output, never return a single block.
 
 **Case A — Empty or whitespace-only input.**
+
 - `summary`: state that the provided transcript was empty or contained only whitespace, so no analysis was possible.
 - `claims` empty array; `tickers_mentioned`, `sectors_mentioned`, `macro_themes` empty; `published_at` from metadata or null.
 - Markdown: a brief note that no transcript content was received.
 
 **Case B — Input is clearly not a US equity markets show transcript** (wrong language, wrong domain, corrupted or garbled text, etc.).
+
 - `summary`: state that the input does not appear to be a US equity markets show transcript, and briefly say why (e.g., "appears to be in a non-English language", "appears to be unrelated cooking content", "text is heavily corrupted and unreadable").
 - `claims` empty array; populate `tickers_mentioned`/`sectors_mentioned`/`macro_themes` only if genuine, clearly-identifiable market items are present, otherwise empty.
 - Markdown: explain the mismatch plainly.
 
 **Case C — Valid transcript, but zero classifiable claims after processing.**
+
 - `summary`: summarize what the episode actually covered, and note that it contained no classifiable market claims (e.g., it was an interview about career advice, or general banter with no substantive market statements).
 - You may still populate `tickers_mentioned`, `sectors_mentioned`, and `macro_themes` if those were genuinely mentioned.
 - `claims` empty array.
 - Markdown: note that nothing rose to a classifiable claim.
 
 **Case D — A number or fact is referenced but you cannot be certain it appeared in the transcript.**
+
 - Omit the uncertain number or fact entirely. Do not include it in any field.
 - If a candidate claim depends on that uncertain detail, either record the claim without the detail (if it still stands) or drop the claim.
 - This is an application of the uncertain-fact rule in Section 8; handle it silently and conservatively. Do not fabricate to fill a gap.
@@ -229,9 +234,11 @@ In every case below you must still return **both** fenced blocks in the correct 
 ### Example 1 — High-signal
 
 **Transcript excerpt:**
+
 > "So NVIDIA reported data center revenue up a hundred and twelve percent year over year to twenty-two point six billion, and that crushed the twenty point four billion consensus — that beat is exactly why you saw the stock gap up nine percent in the pre-market this morning."
 
 **Resulting element in `claims` array:**
+
 ```json
 {
   "claim_id": "yt:dQw4w9WgXcQ:S001",
@@ -242,14 +249,17 @@ In every case below you must still return **both** fenced blocks in the correct 
   "cited_sources": []
 }
 ```
-*Why high:* concrete numbers and a named metric (data center revenue, $22.6B, 112%, $20.4B consensus), falsifiable, and an explicit causal link to price (beat → 9% gap up). All three properties present.
+
+_Why high:_ concrete numbers and a named metric (data center revenue, $22.6B, 112%, $20.4B consensus), falsifiable, and an explicit causal link to price (beat → 9% gap up). All three properties present.
 
 ### Example 2 — Medium-signal
 
 **Transcript excerpt:**
+
 > "Here's the thing — if the Fed cuts at the September meeting, I'd expect the regional banks, something like KRE, to start outperforming, because their net interest margins would finally stabilize. Obviously that cut is not a done deal."
 
 **Resulting element in `claims` array:**
+
 ```json
 {
   "claim_id": "yt:dQw4w9WgXcQ:S002",
@@ -260,14 +270,17 @@ In every case below you must still return **both** fenced blocks in the correct 
   "cited_sources": []
 }
 ```
-*Why medium:* there is a stated direction and mechanism (NIM stabilization driving outperformance), but it rests on an unconfirmed condition (the September cut), so it requires external validation before acting.
+
+_Why medium:_ there is a stated direction and mechanism (NIM stabilization driving outperformance), but it rests on an unconfirmed condition (the September cut), so it requires external validation before acting.
 
 ### Example 3 — Low-signal
 
 **Transcript excerpt:**
+
 > "Honestly I'm just feeling pretty bullish on tech overall right now. Feels like there's good momentum heading into the back half of the year, you know?"
 
 **Resulting element in `claims` array:**
+
 ```json
 {
   "claim_id": "yt:dQw4w9WgXcQ:S003",
@@ -278,7 +291,8 @@ In every case below you must still return **both** fenced blocks in the correct 
   "cited_sources": []
 }
 ```
-*Why low:* pure sentiment with no anchoring numbers and no stated mechanism. No ticker is attached because none was named. There is no falsifiable assertion for a downstream agent to check.
+
+_Why low:_ pure sentiment with no anchoring numbers and no stated mechanism. No ticker is attached because none was named. There is no falsifiable assertion for a downstream agent to check.
 
 ---
 

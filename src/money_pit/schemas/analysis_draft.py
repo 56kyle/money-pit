@@ -1,4 +1,5 @@
 """AnalysisJudgment container — the §6.5 A4 judgment output consumed by pipeline/analysis.py."""
+
 from typing import ClassVar
 
 from pydantic import BaseModel

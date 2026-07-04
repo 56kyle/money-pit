@@ -1,4 +1,5 @@
 """A3 node: deterministic known-param fetch, budget control, file writes."""
+
 from pathlib import Path
 
 from loguru import logger
@@ -32,10 +33,12 @@ _FRED_SERIES: dict[str, str] = {
     "inflation": "CPILFESL",
 }
 
-_DETERMINISTIC_CATEGORIES: frozenset[QuestionCategory] = frozenset({
-    QuestionCategory.MACRO_REGIME,
-    QuestionCategory.PORTFOLIO_GAP,
-})
+_DETERMINISTIC_CATEGORIES: frozenset[QuestionCategory] = frozenset(
+    {
+        QuestionCategory.MACRO_REGIME,
+        QuestionCategory.PORTFOLIO_GAP,
+    }
+)
 
 _MACRO_REGIME_SOURCE: DataSourceToken = DataSourceToken.FRED_MCP
 _PORTFOLIO_GAP_SOURCE: DataSourceToken = DataSourceToken.YFINANCE_MCP
@@ -66,14 +69,16 @@ def _render_markdown(slug: str, answers: list[Answer]) -> str:
         "",
     ]
     for answer in answers:
-        lines.extend([
-            f"### {answer.question_id} — {answer.category.value}",
-            f"**Question:** {answer.question}",
-            f"**Answer:** {answer.answer}",
-            f"Confidence: {answer.confidence.value} | Sources: {', '.join(answer.sources_used)}",
-            f"Limitations: {answer.limitations or 'none'}",
-            "",
-        ])
+        lines.extend(
+            [
+                f"### {answer.question_id} — {answer.category.value}",
+                f"**Question:** {answer.question}",
+                f"**Answer:** {answer.answer}",
+                f"Confidence: {answer.confidence.value} | Sources: {', '.join(answer.sources_used)}",
+                f"Limitations: {answer.limitations or 'none'}",
+                "",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -85,7 +90,7 @@ def _fetch_deterministic(
     if question.category == QuestionCategory.MACRO_REGIME:
         if not question.signal_source.startswith(INDICATOR_PREFIX):
             return None
-        indicator_name: str = question.signal_source[len(INDICATOR_PREFIX):]
+        indicator_name: str = question.signal_source[len(INDICATOR_PREFIX) :]
         series_id: str | None = _FRED_SERIES.get(indicator_name)
         if series_id is None:
             return None
@@ -109,9 +114,7 @@ def _fetch_deterministic(
 def _deterministic_answer(question: Question, data_retrieved: dict[str, object] | None) -> Answer:
     """Build an Answer for a deterministic question, deriving confidence from provenance."""
     source_token: DataSourceToken = (
-        _MACRO_REGIME_SOURCE
-        if question.category == QuestionCategory.MACRO_REGIME
-        else _PORTFOLIO_GAP_SOURCE
+        _MACRO_REGIME_SOURCE if question.category == QuestionCategory.MACRO_REGIME else _PORTFOLIO_GAP_SOURCE
     )
     sources_used: list[DataSourceToken] = [source_token] if data_retrieved else []
     return Answer(
@@ -124,11 +127,7 @@ def _deterministic_answer(question: Question, data_retrieved: dict[str, object] 
         confidence=derive_confidence(sources_used),
         sources_used=sources_used,
         data_retrieved=data_retrieved,
-        limitations=(
-            "Direct deterministic fetch; no LLM synthesis."
-            if data_retrieved
-            else "Fetch returned no data."
-        ),
+        limitations=("Direct deterministic fetch; no LLM synthesis." if data_retrieved else "Fetch returned no data."),
     )
 
 
@@ -155,21 +154,15 @@ def make_retrieval_node(
         questions: list[Question] = initial_questions.questions
         sources: list[SourceRef] = aggregated_signals.sources
 
-        deterministic_questions: list[Question] = [
-            q for q in questions if q.category in _DETERMINISTIC_CATEGORIES
-        ]
-        open_ended_questions: list[Question] = [
-            q for q in questions if q.category not in _DETERMINISTIC_CATEGORIES
-        ]
+        deterministic_questions: list[Question] = [q for q in questions if q.category in _DETERMINISTIC_CATEGORIES]
+        open_ended_questions: list[Question] = [q for q in questions if q.category not in _DETERMINISTIC_CATEGORIES]
 
         deterministic_pairs: list[tuple[Question, dict[str, object] | None]] = [
-            (q, _fetch_deterministic(q, deterministic_tools))
-            for q in deterministic_questions
+            (q, _fetch_deterministic(q, deterministic_tools)) for q in deterministic_questions
         ]
 
         deterministic_answers: list[Answer] = [
-            _deterministic_answer(q, data_retrieved)
-            for q, data_retrieved in deterministic_pairs
+            _deterministic_answer(q, data_retrieved) for q, data_retrieved in deterministic_pairs
         ]
 
         question_by_id: dict[str, Question] = {q.id: q for q in open_ended_questions}
@@ -202,9 +195,7 @@ def make_retrieval_node(
             encoding="utf-8",
         )
 
-        result: PipelineState = {
-            "completed_steps": list(state.get("completed_steps") or []) + ["retrieval"]
-        }
+        result: PipelineState = {"completed_steps": list(state.get("completed_steps") or []) + ["retrieval"]}
         return result
 
     return retrieval_node

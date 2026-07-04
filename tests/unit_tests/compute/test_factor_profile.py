@@ -1,4 +1,5 @@
 """Tests for money_pit.compute.factor_profile."""
+
 import pytest
 
 from money_pit.compute.factor_profile import aggregate_factor_profile

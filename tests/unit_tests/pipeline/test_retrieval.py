@@ -1,4 +1,5 @@
 """Tests for money_pit.pipeline.retrieval."""
+
 from collections.abc import Callable
 from pathlib import Path
 
@@ -151,7 +152,13 @@ def deterministic_tools__ticker_price(request: FixtureRequest) -> float | None:
 
 
 @pytest.mark.parametrize(
-    ("question__category", "question__signal_source", "deterministic_tools__fred_value", "deterministic_tools__ticker_price", "expected"),
+    (
+        "question__category",
+        "question__signal_source",
+        "deterministic_tools__fred_value",
+        "deterministic_tools__ticker_price",
+        "expected",
+    ),
     [
         (QuestionCategory.MACRO_REGIME, "indicator:yield_curve", 1.23, None, {"value": 1.23}),
         (QuestionCategory.PORTFOLIO_GAP, "AAPL", None, 187.5, {"value": 187.5}),
@@ -172,7 +179,12 @@ def test__fetch_deterministic_with_available(
 
 
 @pytest.mark.parametrize(
-    ("question__category", "question__signal_source", "deterministic_tools__fred_value", "deterministic_tools__ticker_price"),
+    (
+        "question__category",
+        "question__signal_source",
+        "deterministic_tools__fred_value",
+        "deterministic_tools__ticker_price",
+    ),
     [
         (QuestionCategory.MACRO_REGIME, "indicator:yield_curve", None, None),
         (QuestionCategory.MACRO_REGIME, "indicator:unknown_thing", 1.23, None),
@@ -319,9 +331,7 @@ def retrieval_working_dir(
         conflicts=[],
         has_actionable_content=False,
     )
-    _ = (tmp_path / "initial_questions.json").write_text(
-        initial_questions.model_dump_json(indent=2), encoding="utf-8"
-    )
+    _ = (tmp_path / "initial_questions.json").write_text(initial_questions.model_dump_json(indent=2), encoding="utf-8")
     _ = (tmp_path / "aggregated_signals.json").write_text(
         aggregated_signals.model_dump_json(indent=2), encoding="utf-8"
     )

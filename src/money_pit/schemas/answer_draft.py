@@ -1,4 +1,5 @@
 """AnswerDraft — A3 LLM output: answers to open-ended questions requiring relevance judgment."""
+
 from typing import ClassVar
 
 from pydantic import BaseModel

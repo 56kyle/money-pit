@@ -1,4 +1,5 @@
 """Position, CorrelatedOverlap, PortfolioSnapshot — portfolio_snapshot.json contract."""
+
 from typing import ClassVar
 
 from pydantic import BaseModel

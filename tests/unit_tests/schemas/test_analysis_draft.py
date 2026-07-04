@@ -3,6 +3,7 @@
 Pins wave S3 / ADR 0005: ThesisJudgment (all fields required except group_id), DroppedClaim,
 MacroIndicatorReading, AnalysisHalt (pure data, no TerminalState), and the container round-trip.
 """
+
 import pytest
 from pydantic import ValidationError
 

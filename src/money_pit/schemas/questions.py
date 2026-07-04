@@ -1,4 +1,5 @@
 """Question, SignalSummary, InitialQuestions — initial_questions.json contract."""
+
 from typing import ClassVar
 
 from pydantic import BaseModel

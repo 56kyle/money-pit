@@ -1,4 +1,5 @@
 """Tests for money_pit.compute.regime."""
+
 import pytest
 
 from money_pit.compute.regime import classify_regime, discretize

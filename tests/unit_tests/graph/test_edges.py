@@ -1,4 +1,5 @@
 """Tests for money_pit.graph.edges — the four conditional routers (wave S5 / ADR 0006)."""
+
 from typing import TYPE_CHECKING
 
 from money_pit.graph.edges import EXECUTE

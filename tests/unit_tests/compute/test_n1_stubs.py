@@ -1,4 +1,5 @@
 """N=1 (single-source) contract for tier_max: no corroborations → identity."""
+
 from collections.abc import Callable
 
 from money_pit.compute.aggregation import tier_max

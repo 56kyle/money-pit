@@ -1,4 +1,5 @@
 """A2 LLM core: claim-specific thesis-validation + invalidation questions only."""
+
 import json
 from pathlib import Path
 
@@ -30,9 +31,8 @@ def make_claim_questions_agent(
     )
 
     def run(claims: list[Claim]) -> list[DraftQuestion]:
-        user_message: str = (
-            "## Claims requiring thesis validation and invalidation analysis\n"
-            + json.dumps([c.model_dump(mode="json") for c in claims], indent=2)
+        user_message: str = "## Claims requiring thesis validation and invalidation analysis\n" + json.dumps(
+            [c.model_dump(mode="json") for c in claims], indent=2
         )
         result = agent.run_sync(user_message)
         output: list[DraftQuestion] = result.output

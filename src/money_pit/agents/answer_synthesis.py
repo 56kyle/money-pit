@@ -1,4 +1,5 @@
 """A3 LLM core: open-ended Brave/EDGAR lookups + answer synthesis."""
+
 import json
 from pathlib import Path
 
@@ -17,11 +18,13 @@ from money_pit.schemas.questions import Question
 _PROMPT_PATH: Path = Path(__file__).parent.parent.parent.parent / "data" / "agents" / "agent_3.md"
 _SYSTEM_PROMPT: str = _PROMPT_PATH.read_text(encoding="utf-8")
 
-_OPEN_ENDED_CATEGORIES: frozenset[QuestionCategory] = frozenset({
-    QuestionCategory.THESIS_VALIDATION,
-    QuestionCategory.CURRENT_EVENTS,
-    QuestionCategory.INVALIDATION_CONDITIONS,
-})
+_OPEN_ENDED_CATEGORIES: frozenset[QuestionCategory] = frozenset(
+    {
+        QuestionCategory.THESIS_VALIDATION,
+        QuestionCategory.CURRENT_EVENTS,
+        QuestionCategory.INVALIDATION_CONDITIONS,
+    }
+)
 
 
 def make_answer_synthesis_agent(

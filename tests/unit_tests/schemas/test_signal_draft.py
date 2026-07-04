@@ -6,6 +6,7 @@ Pins the draft→node→contract boundary for A1:
 - SignalSetDraft drops has_actionable_content (code-derived) and renames
   episode_summary → summary (the §2.3 contract field name).
 """
+
 import pytest
 from pydantic import ValidationError
 

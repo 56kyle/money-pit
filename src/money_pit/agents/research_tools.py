@@ -3,6 +3,7 @@
 These protocols converge with `mcp.clients.ResearchDeps` in Phase 7 — the
 MCP-backed implementation satisfies both protocols structurally.
 """
+
 from typing import Protocol
 from typing import runtime_checkable
 

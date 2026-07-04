@@ -14,7 +14,7 @@ not read the persisted `action_steps_validation.json` (violating file-based repl
 routing also implements only two outcomes where §6a/§10 need four, and the two `NO_ACTION`
 paths diverge (signal-gate → silent END; post-processor-empty `[]` → emails). `TerminalState`
 has drifted: `VALIDATION_FAILED` (canonical `VALIDATION_ERROR` per §10, verified), no
-`ORCHESTRATION_ERROR`, and it carries execution-*outcome* members (`EXECUTED_CLEAN`,
+`ORCHESTRATION_ERROR`, and it carries execution-_outcome_ members (`EXECUTED_CLEAN`,
 `PARTIAL_COMPENSATED`, `COMPENSATION_FAILED`, `EXECUTION_FAILED`) that §10 does not list as
 terminal states.
 
@@ -62,7 +62,7 @@ finalizer; PROCEED → execution → finalizer; `ORCHESTRATION_ERROR` → finali
 `PARTIAL_COMPENSATED` → `success`; `COMPENSATION_FAILED` / `EXECUTION_FAILED` / **`None`
 (incomplete journal, per ADR 0003)** → `failure`. `DeterminationReport.sub_agent_outcome` is
 typed `Literal["success", "failure"] | None` (not a loose `str`). A post-PROCEED
-`EXECUTION_FAILED` is recorded as `sub_agent_outcome=failure`; a dedicated failure *email* is
+`EXECUTION_FAILED` is recorded as `sub_agent_outcome=failure`; a dedicated failure _email_ is
 deferred to the notification wave (out of S5 scope).
 
 ### Consequences

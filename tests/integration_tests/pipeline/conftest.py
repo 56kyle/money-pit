@@ -1,4 +1,5 @@
 """Fixtures for pipeline integration tests."""
+
 from pathlib import Path
 
 import pytest

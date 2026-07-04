@@ -5,7 +5,7 @@ schemas), `design_decisions.md` (resolved §15 open decisions: regime table, Kel
 semantics, sell translation) · **Scope:** the scheduled video-to-trade analysis pipeline and its
 execution/notification edges.
 
-This document describes *how the system is built and why*. Wire-level schemas live in
+This document describes _how the system is built and why_. Wire-level schemas live in
 `pipeline_contracts.md`; where this spec and that document overlap, the contract document is
 authoritative for field-level detail and this document is authoritative for component
 responsibilities and control flow.
@@ -33,8 +33,8 @@ email and its on-disk audit trail.
 
 1. **The LLM does only irreducible judgment.** Turning free text into structure, and forming
    views. Every deterministic computation is a function or a tool, never model output. See §9.
-2. **Safety is structural, not prompted.** Scope limits are enforced by *which client holds which
-   tools*, not by instructions a model could ignore. Only the execution stage can place an order.
+2. **Safety is structural, not prompted.** Scope limits are enforced by _which client holds which
+   tools_, not by instructions a model could ignore. Only the execution stage can place an order.
 3. **Determinism where capital is at stake.** Identical inputs produce identical action steps.
    Arithmetic, sizing, regime tagging, routing, and validation are code, so this actually holds.
 4. **JSON is authoritative; markdown is for humans.** Every stage writes both; on disagreement the
@@ -152,17 +152,17 @@ The pipeline no longer has a single "transcript agent." Signal originates as a c
 any input is a `Source` adapter that emits a normalized `SignalSet`. Start at **N = 1** (video adapter
 only); other adapters are purely additive and never touch anything downstream.
 
-- **Source adapter (Pydantic AI + wrapping node), one per source type.** *Responsibility:* turn one
+- **Source adapter (Pydantic AI + wrapping node), one per source type.** _Responsibility:_ turn one
   input into a `SignalSet` — identify substantive claims, assign tier/category, restate in own words,
   extract entities, and fill `cited_sources` (on-screen attribution for video; links/footnotes for
-  text). *Output type:* `SignalSetDraft` (judgment + raw entities). *Tools:* `resolve_ticker`.
-  *Wrapping node:* derived flags, ticker normalization, ISO-date parsing, keyframe/OCR source layer
+  text). _Output type:_ `SignalSetDraft` (judgment + raw entities). _Tools:_ `resolve_ticker`.
+  _Wrapping node:_ derived flags, ticker normalization, ISO-date parsing, keyframe/OCR source layer
   (video), schema validation; writes `signals/{source_id}.json`. The **video adapter** is the heavy one;
   it can be stubbed or deferred without affecting the rest of the system.
-- **Aggregator node.** *Responsibility:* merge all `SignalSet`s into `aggregated_signals.json`.
-  *Deterministic:* union claims, re-ID to the run-global namespace, compute run-level
-  `has_actionable_content`, reconcile tier (max across a corroboration). *Thin LLM (the one new judgment
-  surface):* corroboration/conflict — embed claims, cluster by similarity, and confirm/label
+- **Aggregator node.** _Responsibility:_ merge all `SignalSet`s into `aggregated_signals.json`.
+  _Deterministic:_ union claims, re-ID to the run-global namespace, compute run-level
+  `has_actionable_content`, reconcile tier (max across a corroboration). _Thin LLM (the one new judgment
+  surface):_ corroboration/conflict — embed claims, cluster by similarity, and confirm/label
   `agree`/`disagree` within a cluster. Output type for that step: `ClaimRelations`.
 - **Gate:** if `has_actionable_content` is false across all sources, the run routes directly to
   `NO_ACTION`.
@@ -170,7 +170,7 @@ only); other adapters are purely additive and never touch anything downstream.
 ### 6.3 A2 — Question agent + templating
 
 - **Responsibility:** produce the research questions across the five categories.
-- **LLM part (Pydantic AI):** authors only the *claim-specific* `thesis_validation` and
+- **LLM part (Pydantic AI):** authors only the _claim-specific_ `thesis_validation` and
   `invalidation_conditions` questions. Output type: `list[DraftQuestion]`.
 - **Node part (deterministic):** emits the standing questions that recur every run as templates —
   the **five** `macro_regime` questions (yield curve, credit spreads, PMI, earnings revisions,
@@ -198,7 +198,7 @@ only); other adapters are purely additive and never touch anything downstream.
 
 The system's core, split into a judgment agent and a deterministic compute node.
 
-- **A4 agent (Pydantic AI):** executes the seven-step framework as *judgment only* — Step 1
+- **A4 agent (Pydantic AI):** executes the seven-step framework as _judgment only_ — Step 1
   supported/contradicted/unverified disposition per claim (after a code join on
   `claim_id ↔ signal_source`, and weighting cross-source `corroborations` as a positive input),
   Step 4 thesis narratives, the Step 5 scenario probabilities and returns (the distribution the
@@ -210,8 +210,7 @@ The system's core, split into a judgment agent and a deterministic compute node.
   `action_steps.json` (`list[ActionStep]`). It performs every deterministic operation: Step 2 regime
   tagging via the five-indicator decision table (`design_decisions.md §1`), Step 3 constraint
   extraction (25% sector cap, cash, overlap), Step 5 `EV = Σ(Pᵢ/100 × Rᵢ)` and the ≥ +3.0% gate,
-  Step 7 fractional-Kelly sizing (`design_decisions.md §2`: `w = kelly_fraction × h_unverified ×
-  h_uncertain × f_kelly`, clamped to `max_position_weight`, then to §3 headroom), direction →
+  Step 7 fractional-Kelly sizing (`design_decisions.md §2`: `w = kelly_fraction × h_unverified × h_uncertain × f_kelly`, clamped to `max_position_weight`, then to §3 headroom), direction →
   `action_type` mapping, probability-sum validation, and emission of `execution_parameters` with
   **manifest-correct field names**. This node is where the `ticker→symbol` / `notional` / `side`
   translation lives — never inside the validator. A4 also writes `analysis.md`, the full
@@ -224,7 +223,7 @@ The system's core, split into a judgment agent and a deterministic compute node.
 - **Mechanism:** reads the **tool manifest** (introspected from the registered MCP servers) and
   checks existence (tool present by exact name), schema acceptance, and behavioral match via a fixed
   `action_type → tool` config. The schema-acceptance check is a **`jsonschema.validate()`** call —
-  an MCP tool's `inputSchema` *is* JSON Schema, so "are the action's params accepted under their
+  an MCP tool's `inputSchema` _is_ JSON Schema, so "are the action's params accepted under their
   literal field names, with required fields present" is a library call, not hand-rolled matching. The
   custom surface is only the `action_type→tool` routing and the compensation-capability lookup. With a
   closed tool set this is entirely deterministic.
@@ -244,22 +243,22 @@ The system's core, split into a judgment agent and a deterministic compute node.
 ### 6.8 Execution sub-agent (node + Alpaca write tools)
 
 - **Responsibility:** execute the validated steps against the brokerage while staying consistent
-  through runtime failures. It holds the *only* client in the system with write access to Alpaca.
+  through runtime failures. It holds the _only_ client in the system with write access to Alpaca.
 - **Type:** a deterministic loop, not an LLM — it places already-validated, already-typed orders.
 - **Transactional model (see `pipeline_contracts.md` §7a).** The determination gate already prevents
-  executing a plan with an *unmatched* capability, so the residual risk is a runtime failure inside an
+  executing a plan with an _unmatched_ capability, so the residual risk is a runtime failure inside an
   approved plan. Two mechanisms cover it, and neither is a pre-planned static inverse (a trade has no
   true inverse — slippage, partial fills, taxes, one-way doors):
   - **Independent steps re-evaluate; only atomic groups unwind.** Steps with `group_id == null` are
     standalone; if one fails, the successful ones were each independently validated as good and the
-    next run re-plans from live state — undoing them would be a mistake. Unwinding applies *only* to
+    next run re-plans from live state — undoing them would be a mistake. Unwinding applies _only_ to
     steps sharing a `group_id` (pairs trade, hedge, funded roll), where a partial fill leaves
     unintended exposure.
   - **Journal + idempotency.** Every order carries a deterministic `client_order_id = {slug}:{step_id}`
     so retries never double-execute, and the sub-agent writes `execution_journal.json` **incrementally**
     so a crash leaves a truthful partial record. This is the durable "what was actually applied" log —
     the transferable half of the Alembic analogy; the down-migration half is deliberately not adopted.
-- **Per-group flow:** pre-flight every leg (buying power, shortability, market-open) and place *none*
+- **Per-group flow:** pre-flight every leg (buying power, shortability, market-open) and place _none_
   if any leg fails; execute legs in safe order (least-harmful-solo-failure first); on a mid-flight leg
   failure, compute compensations from **realized fills** and unwind the filled legs; if a compensation
   itself fails, escalate urgently (`COMPENSATION_FAILED`) — the one state with un-neutralized exposure.
@@ -283,19 +282,19 @@ The system's core, split into a judgment agent and a deterministic compute node.
 All artifacts are plain `pydantic.BaseModel`s, validated on write and on read at each boundary. The
 working-directory artifacts and their producers/consumers:
 
-| artifact | producer | consumers |
-|---|---|---|
-| `signals/{source_id}.json/.md` | each source adapter | aggregator |
-| `aggregated_signals.json/.md` | aggregator | A2, A4 |
-| `portfolio_snapshot.json` | snapshot builder | A2, A4 |
-| `initial_questions.json/.md` | A2 | A3 |
-| `initial_answers.json/.md` | A3 | A4 |
-| `analysis.md` | A4 | human / audit |
-| `action_steps.json/.md` | post-processor | A5, execution |
-| `action_steps_validation.json/.md` | A5 | A6 |
-| `validation_status.json` | A5 | orchestration |
-| `determination.json/.md` | A6 | orchestration / audit |
-| `execution_journal.json` | execution sub-agent | orchestration (next-run recovery) / audit |
+| artifact                           | producer            | consumers                                 |
+| ---------------------------------- | ------------------- | ----------------------------------------- |
+| `signals/{source_id}.json/.md`     | each source adapter | aggregator                                |
+| `aggregated_signals.json/.md`      | aggregator          | A2, A4                                    |
+| `portfolio_snapshot.json`          | snapshot builder    | A2, A4                                    |
+| `initial_questions.json/.md`       | A2                  | A3                                        |
+| `initial_answers.json/.md`         | A3                  | A4                                        |
+| `analysis.md`                      | A4                  | human / audit                             |
+| `action_steps.json/.md`            | post-processor      | A5, execution                             |
+| `action_steps_validation.json/.md` | A5                  | A6                                        |
+| `validation_status.json`           | A5                  | orchestration                             |
+| `determination.json/.md`           | A6                  | orchestration / audit                     |
+| `execution_journal.json`           | execution sub-agent | orchestration (next-run recovery) / audit |
 
 Two-model pattern at LLM boundaries: each agent's typed output is a **draft / judgment** model
 (`SignalSetDraft`, `ClaimRelations`, `list[DraftQuestion]`, `AnswerDraft`, `AnalysisJudgment`), and a
@@ -312,17 +311,18 @@ Almost everything here is **integrate, not build**. The Alpaca server is officia
 exist as community packages, and ticker/macro helpers are largely pre-built. The read/write safety
 boundary is achieved by **toolset scoping on the official Alpaca server**, not by writing two servers.
 
-| server | build/integrate | tools | exposed to | scope |
-|---|---|---|---|---|
-| Alpaca (read scope) | **integrate** official `alpaca-mcp-server`, `ALPACA_TOOLSETS`=market-data | account/snapshot, quotes, trades, assets | snapshot builder, A3 | read |
-| Alpaca (write scope) | **integrate** official `alpaca-mcp-server`, `ALPACA_TOOLSETS`=trading | place/get order | **execution only** | write |
-| FRED | integrate (community) | series fetch + one-call economic snapshot | A3, macro bundle | read |
-| SEC EDGAR | integrate — **the edgartools library's built-in MCP** | filings, financials, insider, ticker/CIK resolve | A3 (+ ticker resolution) | read |
-| yfinance | integrate (community) | fundamentals, price history, earnings | A3 | read |
-| Brave | integrate (official) | web search | A3 | read |
-| communication | **build (small)** via FastMCP, or use `smtplib` directly | `send_email` | notification only | write |
+| server               | build/integrate                                                           | tools                                            | exposed to               | scope |
+| -------------------- | ------------------------------------------------------------------------- | ------------------------------------------------ | ------------------------ | ----- |
+| Alpaca (read scope)  | **integrate** official `alpaca-mcp-server`, `ALPACA_TOOLSETS`=market-data | account/snapshot, quotes, trades, assets         | snapshot builder, A3     | read  |
+| Alpaca (write scope) | **integrate** official `alpaca-mcp-server`, `ALPACA_TOOLSETS`=trading     | place/get order                                  | **execution only**       | write |
+| FRED                 | integrate (community)                                                     | series fetch + one-call economic snapshot        | A3, macro bundle         | read  |
+| SEC EDGAR            | integrate — **the edgartools library's built-in MCP**                     | filings, financials, insider, ticker/CIK resolve | A3 (+ ticker resolution) | read  |
+| yfinance             | integrate (community)                                                     | fundamentals, price history, earnings            | A3                       | read  |
+| Brave                | integrate (official)                                                      | web search                                       | A3                       | read  |
+| communication        | **build (small)** via FastMCP, or use `smtplib` directly                  | `send_email`                                     | notification only        | write |
 
 Notes:
+
 - **Alpaca read/write split = `ALPACA_TOOLSETS` toolset filtering**, run as two configured instances of
   the one official server. This replaces the hand-built two-server design and is the structural safety
   boundary. The official server is OpenAPI-generated, so its order tool's input schema is the source of
@@ -343,25 +343,25 @@ edgartools itself).
 
 **Use a library, don't hand-roll:**
 
-| mechanical concern | library |
-|---|---|
-| A5 schema-acceptance check (params vs tool `inputSchema`, which *is* JSON Schema) | `jsonschema` |
-| keyframe / scene-change detection (video adapter) | PySceneDetect |
-| word-level transcript timestamps for narration↔frame fusion | WhisperX / faster-whisper |
-| on-screen text / source extraction | Tesseract / PaddleOCR / EasyOCR |
-| corroboration: embeddings + clustering | sentence-transformers (or embedding API) + scikit-learn |
-| scheduling | APScheduler / cron / cloud scheduler |
-| retry / backoff (A3 budget, execution) | tenacity |
-| env / config | pydantic-settings |
-| any custom MCP server (the email one) | FastMCP |
-| optional factor / correlation / risk analytics | quantstats / riskfolio-lib / empyrical |
+| mechanical concern                                                                | library                                                 |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| A5 schema-acceptance check (params vs tool `inputSchema`, which _is_ JSON Schema) | `jsonschema`                                            |
+| keyframe / scene-change detection (video adapter)                                 | PySceneDetect                                           |
+| word-level transcript timestamps for narration↔frame fusion                       | WhisperX / faster-whisper                               |
+| on-screen text / source extraction                                                | Tesseract / PaddleOCR / EasyOCR                         |
+| corroboration: embeddings + clustering                                            | sentence-transformers (or embedding API) + scikit-learn |
+| scheduling                                                                        | APScheduler / cron / cloud scheduler                    |
+| retry / backoff (A3 budget, execution)                                            | tenacity                                                |
+| env / config                                                                      | pydantic-settings                                       |
+| any custom MCP server (the email one)                                             | FastMCP                                                 |
+| optional factor / correlation / risk analytics                                    | quantstats / riskfolio-lib / empyrical                  |
 
 **Genuinely custom — this is the product, build it:** the signal taxonomy and classification prompts;
 the five-category question framework and templates; the seven-step analysis with its EV/sizing/regime
-*rules* (arithmetic uses numpy/pandas); the Pydantic contracts; the source-adapter → aggregator design;
-the corroboration *semantics* (the thin LLM label); A5's `action_type→tool` routing and
-compensation-capability logic; the transactional/compensation *policy*; the determination gate and
-terminal-state routing; the multimodal fusion *glue*; and the LangGraph wiring. The analysis/validation/
+_rules_ (arithmetic uses numpy/pandas); the Pydantic contracts; the source-adapter → aggregator design;
+the corroboration _semantics_ (the thin LLM label); A5's `action_type→tool` routing and
+compensation-capability logic; the transactional/compensation _policy_; the determination gate and
+terminal-state routing; the multimodal fusion _glue_; and the LangGraph wiring. The analysis/validation/
 determination core is not a reinvention of any algo-trading framework — those backtest quantitative
 strategies; this extracts and gates LLM-derived signal.
 
@@ -373,25 +373,25 @@ The defining architectural decision: minimize the LLM surface. Placement rule �
 external integrations or anything a model must call mid-reasoning; **node/function** for deterministic
 transforms at a fixed pipeline point; **LLM** only for open-ended language or genuine estimates.
 
-| concern | placement |
-|---|---|
-| source content → structured claims, tier/category, entity extraction, `cited_sources` | **LLM (source adapter)** |
-| cross-source corroboration: cluster, then confirm/label agree-vs-disagree | node (embed/cluster) + **thin LLM** (label) |
-| claim-specific question authoring | **LLM (A2)** |
-| open-ended retrieval + answer synthesis | **LLM (A3)** |
-| signal disposition, thesis narratives, scenario estimates, invalidation authoring | **LLM (A4)** |
-| derived flags, ticker normalization, date parsing, keyframe/OCR source layer, schema validation | node |
-| claim union, run-global re-ID, tier reconciliation, run-level signal gate | node (aggregator) |
-| standing-question templating, IDs, ordering, routing-table `data_sources` | node |
-| deterministic known-param retrieval, `confidence` derivation, budget control | node |
-| regime tagging (five-indicator decision table), EV + gate, constraint extraction, fractional-Kelly sizing, haircut application, exec-param emission | node (post-processor) |
-| capability validation (existence + literal schema + sequence) | node (A5) |
-| go/no-go determination + terminal-state routing | conditional edge (A6) |
-| order placement, email send | node + write-scoped MCP tool |
+| concern                                                                                                                                             | placement                                   |
+| --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| source content → structured claims, tier/category, entity extraction, `cited_sources`                                                               | **LLM (source adapter)**                    |
+| cross-source corroboration: cluster, then confirm/label agree-vs-disagree                                                                           | node (embed/cluster) + **thin LLM** (label) |
+| claim-specific question authoring                                                                                                                   | **LLM (A2)**                                |
+| open-ended retrieval + answer synthesis                                                                                                             | **LLM (A3)**                                |
+| signal disposition, thesis narratives, scenario estimates, invalidation authoring                                                                   | **LLM (A4)**                                |
+| derived flags, ticker normalization, date parsing, keyframe/OCR source layer, schema validation                                                     | node                                        |
+| claim union, run-global re-ID, tier reconciliation, run-level signal gate                                                                           | node (aggregator)                           |
+| standing-question templating, IDs, ordering, routing-table `data_sources`                                                                           | node                                        |
+| deterministic known-param retrieval, `confidence` derivation, budget control                                                                        | node                                        |
+| regime tagging (five-indicator decision table), EV + gate, constraint extraction, fractional-Kelly sizing, haircut application, exec-param emission | node (post-processor)                       |
+| capability validation (existence + literal schema + sequence)                                                                                       | node (A5)                                   |
+| go/no-go determination + terminal-state routing                                                                                                     | conditional edge (A6)                       |
+| order placement, email send                                                                                                                         | node + write-scoped MCP tool                |
 
 Net: the LLM surface is the source adapters' classification, the aggregator's thin corroboration-label
 pass, and the four cores (A2, A3, A4 — plus the per-adapter classifier). **A5 and A6 contain no LLM.**
-The two most consequential judgments that *were* model output — macro regime and position sizing — are
+The two most consequential judgments that _were_ model output — macro regime and position sizing — are
 now deterministic, which requires defining the regime decision table and the numeric conviction bands
 up front (see §15). Genericizing adds exactly one new LLM touch-point (the corroboration label), and it
 is deliberately thin — the clustering that precedes it is deterministic embedding similarity.
@@ -403,17 +403,17 @@ is deliberately thin — the clustering that precedes it is deterministic embedd
 A run ends in exactly one terminal state, each mapped to a distinct, intended outcome so that a
 no-trade day never looks like a failure:
 
-| terminal state | trigger | action |
-|---|---|---|
-| `NO_ACTION` | aggregator signal gate false, or post-processor emits `[]` | stop quietly; optional digest; **no error email**; A5/A6 skipped |
-| `ANALYSIS_HALT` | A4 emits a halt object (a step could not be completed) | distinct halt email; A5/A6 skipped |
-| `EXECUTED_CLEAN` | A6 `PROCEED` → all steps executed | orders placed; journal + outcome recorded |
+| terminal state        | trigger                                                            | action                                                              |
+| --------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------- |
+| `NO_ACTION`           | aggregator signal gate false, or post-processor emits `[]`         | stop quietly; optional digest; **no error email**; A5/A6 skipped    |
+| `ANALYSIS_HALT`       | A4 emits a halt object (a step could not be completed)             | distinct halt email; A5/A6 skipped                                  |
+| `EXECUTED_CLEAN`      | A6 `PROCEED` → all steps executed                                  | orders placed; journal + outcome recorded                           |
 | `PARTIAL_COMPENSATED` | an atomic group leg failed mid-flight but filled legs were unwound | net no unintended exposure; recorded as success with journal detail |
-| `COMPENSATION_FAILED` | an unwind itself failed — un-neutralized exposure remains | **urgent** high-priority email; flagged for next-run reconciliation |
-| `VALIDATION_ERROR` | A6 step-status `HALT` (real unmatched capability) | validation-error email |
-| `ORCHESTRATION_ERROR` | A6 parse failure, or any unexpected exception | surface to orchestration; no sub-agent |
+| `COMPENSATION_FAILED` | an unwind itself failed — un-neutralized exposure remains          | **urgent** high-priority email; flagged for next-run reconciliation |
+| `VALIDATION_ERROR`    | A6 step-status `HALT` (real unmatched capability)                  | validation-error email                                              |
+| `ORCHESTRATION_ERROR` | A6 parse failure, or any unexpected exception                      | surface to orchestration; no sub-agent                              |
 
-The orchestration layer inspects the post-processor output *before* A5 to separate `NO_ACTION` and
+The orchestration layer inspects the post-processor output _before_ A5 to separate `NO_ACTION` and
 `ANALYSIS_HALT` from real recommendations, so the validation-error path fires **only** for genuine
 tool-coverage gaps on real steps. The three `EXECUTED_*`/`COMPENSATION_FAILED` outcomes come from the
 execution sub-agent's transactional model (§6.8 / contracts §7a); `COMPENSATION_FAILED` is the one
@@ -429,7 +429,7 @@ Defense in depth, ordered from structural to procedural:
 1. **Tool scoping (structural).** Only the execution stage holds an Alpaca client with order tools.
    Analysis and retrieval physically cannot trade. This is the primary control and does not depend on
    model behavior.
-2. **Capability gate (A5).** No execution path opens unless *every* action step has a confirmed,
+2. **Capability gate (A5).** No execution path opens unless _every_ action step has a confirmed,
    literal tool sequence. A partially-executable plan halts the whole run.
 3. **Determination gate (A6).** Binary, recomputed from per-step statuses, ignoring any summary
    field. Any non-`MATCHED` step forces `HALT`. No "close enough."
@@ -525,7 +525,7 @@ working-directory root (`data/daily_show/`) is the only persistent on-disk state
 10. **Leg-execution ordering (design).** Within an atomic group, the order that minimizes naked
     exposure on a partial fill (e.g. protective leg before exposed leg). Needs a per-pattern policy.
 11. **Compensation cost bound (policy).** A compensation is a real market action with real cost; decide
-    whether there is a tolerance beyond which the system should *not* auto-unwind and should instead
+    whether there is a tolerance beyond which the system should _not_ auto-unwind and should instead
     escalate to a human immediately (a very wide spread at unwind time, say).
 12. **Recovery semantics (design).** On a prior `COMPENSATION_FAILED` or crashed run, define exactly
     how next-run reconciliation reads the journal + live positions and decides what, if anything, to

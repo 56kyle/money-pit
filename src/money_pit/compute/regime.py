@@ -1,4 +1,5 @@
 """Regime decision table: five indicators → RegimeTag (UNCERTAIN on missing/conflict)."""
+
 from money_pit.config import Config
 from money_pit.schemas.enums import RegimeTag
 from money_pit.schemas.macro import MacroIndicators
@@ -23,21 +24,13 @@ def discretize(value: float | None, threshold: float, orientation: int, band: fl
 def classify_regime(indicators: MacroIndicators, config: Config) -> RegimeTag:
     """Apply the v0 truth table to five discretized macro signals, returning a RegimeTag."""
     band: float = config.regime_band
-    curve: int | None = discretize(
-        indicators.yield_curve, config.threshold_yield_curve, _HIGHER_IS_BETTER, band
-    )
-    credit: int | None = discretize(
-        indicators.credit_spreads, config.threshold_credit_spreads, _LOWER_IS_BETTER, band
-    )
-    pmi: int | None = discretize(
-        indicators.pmi, config.threshold_pmi, _HIGHER_IS_BETTER, band
-    )
+    curve: int | None = discretize(indicators.yield_curve, config.threshold_yield_curve, _HIGHER_IS_BETTER, band)
+    credit: int | None = discretize(indicators.credit_spreads, config.threshold_credit_spreads, _LOWER_IS_BETTER, band)
+    pmi: int | None = discretize(indicators.pmi, config.threshold_pmi, _HIGHER_IS_BETTER, band)
     earnings: int | None = discretize(
         indicators.earnings_revisions, config.threshold_earnings_revisions, _HIGHER_IS_BETTER, band
     )
-    inflation: int | None = discretize(
-        indicators.inflation, config.threshold_inflation, _LOWER_IS_BETTER, band
-    )
+    inflation: int | None = discretize(indicators.inflation, config.threshold_inflation, _LOWER_IS_BETTER, band)
 
     if curve is None or credit is None or pmi is None or earnings is None or inflation is None:
         return RegimeTag.UNCERTAIN

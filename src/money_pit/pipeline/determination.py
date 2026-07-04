@@ -5,6 +5,7 @@ compose them into the graph. The determination node decides PROCEED/HALT (or fai
 ORCHESTRATION_ERROR) from the persisted validation artifact and routes; the finalizer node
 writes the single determination.json/.md audit record once, after the chosen sub-agent has run.
 """
+
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
@@ -77,9 +78,7 @@ def map_execution_outcome(outcome: ExecutionOutcome | None) -> Literal["success"
 
 
 def _failed_step_ids(validation: ActionStepsValidation) -> list[str]:
-    return [
-        step.step_id for step in validation.steps if step.status == ValidationStatus.UNMATCHED
-    ]
+    return [step.step_id for step in validation.steps if step.status == ValidationStatus.UNMATCHED]
 
 
 def _halt_reason(failed_steps: list[str]) -> str:
@@ -136,9 +135,7 @@ def _read_journal_outcome(working_dir: Path) -> ExecutionOutcome | None:
     if not path.exists():
         return None
     try:
-        journal: ExecutionJournal = ExecutionJournal.model_validate_json(
-            path.read_text(encoding="utf-8")
-        )
+        journal: ExecutionJournal = ExecutionJournal.model_validate_json(path.read_text(encoding="utf-8"))
     except ValidationError:
         return None
     return journal.outcome
@@ -197,12 +194,8 @@ def make_finalizer_node() -> PipelineNode:
             sub_agent_error=None,
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
-        _ = (working_dir / DETERMINATION_JSON_FILENAME).write_text(
-            report.model_dump_json(indent=2), encoding="utf-8"
-        )
-        _ = (working_dir / DETERMINATION_MD_FILENAME).write_text(
-            _render_report_md(report), encoding="utf-8"
-        )
+        _ = (working_dir / DETERMINATION_JSON_FILENAME).write_text(report.model_dump_json(indent=2), encoding="utf-8")
+        _ = (working_dir / DETERMINATION_MD_FILENAME).write_text(_render_report_md(report), encoding="utf-8")
 
         return {
             "completed_steps": [*(state.get("completed_steps") or []), "finalizer"],

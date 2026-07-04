@@ -1,4 +1,5 @@
 """A2 node: template emission, ID assignment, routing-table data_sources, file writes."""
+
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
@@ -102,7 +103,7 @@ def _make_portfolio_gap_questions(
 ) -> list[Question]:
     ticker_to_claims: dict[str, list[Claim]] = {}
     for claim in high_medium_claims:
-        for ticker in (claim.tickers_affected or []):
+        for ticker in claim.tickers_affected or []:
             ticker_to_claims.setdefault(ticker, []).append(claim)
 
     questions: list[Question] = []
@@ -218,16 +219,12 @@ def make_questions_node(
         )
 
         high_medium_claims: list[Claim] = [
-            c
-            for c in aggregated_signals.claims
-            if c.tier in (SignalTier.HIGH, SignalTier.MEDIUM)
+            c for c in aggregated_signals.claims if c.tier in (SignalTier.HIGH, SignalTier.MEDIUM)
         ]
 
         macro_qs: list[Question] = _make_macro_questions()
         current_events_qs: list[Question] = _make_current_events_questions(high_medium_claims)
-        portfolio_gap_qs: list[Question] = _make_portfolio_gap_questions(
-            high_medium_claims, portfolio
-        )
+        portfolio_gap_qs: list[Question] = _make_portfolio_gap_questions(high_medium_claims, portfolio)
         try:
             drafts: list[DraftQuestion] = claim_questions_agent(high_medium_claims)
         except Exception:
@@ -241,9 +238,7 @@ def make_questions_node(
             if question is not None
         ]
 
-        all_questions: list[Question] = _assign_ids(
-            macro_qs + current_events_qs + portfolio_gap_qs + llm_qs
-        )
+        all_questions: list[Question] = _assign_ids(macro_qs + current_events_qs + portfolio_gap_qs + llm_qs)
 
         tier_counts: dict[SignalTier, int] = count_by_tier(aggregated_signals.claims)
         signal_summary: SignalSummary = SignalSummary(

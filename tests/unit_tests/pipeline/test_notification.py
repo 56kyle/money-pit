@@ -6,6 +6,7 @@ contract (`money-pit: MCP Validation Error - {slug}`), so its exact text is asse
 ANALYSIS_HALT reason wording is left free — only the convention (prefix + `- {slug}` suffix)
 is pinned.
 """
+
 from money_pit.pipeline.notification import _build_subject
 from money_pit.schemas.enums import TerminalState
 

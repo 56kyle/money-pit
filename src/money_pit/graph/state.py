@@ -1,4 +1,5 @@
 """PipelineState TypedDict: incremental LangGraph state accumulated across pipeline nodes."""
+
 from typing import Literal
 from typing import Protocol
 from typing import TypedDict

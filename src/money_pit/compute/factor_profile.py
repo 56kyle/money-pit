@@ -1,4 +1,5 @@
 """Factor-profile aggregation from per-position factor_tags."""
+
 from money_pit.schemas.enums import FactorTag
 from money_pit.schemas.portfolio import Position
 

@@ -9,7 +9,7 @@
 Wave S3 restores A4's output to the `docs/architecture.md` §6.5 **container** (surviving
 theses + dropped-claim records + the macro read + an optional halt), reversing the flat
 per-step list. That container-vs-list flip is a settled straight revert (logged in
-`docs/reviews/phase-1-6-findings.md`) and needs no ADR. Two decisions taken *while* restoring
+`docs/reviews/phase-1-6-findings.md`) and needs no ADR. Two decisions taken _while_ restoring
 it, however, exceed a mechanical revert and encode determinism-preserving choices with real
 rejected alternatives — recorded here (the 0003/0004 bar):
 
@@ -37,7 +37,7 @@ to capital output, pinned by a test asserting a `SUPPORTED` thesis sizes larger 
 otherwise-identical `UNVERIFIED` one.
 
 **2. The deterministic `_extract_macro_indicators(initial_answers)` remains the sole source of
-`MacroIndicators` for `classify_regime`.** The container's macro read is the LLM's *qualitative*
+`MacroIndicators` for `classify_regime`.** The container's macro read is the LLM's _qualitative_
 Step-2 reading (per-indicator favorable / unfavorable / missing), consumed **only** by the
 `analysis.md` renderer — it never reaches `classify_regime`. Rejected: letting the model's
 reported macro numbers feed the regime table (non-deterministic; violates evidence-only).

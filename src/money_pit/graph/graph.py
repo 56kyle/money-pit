@@ -1,4 +1,5 @@
 """StateGraph assembly: add_node / add_edge / add_conditional_edges."""
+
 from langgraph.graph import END  # pyright: ignore[reportMissingTypeStubs]
 from langgraph.graph import START  # pyright: ignore[reportMissingTypeStubs]
 from langgraph.graph import StateGraph  # pyright: ignore[reportMissingTypeStubs]
@@ -67,7 +68,10 @@ def build_graph(
     builder.add_node("aggregator", make_aggregator_node(corroboration_agent=corroboration_agent))
     builder.add_node("no_action_terminal", _no_action_terminal)
     builder.add_node("questions", make_questions_node(claim_questions_agent=claim_questions_agent))
-    builder.add_node("retrieval", make_retrieval_node(answer_synthesis_agent=answer_synthesis_agent, deterministic_tools=deterministic_tools))
+    builder.add_node(
+        "retrieval",
+        make_retrieval_node(answer_synthesis_agent=answer_synthesis_agent, deterministic_tools=deterministic_tools),
+    )
     builder.add_node("analysis", make_analysis_node(config=config, thesis_agent=thesis_agent))
     builder.add_node("validator", make_validator_node(manifest=manifest))
     builder.add_node("determination", make_determination_node())

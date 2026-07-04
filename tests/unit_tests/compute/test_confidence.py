@@ -1,4 +1,5 @@
 """Tests for money_pit.compute.confidence."""
+
 import pytest
 
 from money_pit.compute.confidence import derive_confidence

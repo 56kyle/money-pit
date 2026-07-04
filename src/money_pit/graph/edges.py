@@ -1,4 +1,5 @@
 """Conditional edge functions: signal_gate, terminal_state_router, determination_router, post_notification_router."""
+
 from typing import Literal
 
 from money_pit.graph.state import PipelineState

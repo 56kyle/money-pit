@@ -4,6 +4,7 @@ Pins the loose-str -> constrained tightening of ExecutionParameters.side: only "
 are accepted, and any other string is rejected at construction. The rejection is red today
 because the field is an unconstrained `str`.
 """
+
 import pytest
 from pydantic import ValidationError
 

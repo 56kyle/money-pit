@@ -26,8 +26,6 @@ from money_pit.schemas.validation_results import ActionStepsValidation
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
-_SIGNALS_DIR: Path = Path(__file__).parents[2] / "data" / "pipeline" / "signals"
-
 _EXECUTE_PATH_STEPS: list[str] = [
     "snapshot",
     "aggregator",
@@ -49,11 +47,11 @@ def _assert_file_valid(run_dir: Path, filename: str, model_class: type[ModelT]) 
     return model_class.model_validate_json(path.read_text(encoding="utf-8"))
 
 
-def test_paper_trade_execute_path(tmp_path: Path) -> None:
+def test_paper_trade_execute_path(tmp_path: Path, pipeline_signals_dir: Path) -> None:
     """Full pipeline run with stub agents completes via the execute branch."""
     run_dir = tmp_path / "run"
 
-    final_state = run_pipeline(signals_dir=_SIGNALS_DIR, run_dir=run_dir, overrides=phase4_overrides())
+    final_state = run_pipeline(signals_dir=pipeline_signals_dir, run_dir=run_dir, overrides=phase4_overrides())
 
     completed = final_state.get("completed_steps", [])
     for step in _EXECUTE_PATH_STEPS:
@@ -80,9 +78,9 @@ def test_paper_trade_execute_path(tmp_path: Path) -> None:
     assert final_state.get("terminal_state") is None, "Execute path must not set terminal_state"
 
 
-def test_paper_trade_no_action_path(tmp_path: Path) -> None:
+def test_paper_trade_no_action_path(tmp_path: Path, pipeline_signals_dir: Path) -> None:
     """Pipeline sets NO_ACTION terminal state when signals are not actionable."""
-    no_action_signals = _SIGNALS_DIR / "no_action_signal.json"
+    no_action_signals = pipeline_signals_dir / "no_action_signal.json"
     signals_dir = tmp_path / "signals_in"
     signals_dir.mkdir()
     _ = shutil.copy2(no_action_signals, signals_dir / "no_action_signal.json")
@@ -100,9 +98,11 @@ def test_paper_trade_no_action_path(tmp_path: Path) -> None:
 
 
 @pytest.fixture(scope="module")
-def execute_run(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, PipelineState]:
+def execute_run(
+    tmp_path_factory: pytest.TempPathFactory, pipeline_signals_dir: Path
+) -> tuple[Path, PipelineState]:
     run_dir = tmp_path_factory.mktemp("execute_determination")
-    final_state = run_pipeline(signals_dir=_SIGNALS_DIR, run_dir=run_dir, overrides=phase4_overrides())
+    final_state = run_pipeline(signals_dir=pipeline_signals_dir, run_dir=run_dir, overrides=phase4_overrides())
     return run_dir, final_state
 
 
@@ -159,13 +159,13 @@ def post_processor_empty_email() -> _RecordingEmail:
 
 @pytest.fixture
 def post_processor_empty_run(
-    tmp_path: Path, post_processor_empty_email: _RecordingEmail
+    tmp_path: Path, pipeline_signals_dir: Path, post_processor_empty_email: _RecordingEmail
 ) -> tuple[Path, PipelineState]:
     run_dir = tmp_path / "run"
     overrides: PipelineOverrides = phase4_overrides()
     overrides.thesis_agent = _empty_thesis_agent
     overrides.send_email = post_processor_empty_email
-    final_state = run_pipeline(signals_dir=_SIGNALS_DIR, run_dir=run_dir, overrides=overrides)
+    final_state = run_pipeline(signals_dir=pipeline_signals_dir, run_dir=run_dir, overrides=overrides)
     return run_dir, final_state
 
 
@@ -193,13 +193,14 @@ def test_paper_trade_post_processor_empty_writes_no_determination(
 @pytest.fixture(scope="module")
 def validation_error_run(
     tmp_path_factory: pytest.TempPathFactory,
+    pipeline_signals_dir: Path,
 ) -> tuple[Path, PipelineState, _RecordingEmail]:
     run_dir = tmp_path_factory.mktemp("validation_error_determination")
     email = _RecordingEmail()
     overrides: PipelineOverrides = phase4_overrides()
     overrides.manifest = {}
     overrides.send_email = email
-    final_state = run_pipeline(signals_dir=_SIGNALS_DIR, run_dir=run_dir, overrides=overrides)
+    final_state = run_pipeline(signals_dir=pipeline_signals_dir, run_dir=run_dir, overrides=overrides)
     return run_dir, final_state, email
 
 

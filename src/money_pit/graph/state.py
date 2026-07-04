@@ -1,5 +1,6 @@
 """PipelineState TypedDict: incremental LangGraph state accumulated across pipeline nodes."""
 
+from pathlib import Path
 from typing import Literal
 from typing import Protocol
 from typing import TypedDict
@@ -22,6 +23,25 @@ class PipelineState(TypedDict, total=False):
     failed_steps: list[str]
     sub_agent_spawned: Literal["execution", "notification"] | None
     determination_reason: str
+
+
+def require_working_dir(state: PipelineState) -> Path:
+    """Return the working directory as a Path, raising if it is unset."""
+    working_dir = state.get("working_dir")
+    if working_dir is None:
+        raise ValueError("PipelineState missing required key 'working_dir'")
+    return Path(working_dir)
+
+
+def require_slug(state: PipelineState) -> str:
+    slug = state.get("slug")
+    if slug is None:
+        raise ValueError("PipelineState missing required key 'slug'")
+    return slug
+
+
+def with_completed_step(state: PipelineState, step: str) -> list[str]:
+    return list(state.get("completed_steps") or []) + [step]
 
 
 class PipelineNode(Protocol):

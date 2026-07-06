@@ -122,14 +122,14 @@ def stub_free_order_schema(stub_free_order_schema_path: Path) -> dict[str, objec
 
 @pytest.fixture
 def matched_manifest(stub_free_order_schema: dict[str, object]) -> dict[str, dict[str, object]]:
-    return {"place_order": stub_free_order_schema}
+    return {"place_stock_order": stub_free_order_schema}
 
 
 def test_pinned_manifest_with_available_schema(stub_free_order_schema_path: Path) -> None:
     result = mcp_manifest.pinned_manifest(schema_path=stub_free_order_schema_path)
 
-    assert "place_order" in result
-    assert isinstance(result["place_order"], dict)
+    assert "place_stock_order" in result
+    assert isinstance(result["place_stock_order"], dict)
     for tool in set(ACTION_TYPE_TO_TOOL.values()):
         assert tool in result
 
@@ -158,7 +158,7 @@ def test__validate_step_with_missing_tool(action_step: ActionStep, slug: str) ->
 
 def test__validate_step_with_schema_mismatch(action_step: ActionStep, slug: str) -> None:
     over_constrained_manifest: dict[str, dict[str, object]] = {
-        "place_order": {
+        "place_stock_order": {
             "type": "object",
             "properties": {"limit_price": {"type": "number"}},
             "required": ["limit_price"],

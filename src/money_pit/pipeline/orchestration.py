@@ -13,8 +13,15 @@ from money_pit.agents.corroboration import corroborate
 from money_pit.agents.research_tools import DeterministicResearchTools
 from money_pit.agents.research_tools import OpenEndedResearchTools
 from money_pit.agents.thesis_judgment import make_thesis_judgment_agent
+from money_pit.alpaca_portfolio import make_alpaca_portfolio_fetcher
+from money_pit.config import DEFAULT_OWNER_RECIPIENT
+from money_pit.config import Config
 from money_pit.config import load_config
+from money_pit.config import resolve_alpaca_credentials
 from money_pit.constants import DAILY_SHOW_ROOT
+from money_pit.email_sender import make_gmail_email_sender
+from money_pit.mcp.clients import make_alpaca_write_deps
+from money_pit.mcp.manifest import live_manifest
 from money_pit.contracts import AnswerSynthesisAgent
 from money_pit.contracts import ClaimQuestionsAgent
 from money_pit.contracts import CorroborationAgent
@@ -48,6 +55,8 @@ from money_pit.schemas.signals import Claim
 _MISSING_DEP_MESSAGE: str = (
     "run_pipeline requires a real {name}; supply it via PipelineOverrides or use phase4_overrides() for tests."
 )
+
+_EDGAR_IDENTITY_FALLBACK: str = f"money-pit research {DEFAULT_OWNER_RECIPIENT}"
 
 
 class MissingPipelineDependencyError(Exception):
@@ -125,9 +134,11 @@ class _DirectDeterministicTools:
 
 class _DirectOpenEndedTools:
     _brave_api_key: str | None
+    _owner_recipient: str
 
-    def __init__(self, brave_api_key: str | None) -> None:
+    def __init__(self, brave_api_key: str | None, owner_recipient: str) -> None:
         self._brave_api_key = brave_api_key
+        self._owner_recipient = owner_recipient
 
     def brave_search(self, query: str, *, n_results: int = 5) -> list[str]:
         if self._brave_api_key is None:
@@ -162,11 +173,20 @@ class _DirectOpenEndedTools:
         except Exception:
             return []
 
-    def edgar_search(self, query: str, *, n_results: int = 5) -> list[str]:
-        # Phase 5 stub — full EDGAR search wired in Phase 7 via MCP
-        _ = query
-        _ = n_results
-        return []
+    def edgar_search(self, query: str, *, n_results: int = 5) -> list[str]:  # pragma: no cover
+        try:
+            from edgar import search_filings
+            from edgar import set_identity
+
+            set_identity(self._owner_recipient or _EDGAR_IDENTITY_FALLBACK)
+            snippets: list[str] = []
+            for result in search_filings(query, limit=n_results):
+                snippets.append(f"{result.file_type} — {result.company} — {result.period}")
+                if len(snippets) >= n_results:
+                    break
+            return snippets
+        except Exception:
+            return []
 
 
 class _Phase4DeterministicTools:
@@ -302,6 +322,22 @@ def phase4_overrides() -> PipelineOverrides:
     )
 
 
+def production_deps(config: Config) -> PipelineOverrides:
+    """Return production PipelineOverrides wiring the real capital-critical deps and live tool manifest.
+
+    Alpaca credentials are resolved eagerly here so composition fails closed before any run begins.
+    order_schema_path is left as the default committed path, which is valid only after the operator
+    has run the pin-order-schema command.
+    """
+    credentials = resolve_alpaca_credentials(config)
+    return PipelineOverrides(
+        fetch_portfolio=make_alpaca_portfolio_fetcher(credentials),
+        place_order=make_alpaca_write_deps(credentials),
+        send_email=make_gmail_email_sender(config),
+        manifest=live_manifest(credentials),
+    )
+
+
 @dataclass(frozen=True)
 class _CapitalCriticalDeps:
     """The three dependencies that move real capital, resolved and guaranteed non-None."""
@@ -352,7 +388,9 @@ def run_pipeline(
     config = load_config()
 
     det_tools: DeterministicResearchTools = ov.deterministic_tools or _DirectDeterministicTools(config.fred_api_key)
-    open_tools: OpenEndedResearchTools = ov.open_ended_tools or _DirectOpenEndedTools(config.brave_api_key)
+    open_tools: OpenEndedResearchTools = ov.open_ended_tools or _DirectOpenEndedTools(
+        config.brave_api_key, config.owner_recipient
+    )
 
     thesis = ov.thesis_agent or make_thesis_judgment_agent(config)
     claim_qs = ov.claim_questions_agent or make_claim_questions_agent(config)

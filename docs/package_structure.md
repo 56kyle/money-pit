@@ -14,6 +14,8 @@ src/money_pit/
 ├── config.py                # (existing) pydantic-settings Config + load_config
 ├── constants.py             # (existing) APP_NAME, paths, slug datetime format
 ├── contracts.py             # Cross-layer DI TypeAliases (cycle-free leaf, imports only schemas): ToolManifest, ThesisAgent, PortfolioFetcher, OrderPlacer, EmailSender, CorroborationAgent, ClaimQuestionsAgent, AnswerSynthesisAgent
+├── alpaca_portfolio.py     # alpaca-py-backed PortfolioFetcher (reads snapshot via TradingClient, not MCP — ADR 0008); yfinance best-effort sector, v0-deferred factor_tags/overlaps; NonEquityPositionError
+├── email_sender.py         # Gmail smtplib EmailSender for the pipeline (direct, not over MCP — ADR 0009); typed EmailSendError
 │
 ├── schemas/                 # All Pydantic data contracts — single import source of truth
 │   ├── __init__.py
@@ -81,10 +83,10 @@ src/money_pit/
 │
 └── mcp/                     # MCP client configuration; runs inside the pipeline process
     ├── __init__.py
-    ├── clients.py           # AlpacaReadDeps, AlpacaWriteDeps, ResearchDeps dep types + factory fns; injection-ready for Pydantic AI (docstring-only stub pre-Phase-7; still owes ResearchDeps)
-    ├── order_schema.py       # Shared loader: ALPACA_ORDER_SCHEMA_PATH + load_order_schema (fail-closed AlpacaOrderSchemaMissingError/MalformedError); single literal source for compute/execution_params.py and pipeline/validator.py
-    ├── manifest.py          # pinned_manifest(): static {"place_order": <pinned schema>} for A5 (ADR 0004); NOT live introspection — the registered-server introspection is the Phase-7 swap
-    └── alpaca_order_schema.json  # Pinned Alpaca MCP order tool inputSchema snapshot (still a stub); read via mcp/order_schema.py by compute/execution_params.py and pipeline/validator.py → tool manifest consumed by A5
+    ├── clients.py           # AlpacaWriteDeps + make_alpaca_write_deps: connect-per-call OrderPlacer over a trading-scoped stdio alpaca-mcp-server (place_stock_order) + list_write_tools introspection (ADR 0008). AlpacaReadDeps/ResearchDeps dropped — no consumer; reads use alpaca_portfolio.py, edgar_search uses edgartools
+    ├── order_schema.py       # Shared loader: ALPACA_ORDER_SCHEMA_PATH + load_order_schema (fail-closed AlpacaOrderSchemaMissingError/MalformedError/NotPinnedError); single literal source for compute/execution_params.py and pipeline/validator.py
+    ├── manifest.py          # pinned_manifest(): static {<place_stock_order>: <pinned schema>} for A5 (ADR 0004); live_manifest(credentials): opt-in live introspection of the connected server (ADR 0008), fail-closed ManifestUnavailableError
+    └── alpaca_order_schema.json  # Pinned Alpaca MCP order tool inputSchema snapshot (still a stub; pin via `money-pit pin-order-schema`); read via mcp/order_schema.py by compute/execution_params.py and pipeline/validator.py → tool manifest consumed by A5
 
 src/email_server/            # Deployable MCP server (separate process; no imports from money_pit package)
 ├── __init__.py

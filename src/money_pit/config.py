@@ -1,13 +1,37 @@
 """Module responsible for handling config used throughout the money_pit package."""
 
 import os
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+import keyring
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
 from money_pit.constants import DEFAULT_CONFIG_PATH
+from money_pit.constants import GMAIL_KEYRING_SERVICE
+
+
+_ALPACA_PAPER_SUFFIX: str = "-paper"
+_ALPACA_LIVE_SUFFIX: str = "-live"
+
+DEFAULT_OWNER_RECIPIENT: str = "56kyleoliver@gmail.com"
+_DEFAULT_SMTP_HOST: str = "smtp.gmail.com"
+_DEFAULT_SMTP_PORT: int = 587
+
+
+class CredentialResolutionError(Exception):
+    """Raised when a required secret cannot be resolved, or a service name is ambiguous about paper vs live."""
+
+
+@dataclass(frozen=True)
+class AlpacaCredentials:
+    """Resolved Alpaca API credentials plus the paper/live routing decision."""
+
+    api_key: str
+    secret_key: str
+    paper: bool
 
 
 class Config(BaseModel):
@@ -15,6 +39,12 @@ class Config(BaseModel):
 
     alpaca_service: str
     alpaca_username: str
+
+    gmail_address: str | None = None
+    gmail_service: str = GMAIL_KEYRING_SERVICE
+    owner_recipient: str = DEFAULT_OWNER_RECIPIENT
+    smtp_host: str = _DEFAULT_SMTP_HOST
+    smtp_port: int = _DEFAULT_SMTP_PORT
 
     regime_lookback: int = 60
     regime_band: float = 0.5
@@ -52,6 +82,11 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> Config:
     return Config(
         alpaca_service=alpaca_service,
         alpaca_username=alpaca_username,
+        gmail_address=os.environ.get("MONEY_PIT__GMAIL_ADDRESS", None),
+        gmail_service=os.environ.get("MONEY_PIT__GMAIL_SERVICE", GMAIL_KEYRING_SERVICE),
+        owner_recipient=os.environ.get("MONEY_PIT__OWNER_RECIPIENT", DEFAULT_OWNER_RECIPIENT),
+        smtp_host=os.environ.get("MONEY_PIT__SMTP_HOST", _DEFAULT_SMTP_HOST),
+        smtp_port=int(os.environ.get("MONEY_PIT__SMTP_PORT", _DEFAULT_SMTP_PORT)),
         regime_lookback=int(os.environ.get("MONEY_PIT__REGIME_LOOKBACK", 60)),
         regime_band=float(os.environ.get("MONEY_PIT__REGIME_BAND", 0.5)),
         kelly_fraction=float(os.environ.get("MONEY_PIT__KELLY_FRACTION", 0.25)),
@@ -71,3 +106,41 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> Config:
         fred_api_key=os.environ.get("MONEY_PIT__FRED_API_KEY", None),
         brave_api_key=os.environ.get("MONEY_PIT__BRAVE_API_KEY", None),
     )
+
+
+def _paper_from_service(service: str) -> bool:
+    """Return the paper/live routing decision from the service suffix, never guessing when the suffix is absent."""
+    if service.endswith(_ALPACA_PAPER_SUFFIX):
+        return True
+    if service.endswith(_ALPACA_LIVE_SUFFIX):
+        return False
+    raise CredentialResolutionError(
+        f"Alpaca service {service!r} does not end in {_ALPACA_PAPER_SUFFIX!r} or {_ALPACA_LIVE_SUFFIX!r};"
+        + " refusing to guess paper vs live."
+    )
+
+
+def resolve_alpaca_credentials(config: Config) -> AlpacaCredentials:
+    """Resolve Alpaca credentials from config plus keyring, failing closed on a missing secret or ambiguous routing."""
+    secret_key: str | None = keyring.get_password(config.alpaca_service, config.alpaca_username)
+    if secret_key is None:
+        raise CredentialResolutionError(
+            f"No Alpaca secret in keyring for service {config.alpaca_service!r}, username {config.alpaca_username!r}."
+        )
+    return AlpacaCredentials(
+        api_key=config.alpaca_username,
+        secret_key=secret_key,
+        paper=_paper_from_service(config.alpaca_service),
+    )
+
+
+def resolve_gmail_app_password(config: Config) -> str:
+    """Resolve the Gmail app password from keyring, failing closed if the address or stored secret is unset."""
+    if config.gmail_address is None:
+        raise CredentialResolutionError("No gmail_address configured; cannot resolve a Gmail app password.")
+    app_password: str | None = keyring.get_password(config.gmail_service, config.gmail_address)
+    if app_password is None:
+        raise CredentialResolutionError(
+            f"No Gmail app password in keyring for service {config.gmail_service!r}, username {config.gmail_address!r}."
+        )
+    return app_password

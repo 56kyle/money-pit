@@ -20,6 +20,8 @@ USER_LOG_FOLDER: Path = user_log_path(appname=APP_NAME, appauthor=APP_AUTHOR, en
 
 DEFAULT_CONFIG_PATH: Path = USER_CONFIG_FOLDER / ".env"
 
+GMAIL_KEYRING_SERVICE: str = "money-pit-gmail"
+
 DAILY_SHOW_ROOT: Path = Path("data") / "daily_show"
 
 AGGREGATED_SIGNALS_JSON_FILENAME: str = "aggregated_signals.json"

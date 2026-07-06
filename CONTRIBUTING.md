@@ -33,7 +33,7 @@ We welcome pull requests! For significant changes, it's best to open an issue fi
 
 ### Prerequisites
 
-- Python 3.9+ (this project supports Python 3.9-3.13)
+- Python 3.10+ (this project supports Python 3.10-3.13)
 - [uv][uv-documentation] for dependency management
 - Git for version control
 
@@ -121,7 +121,7 @@ This project follows these standards:
 
 - **Code formatting:** [Ruff][ruff-documentation] (automatically applied by pre-commit)
 - **Linting:** Ruff with comprehensive rule set
-- **Type checking:** [Pyright][pyright-documentation]
+- **Type checking:** [Basedpyright][basedpyright-documentation]
 - **Security:** [Bandit][bandit-documentation] for security linting
 - **Commit messages:** [Conventional Commits][conventional-commits] format preferred
 - **Testing:** [pytest][pytest-documentation] with good coverage
@@ -168,7 +168,7 @@ Common Nox sessions for development:
 # Code quality
 uvx nox -s format-python    # Format with Ruff
 uvx nox -s lint-python      # Lint with Ruff
-uvx nox -s typecheck        # Type check with Pyright
+uvx nox -s typecheck        # Type check with Basedpyright
 uvx nox -s security-python  # Security checks
 
 # Testing
@@ -206,8 +206,9 @@ _This project was generated from the [cookiecutter-robust-python][cookiecutter-r
 [discussions]: https://github.com/56kyle/money-pit/discussions
 [uv-documentation]: https://docs.astral.sh/uv/
 [ruff-documentation]: https://docs.astral.sh/ruff/
+[basedpyright-documentation]: https://github.com/detachhead/basedpyright
 [pyright-documentation]: https://github.com/microsoft/pyright
 [bandit-documentation]: https://bandit.readthedocs.io/
 [conventional-commits]: https://www.conventionalcommits.org/
 [pytest-documentation]: https://docs.pytest.org/
-[cookiecutter-robust-python]: https://github.com/56kyle/cookiecutter-robust-python
+[cookiecutter-robust-python]: https://github.com/robust-python/cookiecutter-robust-python

@@ -1,13 +1,13 @@
 {
   "template": "https://github.com/56kyle/cookiecutter-robust-python",
-  "commit": "2f163be8c7ff28302f68abfa5312d3e50bea9eff",
+  "commit": "e3e4bd38305f544bffe1025111aa2981f1e51714",
   "checkout": null,
   "context": {
     "cookiecutter": {
       "project_name": "money-pit",
       "package_name": "money_pit",
       "friendly_name": "Money Pit",
-      "min_python_version": "3.9",
+      "min_python_version": "3.10",
       "max_python_version": "3.13",
       "add_rust_extension": false,
       "author": "Kyle Oliver",
@@ -20,7 +20,15 @@
       "license": "MIT",
       "development_status": "Development Status :: 1 - Planning",
       "_template": "https://github.com/56kyle/cookiecutter-robust-python",
-      "_commit": "2f163be8c7ff28302f68abfa5312d3e50bea9eff"
+      "_commit": "e3e4bd38305f544bffe1025111aa2981f1e51714",
+      "_min_python_version_minor_int": 10,
+      "_max_python_version_minor_int": 13,
+      "python_versions": [
+        "3.10",
+        "3.11",
+        "3.12",
+        "3.13"
+      ]
     }
   },
   "directory": null

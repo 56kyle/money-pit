@@ -24,6 +24,7 @@ from money_pit.graph.state import PipelineState
 from money_pit.graph.state import require_slug
 from money_pit.graph.state import require_working_dir
 from money_pit.graph.state import with_completed_step
+from money_pit.mcp.order_schema import ALPACA_ORDER_SCHEMA_PATH
 from money_pit.schemas import ExecutionParameters
 from money_pit.schemas.action_steps import ActionStep
 from money_pit.schemas.analysis_draft import AnalysisHalt
@@ -270,6 +271,7 @@ def _materialize_action_steps(
     portfolio_snapshot: PortfolioSnapshot,
     regime_tag: RegimeTag,
     slug: str,
+    order_schema_path: Path,
 ) -> list[ActionStep]:
     """Size each surviving thesis into an ActionStep, dropping any the sizer declines."""
     regime_uncertain: bool = regime_tag == RegimeTag.UNCERTAIN
@@ -294,7 +296,7 @@ def _materialize_action_steps(
 
         step_id: str = f"A{i + 1:03d}"
         execution_parameters: ExecutionParameters = build_execution_params(
-            step_id, slug, thesis.instrument, thesis.action_type, dollar_amount
+            step_id, slug, thesis.instrument, thesis.action_type, dollar_amount, schema_path=order_schema_path
         )
         action_steps.append(_build_action_step(step_id, thesis, regime_tag, execution_parameters))
 
@@ -319,8 +321,18 @@ def _persist_analysis_outputs(
 def make_analysis_node(
     config: Config,
     thesis_agent: ThesisAgent,
+    order_schema_path: Path | None = None,
 ) -> PipelineNode:
-    """Return a LangGraph node that runs A4 judgment and the deterministic post-processor."""
+    """Return a LangGraph node that runs A4 judgment and the deterministic post-processor.
+
+    The returned node fails closed on an unpinned, absent, or malformed order schema:
+    AlpacaOrderSchemaNotPinnedError / AlpacaOrderSchemaMissingError /
+    AlpacaOrderSchemaMalformedError (and jsonschema.ValidationError when the emitted
+    payload violates the schema) propagate uncaught from build_execution_params. This is
+    a deliberate asymmetry with the A4 agent failure path, which is caught and turned into
+    an ANALYSIS_HALT.
+    """
+    resolved_order_schema_path: Path = order_schema_path or ALPACA_ORDER_SCHEMA_PATH
 
     def analysis_node(state: PipelineState) -> PipelineState:
         working_dir: Path = require_working_dir(state)
@@ -342,7 +354,7 @@ def make_analysis_node(
             }
 
         action_steps: list[ActionStep] = _materialize_action_steps(
-            container, config, portfolio_snapshot, regime_tag, slug
+            container, config, portfolio_snapshot, regime_tag, slug, resolved_order_schema_path
         )
         _persist_analysis_outputs(working_dir, slug, container, regime_tag, action_steps)
 

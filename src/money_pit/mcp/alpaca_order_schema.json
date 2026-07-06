@@ -1,4 +1,5 @@
 {
+  "x_stub": true,
   "type": "object",
   "properties": {
     "symbol": { "type": "string" },

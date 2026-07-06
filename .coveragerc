@@ -11,6 +11,8 @@ branch = true
 source =
     money_pit
     tests
+omit =
+    tests/acceptance_tests/*
 
 [report]
 exclude_also =

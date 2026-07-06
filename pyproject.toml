@@ -25,6 +25,8 @@ classifiers = [
 dependencies = [
     "alpaca-mcp-server>=2.0.2",
     "alpaca-py>=0.43.0",
+    "edgartools>=3.0.0",
+    "fastmcp>=3.4.0",
     "keyring>=25.7.0",
     "langchain[openai]>=0.3.30",
     "lightning>=2.6.0",
@@ -112,3 +114,9 @@ explicit = true
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+addopts = "-m 'not live'"
+markers = [
+    "live: connects to real Alpaca paper / SMTP; deselected by default (run with -m live and MONEY_PIT_LIVE=1)",
+]

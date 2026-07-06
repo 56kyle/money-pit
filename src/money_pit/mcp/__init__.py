@@ -1,5 +1,7 @@
 """Subpackage containing the Alpaca MCP dependency types, order schema, and clients for the money_pit package."""
 
+from money_pit.mcp.clients import AlpacaWriteDeps
+from money_pit.mcp.clients import make_alpaca_write_deps
 from money_pit.mcp.order_schema import ALPACA_ORDER_SCHEMA_PATH
 from money_pit.mcp.order_schema import ALPACA_ORDER_SCHEMA_STUB_SENTINEL
 from money_pit.mcp.order_schema import AlpacaOrderSchemaError
@@ -16,5 +18,7 @@ __all__ = [
     "AlpacaOrderSchemaMalformedError",
     "AlpacaOrderSchemaMissingError",
     "AlpacaOrderSchemaNotPinnedError",
+    "AlpacaWriteDeps",
     "load_order_schema",
+    "make_alpaca_write_deps",
 ]

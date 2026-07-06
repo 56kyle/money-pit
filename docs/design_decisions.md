@@ -15,6 +15,16 @@ engineering, not investment advice, and no substitute for a sound edge.
 Status of §15: #1, #4, #5, #15 resolved; #2 and #3 designed below (they blocked `compute/regime.py`
 and `compute/sizing.py`); the rest stand as in architecture §15.
 
+**Status of §15 open decisions after the conformance review.** Several §15 items were subsequently
+resolved during remediation and now carry their rationale in accepted ADRs rather than here: the
+execution-journal semantics of #9/#12 (nullable `outcome`, submission-level `EXECUTED_CLEAN`,
+`AtomicGroupNotSupportedError`) in **ADR 0003**; the #1 order-schema manifest (static pinned, A5
+fail-closed) in **ADR 0004**; A4's Step-1 disposition threading and macro-read-as-narrative in
+**ADR 0005**; and the go/no-go determination + finalizer with the 4-member `TerminalState` in
+**ADR 0006**; and the re-enforcement of the #1 order-schema gate to fail closed while the committed
+stub is unpinned (in-band sentinel + `AlpacaOrderSchemaNotPinnedError`) in **ADR 0007**. The narrative
+docs (`architecture.md`, `pipeline_contracts.md`) describe the as-built design; these ADRs hold the "why."
+
 ---
 
 ## 1. Macro regime classification → `compute/regime.py` (§15 #2)
@@ -155,12 +165,29 @@ emits `group_id = null` for every step. Build `pipeline/execution.py` independen
 pre-flight/compensation branch (§7a of contracts) is wired but exercised only once `group_id` is
 populated. Define grouping criteria when the first interdependent thesis appears or N>1 makes them likely.
 
+The stub has a **marked terminus** (→ see ADR 0003): a non-null `group_id` fails closed by raising
+`AtomicGroupNotSupportedError` **before** any `place_order` call, rather than executing one leg of an
+all-or-nothing group. The same ADR makes the execution journal honest at this wave — `outcome` is
+**nullable** (`None` = incomplete/crashed) and `EXECUTED_CLEAN` means "all independent legs submitted"
+(not filled) pre-Phase-7.
+
 ## 6. Tier reconciliation (§15 #15) — **RESOLVED (inert at N=1)**
 
 `max` tier across a corroborated claim, with corroboration raising A4 Step-1 confidence. Inert until N>1
 — same horizon as the corroboration stub.
 
 ## 7. Alpaca order schema (§15 #1) — **deployment prerequisite**
+
+The shared-loader / co-located-path shape has **landed**: `mcp/alpaca_order_schema.json` is the pinned
+artifact and `mcp/order_schema.py` is the single loader (`load_order_schema`, exposing
+`ALPACA_ORDER_SCHEMA_PATH`), so the post-processor's `compute/execution_params.py` emission and
+`pipeline/validator.py`'s `jsonschema` check share one literal source. A5 validates against a **static,
+pinned manifest** (`pinned_manifest()` = `{"place_order": <that schema>}`) rather than live
+introspection (→ see ADR 0004); introspecting the registered MCP servers is the Phase-7 swap of the
+injected default. The committed schema is still a **stub** — pinning the real OpenAPI-generated schema
+from the live Alpaca MCP is the remaining prerequisite, gated so the default production path fails
+closed until it lands via an in-band stub sentinel + `AlpacaOrderSchemaNotPinnedError` (→ see ADR 0007;
+§7 of contracts).
 
 ## 8. Step ID origin — **post-processor assigns, not A4**
 

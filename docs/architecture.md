@@ -108,22 +108,30 @@ flowchart TD
     A3 --> A4[A4 · Analysis agent<br/>Pydantic AI · judgment only]
     SNAP --> A4
     A4 --> PP[Post-processor node<br/>EV · sizing · exec params]
-    PP --> T{terminal state?}
+    PP --> T{terminal_state_router}
     T -- empty array --> NA
-    T -- halt object --> AH([ANALYSIS_HALT<br/>email])
+    T -- halt object --> NOT[Notification sub-agent<br/>halt / validation-error email]
     T -- real steps --> A5[A5 · Validation node<br/>deterministic]
-    A5 --> A6{A6 · Determination<br/>conditional edge}
-    A6 -- all MATCHED --> EX[Execution sub-agent<br/>Alpaca write]
-    A6 -- any UNMATCHED --> EM([Validation-error<br/>email])
-    A6 -- parse failure --> ORC([Surface to<br/>orchestration])
-    EX --> DET[(determination.json<br/>+ outcome)]
-    EM --> DET
+    A5 --> A6[A6 · Determination node<br/>recompute go/no-go]
+    A6 --> DR{determination_router}
+    DR -- PROCEED --> EX[Execution sub-agent<br/>Alpaca write]
+    DR -- VALIDATION_ERROR --> NOT
+    DR -- parse failure --> FIN
+    NOT --> PNR{post_notification_router}
+    PNR -- ANALYSIS_HALT --> DONE([END])
+    PNR -- VALIDATION_ERROR --> FIN
+    EX --> FIN[Finalizer node<br/>writes determination.json/.md once]
+    FIN --> DONE
 ```
 
-The graph is mostly linear with three gates: the **signal gate** after the aggregator (skip everything
-if no source carried actionable content), the **terminal-state router** after the post-processor (empty
-/ halt / proceed), and the **determination gate** after validation (proceed to execution only if every
-step is independently executable). The front of the pipeline is a set of **source adapters** (the video
+The graph is mostly linear with three deterministic forks: the **signal gate** after the aggregator
+(skip everything if no source carried actionable content), the **terminal-state router** after the
+post-processor (empty / halt / proceed), and the **determination fork** after validation — an A6
+**determination node** that recomputes go/no-go from the persisted `action_steps_validation.json`, a
+`determination_router` that sends `PROCEED` → execution, `VALIDATION_ERROR` → notification, and a
+parse failure → the finalizer, and a single **finalizer node** where execution, the validation-error
+notification, and the parse-failure path rejoin to write `determination.json/.md` exactly once
+(→ see ADR 0006). The front of the pipeline is a set of **source adapters** (the video
 adapter today; newsletter/RSS/PDF adapters are additive) feeding an **aggregator** that merges them
 into one source-agnostic signal set — so everything from A2 onward is unaware of where signal came from.
 
@@ -220,25 +228,44 @@ The system's core, split into a judgment agent and a deterministic compute node.
 
 - **Responsibility:** for each action step, confirm a literal, complete MCP tool sequence exists that
   would execute it exactly as written. Static analysis only; never executes a tool.
-- **Mechanism:** reads the **tool manifest** (introspected from the registered MCP servers) and
-  checks existence (tool present by exact name), schema acceptance, and behavioral match via a fixed
-  `action_type → tool` config. The schema-acceptance check is a **`jsonschema.validate()`** call —
-  an MCP tool's `inputSchema` _is_ JSON Schema, so "are the action's params accepted under their
-  literal field names, with required fields present" is a library call, not hand-rolled matching. The
-  custom surface is only the `action_type→tool` routing and the compensation-capability lookup. With a
-  closed tool set this is entirely deterministic.
+- **Mechanism:** validates against a **static, pinned tool manifest** of the closed Alpaca write-tool
+  set — `{"place_order": <the pinned alpaca_order_schema>}`, assembled by `pinned_manifest()` from
+  `mcp.order_schema.load_order_schema()` and injected at node construction (→ see ADR 0004). It checks
+  existence (the router's tool name is a key in the manifest), schema acceptance, and behavioral match
+  via a fixed `action_type → tool` config. This is **contract-level** existence (the selected tool
+  appears in the pinned write-tool set), **not** runtime availability — live introspection of the
+  registered MCP servers is the Phase-7 replacement, which swaps only the injected default. An
+  unavailable manifest fails closed via a typed `ManifestUnavailableError`; the earlier injected LLM
+  `behavioral_match` predicate (which defaulted to always-`True`) has been **removed**, so A5 can no
+  longer be silently green on a check it does not run. The schema-acceptance check is a
+  **`jsonschema.validate()`** call — an MCP tool's `inputSchema` _is_ JSON Schema, so "are the action's
+  params accepted under their literal field names, with required fields present" is a library call, not
+  hand-rolled matching. The custom surface is only the `action_type→tool` routing and the
+  compensation-capability lookup. With a closed tool set this is entirely deterministic.
 - **Output:** `action_steps_validation.json/.md` (per-step `MATCHED`/`UNMATCHED` + gap descriptions)
   and `validation_status.json` (the orchestration completion signal). Written JSON → md → status,
   in that order.
 
-### 6.7 A6 — Determination (conditional edge, no LLM)
+### 6.7 A6 — Determination node + finalizer (no LLM)
 
-- **Responsibility:** recompute the go/no-go from per-step statuses: every step `MATCHED` →
-  `PROCEED`; any non-`MATCHED` → `HALT`. A missing/empty/non-array step list, an unreadable file, or
-  an unknown status literal is a parse failure → `HALT` with **no** sub-agent spawned, surfaced to
-  orchestration. Writes `determination.json` and logs the decision with an explicit reason.
-- **Routing:** `PROCEED` → execution sub-agent; step-status `HALT` → validation-error email; parse
-  failure → orchestration.
+A6 is split into a pure decision node and a single post-rejoin finalizer, because
+`determination.json` must record both the pre-execution decision (known before the fork) and the
+post-execution outcome (known only after execution/notification runs) — one pre-fork edge can
+satisfy neither the write nor the outcome (→ see ADR 0006).
+
+- **Determination node (deterministic).** `recompute_determination(ActionStepsValidation)` runs
+  against the **persisted** `action_steps_validation.json`: every step `MATCHED` → `PROCEED`; any
+  `UNMATCHED` → `HALT`. A missing/empty/non-array `steps` list, an unreadable file, or an unknown
+  status literal raises a typed `DeterminationParseError` → `ORCHESTRATION_ERROR`, with **no**
+  sub-agent spawned.
+- **Routing (`determination_router`).** `PROCEED` → execution sub-agent; `VALIDATION_ERROR`
+  (step-status `HALT`) → validation-error notification; parse failure (`ORCHESTRATION_ERROR`) →
+  finalizer directly.
+- **Finalizer node.** A single node reached after execution, the validation-error notification, and
+  the parse-failure path rejoin; it writes the complete `determination.json/.md` **once** — the only
+  point that can see the journal outcome — recording the recomputed go/no-go, the failing step IDs,
+  the spawned sub-agent, and its terminal outcome. `determination.json` is written **only on A6 paths**
+  (real steps); `NO_ACTION`/`ANALYSIS_HALT` skip A6 and produce none.
 
 ### 6.8 Execution sub-agent (node + Alpaca write tools)
 
@@ -253,7 +280,10 @@ The system's core, split into a judgment agent and a deterministic compute node.
     standalone; if one fails, the successful ones were each independently validated as good and the
     next run re-plans from live state — undoing them would be a mistake. Unwinding applies _only_ to
     steps sharing a `group_id` (pairs trade, hedge, funded roll), where a partial fill leaves
-    unintended exposure.
+    unintended exposure. At **N = 1** every step is independent (`group_id` always null); the atomic
+    path is a marked stub — a non-null `group_id` fails closed by raising `AtomicGroupNotSupportedError`
+    **before** any `place_order` call, rather than executing one leg of an all-or-nothing group
+    (→ see ADR 0003).
   - **Journal + idempotency.** Every order carries a deterministic `client_order_id = {slug}:{step_id}`
     so retries never double-execute, and the sub-agent writes `execution_journal.json` **incrementally**
     so a crash leaves a truthful partial record. This is the durable "what was actually applied" log —
@@ -262,8 +292,13 @@ The system's core, split into a judgment agent and a deterministic compute node.
   if any leg fails; execute legs in safe order (least-harmful-solo-failure first); on a mid-flight leg
   failure, compute compensations from **realized fills** and unwind the filled legs; if a compensation
   itself fails, escalate urgently (`COMPENSATION_FAILED`) — the one state with un-neutralized exposure.
-- **Output:** an execution outcome (`EXECUTED_CLEAN` | `PARTIAL_COMPENSATED` | `COMPENSATION_FAILED` |
-  `EXECUTION_FAILED`) written to the journal and mapped into `determination.json`.
+- **Output:** an `ExecutionOutcome` (`EXECUTED_CLEAN` | `PARTIAL_COMPENSATED` | `COMPENSATION_FAILED` |
+  `EXECUTION_FAILED`) written to the journal and mapped into `determination.json`. Pre-Phase-7, the
+  injected `place_order` returns only a broker order id — a successful call proves _"submitted,"_ not
+  _"filled"_ — so `EXECUTED_CLEAN` is redefined as **"all independent legs submitted without
+  exception"** (entries stay `phase=SUBMITTED`; `filled_*` stay `None`). The journal `outcome` is
+  **nullable**: `None` is the truthful value during incremental writes and the value a mid-run crash
+  leaves behind; a terminal member is written only at clean completion (→ see ADR 0003).
 
 ### 6.9 Notification sub-agent (node + communication tool)
 
@@ -331,7 +366,10 @@ Notes:
   near-matches), and Alpaca's asset list covers symbol validation.
 - **`get_macro_regime_indicators`** may already exist as a FRED MCP "economic snapshot" tool; otherwise
   it is a thin deterministic node over the FRED MCP, not a new server.
-- The **manifest** A5 validates against is introspected from the registered servers, not a tool.
+- The **manifest** A5 validates against is a **static, pinned** manifest of the closed Alpaca
+  write-tool set (`pinned_manifest()` over `mcp.order_schema`), not a tool and not yet live
+  introspection — introspecting the registered servers is the Phase-7 replacement that swaps only the
+  injected default (→ see ADR 0004).
 
 ### 8a. Build vs. integrate
 
@@ -386,7 +424,7 @@ transforms at a fixed pipeline point; **LLM** only for open-ended language or ge
 | deterministic known-param retrieval, `confidence` derivation, budget control                                                                        | node                                        |
 | regime tagging (five-indicator decision table), EV + gate, constraint extraction, fractional-Kelly sizing, haircut application, exec-param emission | node (post-processor)                       |
 | capability validation (existence + literal schema + sequence)                                                                                       | node (A5)                                   |
-| go/no-go determination + terminal-state routing                                                                                                     | conditional edge (A6)                       |
+| go/no-go determination + terminal-state routing                                                                                                     | determination node + finalizer (A6)         |
 | order placement, email send                                                                                                                         | node + write-scoped MCP tool                |
 
 Net: the LLM surface is the source adapters' classification, the aggregator's thin corroboration-label
@@ -400,25 +438,36 @@ is deliberately thin — the clustering that precedes it is deterministic embedd
 
 ## 10. Control flow & terminal states
 
-A run ends in exactly one terminal state, each mapped to a distinct, intended outcome so that a
-no-trade day never looks like a failure:
+Two enums, distinct roles (→ see ADR 0006). `TerminalState` is a **pre-execution routing marker** —
+its four members are all set _before_ the execution fork and each maps to a distinct, intended outcome
+so a no-trade day never looks like a failure. The **execute path deliberately leaves
+`terminal_state is None`**: a successful run's verdict lives in the execution journal, not in
+`TerminalState`.
 
-| terminal state        | trigger                                                            | action                                                              |
-| --------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------- |
-| `NO_ACTION`           | aggregator signal gate false, or post-processor emits `[]`         | stop quietly; optional digest; **no error email**; A5/A6 skipped    |
-| `ANALYSIS_HALT`       | A4 emits a halt object (a step could not be completed)             | distinct halt email; A5/A6 skipped                                  |
-| `EXECUTED_CLEAN`      | A6 `PROCEED` → all steps executed                                  | orders placed; journal + outcome recorded                           |
+| `TerminalState`       | trigger                                                     | action                                                           |
+| --------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------- |
+| `NO_ACTION`           | aggregator signal gate false, or post-processor emits `[]` | stop quietly; optional digest; **no error email**; A5/A6 skipped |
+| `ANALYSIS_HALT`       | A4 emits a halt object (a step could not be completed)     | distinct halt email; A5/A6 skipped                               |
+| `VALIDATION_ERROR`    | A6 step-status `HALT` (real unmatched capability)          | validation-error email → finalizer                               |
+| `ORCHESTRATION_ERROR` | A6 parse failure (`DeterminationParseError`)               | finalizer; no sub-agent                                          |
+
+`ExecutionOutcome` is a **separate, journal-only** enum — the outcome of a `PROCEED` execution, never a
+`TerminalState`. It is `outcome`-nullable (`ExecutionOutcome | None`): `None` marks an incomplete or
+crashed run (per ADR 0003) and maps to `failure`.
+
+| `ExecutionOutcome`    | trigger                                                            | recorded as                                                         |
+| --------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `EXECUTED_CLEAN`      | A6 `PROCEED` → all independent legs submitted without exception   | success; journal `phase=SUBMITTED`, `filled_*` null pre-Phase-7     |
 | `PARTIAL_COMPENSATED` | an atomic group leg failed mid-flight but filled legs were unwound | net no unintended exposure; recorded as success with journal detail |
 | `COMPENSATION_FAILED` | an unwind itself failed — un-neutralized exposure remains          | **urgent** high-priority email; flagged for next-run reconciliation |
-| `VALIDATION_ERROR`    | A6 step-status `HALT` (real unmatched capability)                  | validation-error email                                              |
-| `ORCHESTRATION_ERROR` | A6 parse failure, or any unexpected exception                      | surface to orchestration; no sub-agent                              |
+| `EXECUTION_FAILED`    | a submission failed and the loop recorded the leg `phase=FAILED`   | failure; `sub_agent_outcome=failure` in `determination.json`        |
 
 The orchestration layer inspects the post-processor output _before_ A5 to separate `NO_ACTION` and
 `ANALYSIS_HALT` from real recommendations, so the validation-error path fires **only** for genuine
-tool-coverage gaps on real steps. The three `EXECUTED_*`/`COMPENSATION_FAILED` outcomes come from the
-execution sub-agent's transactional model (§6.8 / contracts §7a); `COMPENSATION_FAILED` is the one
-outcome that leaves the portfolio in a state the system could not itself reconcile, so it is the
-highest-priority human signal in the system.
+tool-coverage gaps on real steps. The `PARTIAL_COMPENSATED`/`COMPENSATION_FAILED`/`EXECUTION_FAILED`
+outcomes come from the execution sub-agent's transactional model (§6.8 / contracts §7a);
+`COMPENSATION_FAILED` is the one outcome that leaves the portfolio in a state the system could not
+itself reconcile, so it is the highest-priority human signal in the system.
 
 ---
 
@@ -497,10 +546,14 @@ working-directory root (`data/daily_show/`) is the only persistent on-disk state
 
 ## 15. Open decisions & risks
 
-1. **Alpaca order tool schema (now resolvable, was blocking).** The `execution_parameters` field
-   names must match the official Alpaca MCP order tool's input schema, or A5 marks every step
-   `UNMATCHED`. The official server is OpenAPI-generated, so read that schema and pin
-   `execution_parameters` (and the post-processor's field emission) to it before building the post-processor.
+1. **Alpaca order tool schema (partially resolved).** The `execution_parameters` field names must
+   match the official Alpaca MCP order tool's input schema, or A5 marks every step `UNMATCHED`. The
+   schema is now pinned to a **committed artifact** (`mcp/alpaca_order_schema.json`) read through a
+   single shared loader (`mcp.order_schema.load_order_schema`, raising the typed
+   `AlpacaOrderSchemaMissingError`), the one source for both the post-processor's field emission and
+   A5's manifest. The committed file is still a **stub**: pinning the real OpenAPI-generated schema
+   from the live Alpaca MCP is the remaining Phase-7 step, gated so the default production path fails
+   closed until it lands (→ see ADR 0004 for the static manifest, ADR 0007 for the fail-closed stub gate).
 2. **Regime decision table — RESOLVED.** Five-indicator (yield curve, credit spreads, PMI, earnings
    revisions, inflation) ordered truth table in `design_decisions.md §1`. Missing indicator →
    `UNCERTAIN`. v0 defers `RECOVERY` tag (no trailing state in v0); early-cycle → `GROWTH_ACCELERATING`.

@@ -62,7 +62,24 @@ Architecture phase is complete. All six agent prompts, `docs/design_decisions.md
 - 6 integration tests passing; 118/118 total; 0 basedpyright errors
 - Step 2 (yt-dlp + caption-first cascade + WhisperX forced alignment) deferred to Phase 7 (stepping-stone terminus marked in `VideoPayload`)
 
-**Phase 7 (MCP Layer and Email Server) — next.**
+**Post-Phase-6 conformance review + remediation — COMPLETE.**
+
+- A conformance review (`docs/reviews/phase-1-6-findings.md`) audited the shipped spine against the
+  pinned docs; remediation ran as waves P1/P2/S1–S8, followed by a behavior-preserving **node refactor**
+  (shared `graph/state.py` accessors + per-node `_load_*`/`_write_*` helpers).
+- Design calls made during remediation are recorded in accepted **ADRs 0003–0006**: execution-journal
+  semantics (nullable `outcome`, submission-level `EXECUTED_CLEAN`, `AtomicGroupNotSupportedError`);
+  static pinned A5 manifest; A4 Step-1 disposition + macro-read-as-narrative; determination node +
+  finalizer with the 4-member `TerminalState`. The narrative docs (`architecture.md`,
+  `pipeline_contracts.md`, `package_structure.md`) now describe the as-built design and cross-link these ADRs.
+
+**Phase 7 (MCP Layer and Email Server) — partially pulled forward, otherwise next.**
+
+- `mcp/order_schema.py` — **done** (shared `load_order_schema` + `ALPACA_ORDER_SCHEMA_PATH`, fail-closed errors).
+- `mcp/manifest.py` — **static-pinned** `pinned_manifest()` per ADR 0004; live introspection of registered
+  servers still deferred to the real Phase-7 swap.
+- `mcp/clients.py` and `src/email_server/server.py` — **docstring-only stubs**; `mcp/clients.py` still owes `ResearchDeps`.
+- `mcp/alpaca_order_schema.json` — committed **stub**; the real live-pin remains the discrete Phase-7 checkpoint (now gated to fail closed until pinned — see Watch Items).
 
 ---
 
@@ -129,7 +146,12 @@ Pure functions, no I/O, no LLM. Key design decisions resolved:
 
 ### Execution params (`execution_params.py`)
 
-Intentionally CI-red until `mcp/alpaca_order_schema.json` is pinned from live Alpaca MCP server. `_load_alpaca_schema()` raises `FileNotFoundError` with a clear message if absent.
+Intentionally CI-red until the real `mcp/alpaca_order_schema.json` is pinned from the live Alpaca MCP
+server. Loading moved to the shared `mcp/order_schema.load_order_schema` (`compute/execution_params.py`
+and `pipeline/validator.py` share the one `ALPACA_ORDER_SCHEMA_PATH`), raising the typed
+`AlpacaOrderSchemaMissingError` (not a bare `FileNotFoundError`) when absent, `AlpacaOrderSchemaMalformedError`
+when unparseable. Because a committed stub keeps the spine green, the "CI-red until pinned" intent is
+re-enforced by a gate that fails the default production path while the stub sentinel is present (see item F / Watch Items).
 
 ---
 
@@ -138,18 +160,23 @@ Intentionally CI-red until `mcp/alpaca_order_schema.json` is pinned from live Al
 All three live in `graph/edges.py` as pure functions of `PipelineState`. **Test all three with hand-built JSON before any pipeline node is written.**
 
 ```python
-def signal_gate(state: PipelineState) -> str:       # → "proceed" | "no_action"
-def terminal_state_router(state: PipelineState) -> str:  # → "validate" | "halt"
-def determination_gate(state: PipelineState) -> str: # → "execute" | "notify"
+def signal_gate(state: PipelineState) -> str:            # → "proceed" | "no_action"
+def terminal_state_router(state: PipelineState) -> str:  # → "validate" | "no_action" | "notify"
+def determination_router(state: PipelineState) -> str:   # → "execute" | "notify" | "finalize"
+def post_notification_router(state: PipelineState) -> str:  # → "terminate" | "finalize"
 ```
+
+(`determination_router` is the 3-branch as-built successor to the earlier 2-branch `determination_gate`;
+`post_notification_router` was added so the validation-error notification rejoins the finalizer — ADR 0006.)
 
 `PipelineState` is a `TypedDict` defined in `graph/state.py` (Phase 4). For Phase 3 tests, define a minimal inline dict or stub.
 
 **Tests** (`tests/unit_tests/graph/test_edges.py`):
 
 - `signal_gate`: `has_actionable_content=True` → "proceed"; `False` → "no_action"
-- `terminal_state_router`: `terminal_state` set → "halt"; not set → "validate"
-- `determination_gate`: all steps `MATCHED` → "execute"; any `UNMATCHED` → "notify"; empty steps → "notify"
+- `terminal_state_router`: `terminal_state is None` → "validate"; `NO_ACTION` → "no_action"; else → "notify"
+- `determination_router`: `PROCEED` (terminal_state None) → "execute"; `VALIDATION_ERROR` → "notify"; `ORCHESTRATION_ERROR` → "finalize"
+- `post_notification_router`: `VALIDATION_ERROR` → "finalize"; else (`ANALYSIS_HALT`) → "terminate"
 - Each gate tested with hand-authored minimal dicts, not real pipeline artifacts
 
 Create `tests/unit_tests/graph/__init__.py` before writing tests.
@@ -162,7 +189,7 @@ Create `tests/unit_tests/graph/__init__.py` before writing tests.
 
 Build order:
 
-1. **`graph/state.py`** — `PipelineState` TypedDict: `slug`, `working_dir`, `completed_steps`, `terminal_state`
+1. **`graph/state.py`** — `PipelineState` TypedDict (10 control keys): `slug`, `working_dir`, `completed_steps`, `terminal_state`, `run_has_actionable_content`, `validation_steps`, `determination`, `failed_steps`, `sub_agent_spawned`, `determination_reason` — plus the `require_working_dir`/`require_slug`/`with_completed_step` accessors
 2. **`pipeline/orchestration.py`** — slug creation (`YYYY-MM-DD_HH-MM-SS`), working-dir creation, graph entry
 3. **`pipeline/snapshot.py`** — calls Alpaca read MCP, writes `portfolio_snapshot.json`
 4. **`pipeline/aggregator.py`** — reads `signals/{source_id}.json`, runs `compute/aggregation.py`, writes `aggregated_signals.json`; at N=1: `corroborations: []`, `conflicts: []`
@@ -173,9 +200,10 @@ Build order:
    - Post-processor is real: `compute/regime.py` → constraint extraction → `compute/sizing.py` EV gate → Kelly → `compute/execution_params.py`
    - Mints `step_id` (`A001`, `A002`, ...) deterministically
    - Writes `analysis_judgment.json` and `action_steps.json`
-8. **`pipeline/validator.py`** — A5 node; reads MCP manifest; `jsonschema.validate` for checks 1, 2, 4; LLM for check 3 (behavioral match); writes `action_steps_validation.json`, `.md`, `validation_status.json`
-9. **`pipeline/execution.py`** / **`pipeline/notification.py`** — deterministic wrappers; paper-trading via Alpaca sandbox
-10. **`graph/graph.py`** — `StateGraph` wiring all nodes and conditional edges
+8. **`pipeline/validator.py`** — A5 node; reads the static pinned manifest (`pinned_manifest()` over `mcp/order_schema.py`, ADR 0004); `jsonschema.validate` for schema acceptance; check 3 is the deterministic `ACTION_TYPE_TO_TOOL` lookup (the injected LLM `behavioral_match` predicate was **removed**); writes `action_steps_validation.json`, `.md`, `validation_status.json`
+9. **`pipeline/determination.py`** — A6: `recompute_determination` decision node + finalizer that writes `determination.json/.md` once (ADR 0006)
+10. **`pipeline/execution.py`** / **`pipeline/notification.py`** — deterministic wrappers; paper-trading via Alpaca sandbox
+11. **`graph/graph.py`** — `StateGraph` wiring all nodes and conditional edges
 
 **Acceptance criterion:** paper-trade run completes end-to-end; every working-dir file present and schema-valid; zero LLM calls; zero real Alpaca orders.
 
@@ -202,10 +230,10 @@ Write only after the spine is green.
 
 ## Phase 7: MCP Layer and Email Server
 
-1. **`mcp/clients.py`** — `AlpacaReadDeps`, `AlpacaWriteDeps`, `ResearchDeps` dep types + factory functions
-2. **`mcp/manifest.py`** — runtime introspection of registered MCP servers → tool manifest for A5
-3. **`mcp/alpaca_order_schema.json`** — **discrete checkpoint**: pin from live Alpaca MCP server; `compute/execution_params.py` and `pipeline/validator.py` both blocked until this file exists
-4. **`src/email_server/server.py`** — FastMCP email server: `send_email(to, subject, body)`; no import relationship to `money_pit` package
+1. **`mcp/clients.py`** — `AlpacaReadDeps`, `AlpacaWriteDeps`, `ResearchDeps` dep types + factory functions (currently a docstring-only stub; still owes `ResearchDeps`)
+2. **`mcp/manifest.py`** — the static conformance half (`pinned_manifest()`) already landed per ADR 0004; the Phase-7 work is swapping the injected default for **live introspection** of registered MCP servers → tool manifest for A5
+3. **`mcp/alpaca_order_schema.json`** — **discrete checkpoint**: pin the real schema from the live Alpaca MCP server (replacing the committed stub); the default production path is gated to fail closed until the stub sentinel is gone, so pinning flips the gate green
+4. **`src/email_server/server.py`** — FastMCP email server: `send_email(to, subject, body)`; no import relationship to `money_pit` package (currently a docstring-only stub)
 
 ---
 
@@ -223,16 +251,16 @@ Prior-journal reconciliation: reads `execution_journal.json`, checks for in-flig
 | compute/ complete ✓ | All property tests green; every reachable regime tag covered; 96 tests passing                                             |
 | gates complete ✓    | Three `graph/edges.py` gate tests pass on hand-built JSON                                                                  |
 | spine green         | End-to-end paper-trade run with stub agents; all working-dir files schema-valid; zero LLM calls                            |
-| schema pinned       | `mcp/alpaca_order_schema.json` populated from live Alpaca MCP; `execution_params` validates against it                     |
+| schema pinned       | real `mcp/alpaca_order_schema.json` pinned from live Alpaca MCP (stub sentinel removed); the fail-closed gate flips green and `execution_params` validates against it |
 | full pipeline       | End-to-end with real agents on paper-trading account; `determination.json` written; email or execution triggered correctly |
 
 ---
 
 ## Watch Items
 
-- **`mcp/alpaca_order_schema.json`**: cannot be synthesized; must be pinned from the live Alpaca MCP server. Treat as a deployment gate, not a code-complete milestone.
+- **`src/money_pit/mcp/alpaca_order_schema.json`**: the real schema cannot be synthesized; it must be pinned from the live Alpaca MCP server. A committed **stub** keeps the spine green, but the default production load path is gated to **fail closed** while the stub sentinel is present (in-band sentinel + `AlpacaOrderSchemaNotPinnedError`, ADR 0007). The gate's failure-mode test is red-until-pinned by design — flipping green is the signal the manual live-pin prerequisite is satisfied. Treat as a deployment gate, not a code-complete milestone.
 - **N=1 stub inertness** (`test_n1_stubs.py`): turns red when a second source or the first interdependent thesis activates a dormant aggregation path.
-- **`terminal_state_router`**: the gate routing to "validate" vs "halt" depends on which `TerminalState` values are considered halting — confirm against `pipeline_contracts.md` before implementing.
+- **`terminal_state_router`**: routes `None`→"validate", `NO_ACTION`→"no_action", else→"notify"; the 4-member `TerminalState` (ADR 0006) is authoritative — confirm against `pipeline_contracts.md` §0/§6a when touching it.
 
 ---
 

@@ -13,6 +13,7 @@ src/money_pit/
 ├── log.py                   # (existing) loguru setup
 ├── config.py                # (existing) pydantic-settings Config + load_config
 ├── constants.py             # (existing) APP_NAME, paths, slug datetime format
+├── contracts.py             # Cross-layer DI TypeAliases (cycle-free leaf, imports only schemas): ToolManifest, ThesisAgent, PortfolioFetcher, OrderPlacer, EmailSender, CorroborationAgent, ClaimQuestionsAgent, AnswerSynthesisAgent
 │
 ├── schemas/                 # All Pydantic data contracts — single import source of truth
 │   ├── __init__.py
@@ -35,9 +36,9 @@ src/money_pit/
 │
 ├── graph/                   # LangGraph wiring only — zero business logic
 │   ├── __init__.py
-│   ├── state.py             # TypedDict for graph state: slug, working_dir, completed_steps, terminal_state
+│   ├── state.py             # PipelineState TypedDict (10 control keys: slug, working_dir, completed_steps, terminal_state, run_has_actionable_content, validation_steps, determination, failed_steps, sub_agent_spawned, determination_reason) + require_working_dir/require_slug/with_completed_step accessors + PipelineNode Protocol
 │   ├── graph.py             # StateGraph assembly: add_node / add_edge / add_conditional_edges
-│   └── edges.py             # Conditional edge functions: signal_gate, terminal_state_router, determination_gate
+│   └── edges.py             # Conditional edge functions: signal_gate, terminal_state_router, determination_router (3-branch: execute/notify/finalize), post_notification_router (terminate/finalize)
 │
 ├── pipeline/                # One module per LangGraph node; owns file I/O for its stage
 │   ├── __init__.py
@@ -49,6 +50,7 @@ src/money_pit/
 │   ├── retrieval.py         # A3 node: deterministic known-param fetch, budget control, file writes
 │   ├── analysis.py          # A4 node: calls agents/thesis_judgment + compute/ post-processor functions, writes action_steps.json
 │   ├── validator.py         # A5: manifest parse, jsonschema checks, three-file write; consumes compute/tool_map.py for action_type lookup
+│   ├── determination.py     # A6: recompute_determination decision node + finalizer node (writes determination.json/.md once); DeterminationParseError, map_execution_outcome (ADR 0006)
 │   ├── execution.py         # Execution sub-agent: transactional loop, idempotent orders, journal, compensation
 │   └── notification.py      # Notification sub-agent: email templating per terminal state, send_email call
 │
@@ -79,9 +81,10 @@ src/money_pit/
 │
 └── mcp/                     # MCP client configuration; runs inside the pipeline process
     ├── __init__.py
-    ├── clients.py           # AlpacaReadDeps, AlpacaWriteDeps, ResearchDeps dep types + factory fns; injection-ready for Pydantic AI
-    ├── manifest.py          # Introspects registered MCP servers at runtime
-    └── alpaca_order_schema.json  # Pinned Alpaca MCP order tool inputSchema snapshot; single source of truth for compute/execution_params.py and pipeline/validator.py → tool manifest consumed by A5
+    ├── clients.py           # AlpacaReadDeps, AlpacaWriteDeps, ResearchDeps dep types + factory fns; injection-ready for Pydantic AI (docstring-only stub pre-Phase-7; still owes ResearchDeps)
+    ├── order_schema.py       # Shared loader: ALPACA_ORDER_SCHEMA_PATH + load_order_schema (fail-closed AlpacaOrderSchemaMissingError/MalformedError); single literal source for compute/execution_params.py and pipeline/validator.py
+    ├── manifest.py          # pinned_manifest(): static {"place_order": <pinned schema>} for A5 (ADR 0004); NOT live introspection — the registered-server introspection is the Phase-7 swap
+    └── alpaca_order_schema.json  # Pinned Alpaca MCP order tool inputSchema snapshot (still a stub); read via mcp/order_schema.py by compute/execution_params.py and pipeline/validator.py → tool manifest consumed by A5
 
 src/email_server/            # Deployable MCP server (separate process; no imports from money_pit package)
 ├── __init__.py
@@ -99,6 +102,8 @@ Each LLM boundary has two schema files: a `*_draft.py` (the model's raw output, 
 **`graph/` contains zero business logic.** Keeping topology (node wiring, conditional edges) isolated means `graph.py` reads as a pure architecture diagram and each conditional edge in `edges.py` is trivially auditable as a deterministic function.
 
 **`pipeline/` has one file per node.** Each node file owns read-of-upstream-artifact → call into `agents/` or `compute/` → write-of-output-artifact. `orchestration.py` handles schedule trigger, working-dir creation, and slug. `recovery.py` handles prior-journal reconciliation — a separate concern with a backward read dependency on execution output, resolved at day one rather than deferred.
+
+**Shared node conventions.** `graph/state.py` exposes the accessors every node reads state through — `require_working_dir` / `require_slug` (fail loudly on a missing key) and `with_completed_step` (append to `completed_steps`) — so no node re-implements state extraction. Disk I/O is deliberately **not** centralized: each node owns its artifacts via private `_load_*_inputs` / `_write_*_outputs` helpers, keeping the read-then-compute-then-write shape uniform without a shared I/O layer that would blur which stage owns which file. (Modules + brief notes only; no ADR.)
 
 **`agents/` is the visible LLM surface boundary.** If something is in `agents/`, it talks to a model. If it is in `compute/`, it provably does not. This makes the LLM footprint auditable as a directory listing. Note that `adapters/video_llm.py` (A1) is encapsulated inside the video adapter and is not a standalone pipeline stage; it is named `video_llm.py` (not `_llm.py`) so that "enumerate all LLM touch-points" searches find it without workarounds.
 
@@ -122,7 +127,7 @@ Each LLM boundary has two schema files: a `*_draft.py` (the model's raw output, 
 
 2. **`adapters/video_llm.py` is one of the four LLM cores but lives outside `agents/`** — correct given its encapsulation inside adapter execution, but worth noting in CLAUDE.md so "enumerate all LLM touch-points" searches check `adapters/` as well.
 
-3. **`compute/execution_params.py` depends on the Alpaca MCP order tool's OpenAPI schema** (an external artifact). The pinned snapshot lives at `mcp/alpaca_order_schema.json` and is read by both `compute/execution_params.py` and `pipeline/validator.py`; both are blocked until this file is populated from the live Alpaca MCP server at integration time.
+3. **`compute/execution_params.py` depends on the Alpaca MCP order tool's OpenAPI schema** (an external artifact). The snapshot lives at `mcp/alpaca_order_schema.json`, read through the shared `mcp/order_schema.py` loader by both `compute/execution_params.py` and `pipeline/validator.py`. A **stub** schema is committed so the spine runs, but the default production path is gated to fail closed until the real schema is pinned from the live Alpaca MCP server at integration time (ADR 0004 + the re-enforced schema gate).
 
 ---
 

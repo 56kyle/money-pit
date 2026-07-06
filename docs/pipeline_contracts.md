@@ -58,7 +58,8 @@ that class of drift is exactly what broke 2→3 and 5→6.
 - **factor set:** `growth` | `value` | `momentum` | `quality` | `low_vol` (five factors; pin this everywhere — Agent 2 and the snapshot must use the same five, not `volatility`)
 - **validation status:** `MATCHED` | `UNMATCHED`
 - **execution phase** (journal entry lifecycle, §7a): `PLANNED` | `PREFLIGHT_OK` | `PREFLIGHT_FAILED` | `SUBMITTED` | `FILLED` | `PARTIALLY_FILLED` | `REJECTED` | `FAILED` | `COMPENSATING` | `COMPENSATED` | `COMPENSATION_FAILED` | `SKIPPED`
-- **execution outcome** (whole run): `EXECUTED_CLEAN` | `PARTIAL_COMPENSATED` | `COMPENSATION_FAILED` | `EXECUTION_FAILED`
+- **execution outcome** (`ExecutionOutcome`, journal-only, **nullable** per ADR 0003 — `None` = incomplete/crashed run): `EXECUTED_CLEAN` | `PARTIAL_COMPENSATED` | `COMPENSATION_FAILED` | `EXECUTION_FAILED`
+- **terminal state** (`TerminalState`, the run's pre-execution routing marker — 4 members, distinct from `ExecutionOutcome`; the execute path leaves `terminal_state = None`, per ADR 0006): `NO_ACTION` | `ANALYSIS_HALT` | `VALIDATION_ERROR` | `ORCHESTRATION_ERROR`
 
 ---
 
@@ -439,11 +440,17 @@ distinct, non-overlapping consumers, so there is no conflict once that's stated.
 
 Write order is unchanged from agent_5.md: `action_steps_validation.json` → `.md` → `validation_status.json` last.
 
-**Agent 6 determination logic against this schema:** read `action_steps_validation.json`; recompute
-from per-step `status`: every step `MATCHED` → `PROCEED`; **any** step not `MATCHED` → `HALT`. Treat
-a missing/empty/non-array `steps`, an unreadable file, or any unknown `status` literal as a parse
-failure → `HALT`, spawn no sub-agent, surface to orchestration (agent_6.md §6.1 unchanged). Get
-`slug` from this file (now present) **or** graph state — never fabricate it.
+**Agent 6 determination logic against this schema (→ see ADR 0006):** A6 is a **determination node +
+finalizer**, not a bare conditional edge. The pure `recompute_determination(ActionStepsValidation)`
+reads the persisted `action_steps_validation.json` and recomputes from per-step `status`: every step
+`MATCHED` → `PROCEED`; **any** `UNMATCHED` → `HALT`. A missing/empty/non-array `steps`, an unreadable
+file, or any unknown `status` literal raises a typed `DeterminationParseError` → `ORCHESTRATION_ERROR`,
+spawns no sub-agent, and routes straight to the finalizer (agent_6.md §6.1 unchanged). `determination_router`
+then sends `PROCEED` → execution, `VALIDATION_ERROR` → validation-error notification, and the
+parse-failure path → the finalizer. A single **finalizer node** — reached after execution, the
+validation-error notification, and the parse-failure path rejoin — writes `determination.json/.md`
+**once**, the only place that can see the journal outcome. Get `slug` from this file (now present)
+**or** graph state — never fabricate it.
 
 ---
 
@@ -486,9 +493,11 @@ step's `tool_sequence` from `action_steps_validation.json` is what actually exec
 **`determination.json`** (Agent 6 output) schema is as in agent_6.md §9 (`slug`, `determination`,
 `reason`, `failed_steps`, `sub_agent_spawned`, `sub_agent_outcome`, `sub_agent_error`, `timestamp`).
 One change: `failed_steps` is populated from steps whose `status == "UNMATCHED"` (PARTIAL removed).
-The execution sub-agent's `sub_agent_outcome` maps from the §7a execution outcome:
-`EXECUTED_CLEAN`/`PARTIAL_COMPENSATED` → `success`; `COMPENSATION_FAILED`/`EXECUTION_FAILED` →
+The execution sub-agent's `sub_agent_outcome` maps from the §7a execution outcome (`map_execution_outcome`,
+→ see ADR 0006): `EXECUTED_CLEAN`/`PARTIAL_COMPENSATED` → `success`;
+`COMPENSATION_FAILED`/`EXECUTION_FAILED`/**`None` (incomplete or crashed journal, per ADR 0003)** →
 `failure` (with `COMPENSATION_FAILED` additionally triggering the urgent escalation in §7a).
+`sub_agent_outcome` is typed `Literal["success", "failure"] | None`, not a loose `str`.
 
 ---
 
@@ -520,7 +529,7 @@ down-migrations.
 ```jsonc
 {
   "slug": "2026-06-18_14-30-00",
-  "outcome": "EXECUTED_CLEAN", // EXECUTED_CLEAN | PARTIAL_COMPENSATED | COMPENSATION_FAILED | EXECUTION_FAILED
+  "outcome": "EXECUTED_CLEAN", // ExecutionOutcome | null — null while writing incrementally / after a crash (ADR 0003)
   "entries": [
     {
       "step_id": "A001",
@@ -540,6 +549,17 @@ down-migrations.
   ]
 }
 ```
+
+**Pre-Phase-7 journal semantics (→ see ADR 0003).** The example entry above shows the eventual
+Phase-7 filled shape. Until the real Alpaca write integration lands, the injected
+`place_order: Callable[[ExecutionParameters], str]` returns only a broker order id — a successful call
+proves _"submitted,"_ not _"filled."_ So entries stay `phase=SUBMITTED` (never `FILLED`, which would
+be unearned) and `filled_qty`/`filled_avg_price`/`realized_notional` stay `null` as explicit
+not-yet-real markers; `EXECUTED_CLEAN` is redefined as **"all independent legs submitted without
+exception."** An empty plan (zero action steps) is caught upstream by `NO_ACTION`, so execution never
+derives an outcome from zero real steps. A non-null `group_id` fails closed by raising
+`AtomicGroupNotSupportedError` **before** any `place_order` call (the marked terminus of the
+atomic-group stub) — so step 3 below is the deferred Phase-7 design, not the current path.
 
 **Execution algorithm.**
 
@@ -636,6 +656,16 @@ any missing/stale series leaves the corresponding field `null`, which triggers `
 This struct does not land on disk as a named file — it is assembled inline by the post-processor
 from the five `macro_regime` answers in `initial_answers.json` (`data_retrieved` field).
 
+The deterministic `_extract_macro_indicators(initial_answers)` is the **sole** source of
+`MacroIndicators` for `classify_regime` (→ see ADR 0005). A4's judgment container also carries a
+`macro_read` — the LLM's _qualitative_ Step-2 reading (per-indicator favorable / unfavorable /
+missing) — but that is consumed **only** by the `analysis.md` renderer and **never** reaches
+`classify_regime`: model-reported macro numbers must not feed regime classification or sizing
+(evidence-only rule, §11.4). Sizing's `verified` flag is `disposition == SUPPORTED` from A4's Step-1
+`Step1Disposition {SUPPORTED, UNVERIFIED, CONTRADICTED}` — so a `SUPPORTED` thesis sizes strictly
+larger than an otherwise-identical `UNVERIFIED` one (the `haircut_unverified` no longer applies); a
+`CONTRADICTED` claim is dropped at Step 1 as a `DroppedClaim`, never a thesis.
+
 ---
 
 ## 9. Deterministic-flag / tooling split
@@ -655,7 +685,7 @@ structural-enforcement principle. This table is the quick reference.)
 | category → tool routing                                           | Agent 3 (LLM)                     | code lookup table              | the routing table in §3                                                                                                                                                         |
 | `confidence`                                                      | Agent 3 (LLM)                     | code from `sources_used`       | primary (FRED/EDGAR/Alpaca)→`high`; yfinance/combined/inferred→`medium`; Brave-only/partial/unanswered→`low`; rate by weakest materially-relied source                          |
 | **Agent 5 checks 1,2,4** (existence + literal schema field match) | Agent 5 (LLM)                     | **code (`jsonschema`)**        | MCP `inputSchema` is JSON Schema → `jsonschema.validate()`; LLM is the _wrong_ tool for "never map `share_count`→`quantity`"                                                    |
-| **Agent 6 determination**                                         | Agent 6 (LLM)                     | **LangGraph conditional edge** | pure `all(MATCHED) ? PROCEED : HALT`; no model call needed                                                                                                                      |
+| **Agent 6 determination**                                         | Agent 6 (LLM)                     | **determination node + finalizer** | pure `recompute_determination`: `all(MATCHED) ? PROCEED : HALT`; no model call; finalizer writes `determination.json/.md` once (ADR 0006)                                    |
 | **Agent 4 EV**                                                    | Agent 4 (LLM)                     | **code post-process**          | `EV = Σ(Pᵢ/100 × Rᵢ)`; then apply the ≥ +3.0% gate                                                                                                                              |
 | **Agent 4 constraint extraction**                                 | Agent 4 (LLM)                     | **code**                       | sector headroom to 25% in $ and %, cash %, overlap reductions — all arithmetic from the snapshot                                                                                |
 | **Agent 4 position sizing**                                       | Agent 4 (LLM)                     | **code post-process**          | fractional Kelly: `w = kelly_fraction × h_unverified × h_uncertain × f_kelly`; clamp to `max_position_weight`; then to 25%/cash/overlap headroom. See `design_decisions.md §2`. |
@@ -710,7 +740,9 @@ code verifies existence and literal schema acceptance.
   1/2/4 to code per §9.)
 - **Agent 6** — read the §6 object schema (`steps[].status`, values `MATCHED`/`UNMATCHED`); treat
   anything not `MATCHED` as HALT; get `slug` from the file or graph state; map the execution sub-agent's
-  §7a outcome into `sub_agent_outcome`. (Consider replacing the node with a conditional edge per §9.)
+  §7a outcome into `sub_agent_outcome`. Implemented as a **determination node + finalizer** (ADR 0006):
+  a pure `recompute_determination` plus a single finalizer that writes `determination.json/.md` once —
+  a bare conditional edge cannot both persist the artifact and see the post-execution outcome.
 - **Execution sub-agent** — implement the §7a transactional model: partition by `group_id`, idempotent
   submission via `client_order_id`, the incremental `execution_journal.json`, atomic-group pre-flight,
   realized-fill compensation, and the `COMPENSATION_FAILED` urgent-escalation path.
@@ -798,12 +830,16 @@ identical outputs" rule can actually hold.
 `action_type → tool` mapping is _config_, so check 3 (behavioral match) is a lookup, and checks 1/2/4
 (existence + literal field-name match + sequence sufficiency) are exactly what code does reliably and
 a model does not. Keep an LLM here only if your tool set is open-ended and you need fuzzy matching to
-unknown tools — not your case. The validator reads the manifest (auto-generated from registered MCP
-defs) and writes the three files. Optionally expose it as a `validate_action_steps(steps, manifest)`
-tool, but a graph-node function is the natural home.
+unknown tools — not your case. The validator reads a **static, pinned manifest** of the closed Alpaca
+write-tool set (`pinned_manifest()` over `mcp.order_schema`, injected at node construction; live
+introspection of registered MCP defs is the Phase-7 swap — ADR 0004) and writes the three files.
+Optionally expose it as a `validate_action_steps(steps, manifest)` tool, but a graph-node function is
+the natural home.
 
-**Agent 6 — Determination → becomes a conditional edge (no LLM).** `all(MATCHED) ? PROCEED : HALT`,
-plus parse-failure handling and the §6a terminal-state routing. No model call.
+**Agent 6 — Determination → a determination node + finalizer (no LLM, ADR 0006).**
+`recompute_determination`: `all(MATCHED) ? PROCEED : HALT`, plus `DeterminationParseError` →
+`ORCHESTRATION_ERROR` and the §6a terminal-state routing; a single finalizer writes
+`determination.json/.md` once. No model call.
 
 **Sub-agents.** _Execution:_ a background loop that calls the Alpaca **order** MCP tools over the
 MATCHED `tool_sequence`, checking each structured result and halting on rejection/oddity — no model
@@ -839,7 +875,7 @@ is JSON Schema — so only the `action_type→tool` routing + compensation looku
 | A3 wrap                      | routing table, deterministic known-param retrieval, `confidence` derivation, budget control, schema validation                                               |
 | A4 post (the post-processor) | regime decision-table tag, constraint extraction, EV + gate, sizing, action mapping, prob-sum check, **`execution_parameters` emission**, schema conformance |
 | A5 (entire)                  | manifest parse, existence + literal-schema + sequence checks, `action_type→tool` lookup, verdict/gap assembly, three-file write + self-validate              |
-| A6 (entire)                  | determination conditional edge, §6a terminal-state routing                                                                                                   |
+| A6 (entire)                  | `recompute_determination` node + finalizer write (ADR 0006), §6a terminal-state routing                                                                       |
 | sub-agents                   | execution loop (calls trading tools), email templating                                                                                                       |
 
 ### What this leaves as LLM, and where not to over-extract

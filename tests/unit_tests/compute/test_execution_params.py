@@ -22,38 +22,43 @@ from money_pit.schemas.enums import ActionType
         (ActionType.TRIM, "sell"),
     ],
 )
-def test_build_execution_params_side(action_type: ActionType, expected_side: str) -> None:
+def test_build_execution_params_side(
+    action_type: ActionType, expected_side: str, order_schema__path: Path
+) -> None:
     result = build_execution_params(
         step_id="A001",
         slug="2026-01-01_00-00-00",
         symbol="NVDA",
         action_type=action_type,
         dollar_amount=1500.0,
+        schema_path=order_schema__path,
     )
 
     assert result.side == expected_side
 
 
-def test_build_execution_params_passes_through_symbol_and_notional() -> None:
+def test_build_execution_params_passes_through_symbol_and_notional(order_schema__path: Path) -> None:
     result = build_execution_params(
         step_id="A001",
         slug="2026-01-01_00-00-00",
         symbol="MSFT",
         action_type=ActionType.BUY,
         dollar_amount=750.0,
+        schema_path=order_schema__path,
     )
 
     assert result.symbol == "MSFT"
     assert result.notional == pytest.approx(750.0)
 
 
-def test_build_execution_params_client_order_id() -> None:
+def test_build_execution_params_client_order_id(order_schema__path: Path) -> None:
     result = build_execution_params(
         step_id="A001",
         slug="2026-01-01_00-00-00",
         symbol="NVDA",
         action_type=ActionType.BUY,
         dollar_amount=1500.0,
+        schema_path=order_schema__path,
     )
 
     assert result.client_order_id == "2026-01-01_00-00-00:A001"
@@ -63,13 +68,16 @@ def test_build_execution_params_client_order_id() -> None:
     ("attribute", "expected"),
     [("type", "market"), ("time_in_force", "day")],
 )
-def test_build_execution_params_order_constants(attribute: str, expected: str) -> None:
+def test_build_execution_params_order_constants(
+    attribute: str, expected: str, order_schema__path: Path
+) -> None:
     result = build_execution_params(
         step_id="A001",
         slug="2026-01-01_00-00-00",
         symbol="NVDA",
         action_type=ActionType.BUY,
         dollar_amount=1500.0,
+        schema_path=order_schema__path,
     )
 
     assert getattr(result, attribute) == expected

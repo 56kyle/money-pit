@@ -116,17 +116,17 @@ def action_step(
 
 
 @pytest.fixture
-def pinned_order_schema() -> dict[str, object]:
-    return load_order_schema()
+def stub_free_order_schema(stub_free_order_schema_path: Path) -> dict[str, object]:
+    return load_order_schema(stub_free_order_schema_path)
 
 
 @pytest.fixture
-def matched_manifest(pinned_order_schema: dict[str, object]) -> dict[str, dict[str, object]]:
-    return {"place_order": pinned_order_schema}
+def matched_manifest(stub_free_order_schema: dict[str, object]) -> dict[str, dict[str, object]]:
+    return {"place_order": stub_free_order_schema}
 
 
-def test_pinned_manifest_with_available_schema() -> None:
-    result = mcp_manifest.pinned_manifest()
+def test_pinned_manifest_with_available_schema(stub_free_order_schema_path: Path) -> None:
+    result = mcp_manifest.pinned_manifest(schema_path=stub_free_order_schema_path)
 
     assert "place_order" in result
     assert isinstance(result["place_order"], dict)

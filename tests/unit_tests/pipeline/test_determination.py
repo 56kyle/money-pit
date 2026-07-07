@@ -18,10 +18,13 @@ from typing import Callable
 
 import pytest
 
+from tests.unit_tests.pipeline.conftest import CapturedLog
+
 from money_pit.constants import DETERMINATION_JSON_FILENAME as _REPORT_JSON_FILENAME
 from money_pit.constants import EXECUTION_JOURNAL_FILENAME as _JOURNAL_FILENAME
 from money_pit.graph.state import PipelineState
 from money_pit.pipeline.determination import _FAILURE
+from money_pit.pipeline.determination import _read_journal_outcome
 from money_pit.pipeline.determination import _SUB_AGENT_EXECUTION
 from money_pit.pipeline.determination import _SUB_AGENT_NOTIFICATION
 from money_pit.pipeline.determination import _SUCCESS
@@ -34,6 +37,7 @@ from money_pit.pipeline.determination import recompute_determination
 from money_pit.schemas.determination import DeterminationReport
 from money_pit.schemas.enums import Determination
 from money_pit.schemas.enums import ExecutionOutcome
+from money_pit.schemas.enums import OverallValidationStatus
 from money_pit.schemas.enums import TerminalState
 from money_pit.schemas.enums import ValidationStatus
 from money_pit.schemas.journal import ExecutionJournal
@@ -59,7 +63,9 @@ def _make_validation(steps: list[ValidationStep]) -> ActionStepsValidation:
     unmatched = any(step.status == ValidationStatus.UNMATCHED for step in steps)
     return ActionStepsValidation(
         slug=_SLUG,
-        overall_status="validation_failed" if unmatched else "validated",
+        overall_status=(
+            OverallValidationStatus.VALIDATION_FAILED if unmatched else OverallValidationStatus.VALIDATED
+        ),
         steps=steps,
     )
 
@@ -150,6 +156,33 @@ def _write_journal(working_dir: Path, outcome: ExecutionOutcome) -> None:
 
 def _read_report(working_dir: Path) -> DeterminationReport:
     return DeterminationReport.model_validate_json((working_dir / _REPORT_JSON_FILENAME).read_text(encoding="utf-8"))
+
+
+_JOURNAL_CORRUPT_LOG_FRAGMENT = "corrupt"
+
+
+def test__read_journal_outcome_with_missing_journal_returns_none(tmp_path: Path) -> None:
+    assert _read_journal_outcome(tmp_path) is None
+
+
+def test__read_journal_outcome_with_valid_journal_returns_outcome(tmp_path: Path) -> None:
+    _write_journal(tmp_path, ExecutionOutcome.EXECUTED_CLEAN)
+    assert _read_journal_outcome(tmp_path) == ExecutionOutcome.EXECUTED_CLEAN
+
+
+def test__read_journal_outcome_with_corrupt_journal_returns_none(tmp_path: Path) -> None:
+    _ = (tmp_path / _JOURNAL_FILENAME).write_text('{"unexpected": "shape"}', encoding="utf-8")
+    assert _read_journal_outcome(tmp_path) is None
+
+
+def test__read_journal_outcome_with_corrupt_journal_logs_loudly(
+    tmp_path: Path, loguru_records: list[CapturedLog]
+) -> None:
+    _ = (tmp_path / _JOURNAL_FILENAME).write_text('{"unexpected": "shape"}', encoding="utf-8")
+    _ = _read_journal_outcome(tmp_path)
+    assert any(
+        record.level == "ERROR" and _JOURNAL_CORRUPT_LOG_FRAGMENT in record.message for record in loguru_records
+    )
 
 
 @pytest.fixture

@@ -4,7 +4,9 @@ sector is resolved best-effort via yfinance and falls back to "unknown"; factor_
 correlated_overlaps are v0-deferred and always emitted empty.
 """
 
+import requests
 from alpaca.trading.client import TradingClient
+from loguru import logger
 
 from money_pit.config import AlpacaCredentials
 from money_pit.contracts import PortfolioFetcher
@@ -28,16 +30,17 @@ def _asset_class_value(asset_class: object) -> str:
 
 def _resolve_sector(ticker: str) -> str:  # pragma: no cover
     """Return the yfinance sector for a ticker, best-effort, falling back to "unknown" (mirrors the _Direct* tools)."""
-    try:
-        import yfinance as yf  # pyright: ignore[reportMissingTypeStubs]
+    import yfinance as yf  # pyright: ignore[reportMissingTypeStubs]
 
+    try:
         info: dict[str, object] = yf.Ticker(ticker).info  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-        sector: object = info.get("sector")  # pyright: ignore[reportUnknownMemberType]
-        if isinstance(sector, str) and sector:
-            return sector
+    except (requests.RequestException, OSError, KeyError, ValueError) as error:
+        logger.debug("yfinance sector lookup failed for {ticker}; using {fallback}: {error}", ticker=ticker, fallback=_UNKNOWN_SECTOR, error=error)
         return _UNKNOWN_SECTOR
-    except Exception:
-        return _UNKNOWN_SECTOR
+    sector: object = info.get("sector")  # pyright: ignore[reportUnknownMemberType]
+    if isinstance(sector, str) and sector:
+        return sector
+    return _UNKNOWN_SECTOR
 
 
 def _to_position(raw: object) -> Position:

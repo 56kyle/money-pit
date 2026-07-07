@@ -16,7 +16,7 @@ gains a manifest/validation seam or the finalizer node's signature is fixed.
 from pathlib import Path
 
 from money_pit.pipeline.determination import load_validation, recompute_determination
-from money_pit.schemas.enums import Determination, ValidationStatus
+from money_pit.schemas.enums import Determination, OverallValidationStatus, ValidationStatus
 from money_pit.schemas.validation_results import ActionStepsValidation, ValidationStep
 
 _SLUG = "2026-07-02_00-00-00"
@@ -26,7 +26,7 @@ _VALIDATION_FILENAME = "action_steps_validation.json"
 def _write_validation_error(working_dir: Path) -> None:
     validation = ActionStepsValidation(
         slug=_SLUG,
-        overall_status="validation_failed",
+        overall_status=OverallValidationStatus.VALIDATION_FAILED,
         steps=[
             ValidationStep(
                 step_id="A001",

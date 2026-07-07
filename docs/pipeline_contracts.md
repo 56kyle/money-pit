@@ -393,7 +393,7 @@ a `status` field name. PARTIAL is dropped (Agent 5 never produced it; partial se
 ```jsonc
 {
   "slug": "2026-06-18_14-30-00", // from graph state — Agent 5 MUST write this
-  "overall_status": "PASS", // advisory only; Agent 6 recomputes from steps
+  "overall_status": "VALIDATED", // VALIDATED | VALIDATION_FAILED; advisory only, Agent 6 recomputes from steps
   "steps": [
     {
       "step_id": "A001",

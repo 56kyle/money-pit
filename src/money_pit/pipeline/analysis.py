@@ -59,7 +59,7 @@ def _extract_macro_indicators(answers: list[Answer]) -> MacroIndicators:
     for ans in answers:
         if ans.category != QuestionCategory.MACRO_REGIME:
             continue
-        if not ans.signal_source.startswith(INDICATOR_PREFIX):
+        if ans.signal_source is None or not ans.signal_source.startswith(INDICATOR_PREFIX):
             continue
         name = ans.signal_source[len(INDICATOR_PREFIX) :]
         if name not in values:

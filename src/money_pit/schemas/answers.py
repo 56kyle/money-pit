@@ -20,7 +20,7 @@ class Answer(BaseModel):
     question_id: str
     question: str
     category: QuestionCategory
-    signal_source: str
+    signal_source: str | None
     signal_tier: SignalTier
     answer: str
     confidence: Confidence

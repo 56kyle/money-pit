@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 from pytest import FixtureRequest
 
+from tests.unit_tests.pipeline.conftest import CapturedLog
+
 from money_pit.agents.research_tools import DeterministicResearchTools
 from money_pit.pipeline.retrieval import (
     _deterministic_answer,
@@ -16,6 +18,7 @@ from money_pit.pipeline.retrieval import (
 from money_pit.schemas.answer_draft import AnswerDraft
 from money_pit.schemas.answers import InitialAnswers
 from money_pit.schemas.enums import Confidence, DataSourceToken, QuestionCategory, SourceType
+from money_pit.schemas.fetch_result import FetchError, FetchResult, FetchValue, NoData
 from money_pit.schemas.provenance import SourceRef
 from money_pit.schemas.questions import InitialQuestions, Question, SignalSummary
 from money_pit.schemas.signals import AggregatedSignals
@@ -45,7 +48,7 @@ def answer_draft__sources_used(request: FixtureRequest) -> list[DataSourceToken]
 def question(
     request: FixtureRequest,
     question__category: QuestionCategory,
-    question__signal_source: str,
+    question__signal_source: str | None,
     question__signal_tier: str,
 ) -> Question:
     return getattr(
@@ -70,7 +73,7 @@ def question__category(request: FixtureRequest) -> QuestionCategory:
 
 
 @pytest.fixture
-def question__signal_source(request: FixtureRequest) -> str:
+def question__signal_source(request: FixtureRequest) -> str | None:
     return getattr(request, "param", "indicator:yield_curve")
 
 
@@ -114,96 +117,101 @@ def test__draft_to_answer_with_signal_tier(answer_draft: AnswerDraft, question: 
 
 
 class _StubResearchTools:
-    def __init__(self, *, fred_value: float | None, ticker_price: float | None) -> None:
-        self._fred_value = fred_value
-        self._ticker_price = ticker_price
+    def __init__(self, *, fred_result: FetchResult, ticker_result: FetchResult) -> None:
+        self._fred_result = fred_result
+        self._ticker_result = ticker_result
 
-    def fetch_fred_series(self, series_id: str) -> float | None:
-        return self._fred_value
+    def fetch_fred_series(self, series_id: str) -> FetchResult:
+        return self._fred_result
 
-    def fetch_ticker_price(self, ticker: str) -> float | None:
-        return self._ticker_price
+    def fetch_ticker_price(self, ticker: str) -> FetchResult:
+        return self._ticker_result
 
 
 @pytest.fixture
 def deterministic_tools(
     request: FixtureRequest,
-    deterministic_tools__fred_value: float | None,
-    deterministic_tools__ticker_price: float | None,
+    deterministic_tools__fred_result: FetchResult,
+    deterministic_tools__ticker_result: FetchResult,
 ) -> DeterministicResearchTools:
     return getattr(
         request,
         "param",
         _StubResearchTools(
-            fred_value=deterministic_tools__fred_value,
-            ticker_price=deterministic_tools__ticker_price,
+            fred_result=deterministic_tools__fred_result,
+            ticker_result=deterministic_tools__ticker_result,
         ),
     )
 
 
 @pytest.fixture
-def deterministic_tools__fred_value(request: FixtureRequest) -> float | None:
-    return getattr(request, "param", 1.23)
+def deterministic_tools__fred_result(request: FixtureRequest) -> FetchResult:
+    return getattr(request, "param", FetchValue(value=1.23))
 
 
 @pytest.fixture
-def deterministic_tools__ticker_price(request: FixtureRequest) -> float | None:
-    return getattr(request, "param", 187.5)
+def deterministic_tools__ticker_result(request: FixtureRequest) -> FetchResult:
+    return getattr(request, "param", FetchValue(value=187.5))
 
 
 @pytest.mark.parametrize(
     (
         "question__category",
         "question__signal_source",
-        "deterministic_tools__fred_value",
-        "deterministic_tools__ticker_price",
+        "deterministic_tools__fred_result",
+        "deterministic_tools__ticker_result",
         "expected",
     ),
     [
-        (QuestionCategory.MACRO_REGIME, "indicator:yield_curve", 1.23, None, {"value": 1.23}),
-        (QuestionCategory.PORTFOLIO_GAP, "AAPL", None, 187.5, {"value": 187.5}),
+        (
+            QuestionCategory.MACRO_REGIME,
+            "indicator:yield_curve",
+            FetchValue(value=1.23),
+            NoData(),
+            FetchValue(value=1.23),
+        ),
+        (
+            QuestionCategory.PORTFOLIO_GAP,
+            "AAPL",
+            NoData(),
+            FetchValue(value=187.5),
+            FetchValue(value=187.5),
+        ),
     ],
     indirect=[
         "question__category",
         "question__signal_source",
-        "deterministic_tools__fred_value",
-        "deterministic_tools__ticker_price",
+        "deterministic_tools__fred_result",
+        "deterministic_tools__ticker_result",
     ],
 )
-def test__fetch_deterministic_with_available(
+def test__fetch_deterministic_with_fetchable_source_delegates(
     question: Question,
     deterministic_tools: DeterministicResearchTools,
-    expected: dict[str, object],
+    expected: FetchResult,
 ) -> None:
     assert _fetch_deterministic(question, deterministic_tools) == expected
 
 
 @pytest.mark.parametrize(
-    (
-        "question__category",
-        "question__signal_source",
-        "deterministic_tools__fred_value",
-        "deterministic_tools__ticker_price",
-    ),
+    ("question__category", "question__signal_source"),
     [
-        (QuestionCategory.MACRO_REGIME, "indicator:yield_curve", None, None),
-        (QuestionCategory.MACRO_REGIME, "indicator:unknown_thing", 1.23, None),
-        (QuestionCategory.MACRO_REGIME, "not_an_indicator", 1.23, None),
-        (QuestionCategory.PORTFOLIO_GAP, "AAPL", None, None),
-        (QuestionCategory.PORTFOLIO_GAP, "none", None, 187.5),
+        (QuestionCategory.MACRO_REGIME, None),
+        (QuestionCategory.MACRO_REGIME, "indicator:unknown_thing"),
+        (QuestionCategory.MACRO_REGIME, "not_an_indicator"),
+        (QuestionCategory.PORTFOLIO_GAP, None),
     ],
-    indirect=[
-        "question__category",
-        "question__signal_source",
-        "deterministic_tools__fred_value",
-        "deterministic_tools__ticker_price",
-    ],
+    indirect=["question__category", "question__signal_source"],
 )
-def test__fetch_deterministic_with_unavailable(
+def test__fetch_deterministic_with_no_fetchable_source_returns_no_data(
     question: Question,
     deterministic_tools: DeterministicResearchTools,
 ) -> None:
-    assert _fetch_deterministic(question, deterministic_tools) is None
+    assert _fetch_deterministic(question, deterministic_tools) == NoData()
+
+
+_FETCH_ERROR_REASON = "upstream 503; series temporarily unavailable"
+_NO_DATA_ANSWER = "Data unavailable."
 
 
 @pytest.mark.parametrize(
@@ -214,32 +222,64 @@ def test__fetch_deterministic_with_unavailable(
     ],
     indirect=["question__category"],
 )
-def test__deterministic_answer_with_source_token(question: Question, expected: DataSourceToken) -> None:
-    result = _deterministic_answer(question, {"value": 1.23})
+def test__deterministic_answer_with_fetch_value_uses_source_token(
+    question: Question, expected: DataSourceToken
+) -> None:
+    result = _deterministic_answer(question, FetchValue(value=1.23))
     assert result.sources_used == [expected]
 
 
 @pytest.mark.parametrize(
-    ("question__category", "data_retrieved", "expected"),
+    ("question__category", "expected"),
     [
-        (QuestionCategory.MACRO_REGIME, {"value": 1.23}, Confidence.HIGH),
-        (QuestionCategory.PORTFOLIO_GAP, {"value": 187.5}, Confidence.MEDIUM),
-        (QuestionCategory.MACRO_REGIME, None, Confidence.LOW),
+        (QuestionCategory.MACRO_REGIME, Confidence.HIGH),
+        (QuestionCategory.PORTFOLIO_GAP, Confidence.MEDIUM),
     ],
     indirect=["question__category"],
 )
-def test__deterministic_answer_with_confidence(
-    question: Question,
-    data_retrieved: dict[str, object] | None,
-    expected: Confidence,
-) -> None:
-    result = _deterministic_answer(question, data_retrieved)
+def test__deterministic_answer_with_fetch_value_confidence(question: Question, expected: Confidence) -> None:
+    result = _deterministic_answer(question, FetchValue(value=1.23))
     assert result.confidence == expected
 
 
-def test__deterministic_answer_with_unavailable(question: Question) -> None:
-    result = _deterministic_answer(question, None)
+def test__deterministic_answer_with_fetch_value_records_data(question: Question) -> None:
+    result = _deterministic_answer(question, FetchValue(value=1.23))
+    assert result.data_retrieved == {"value": 1.23}
+
+
+def test__deterministic_answer_with_no_data_answer(question: Question) -> None:
+    result = _deterministic_answer(question, NoData())
+    assert result.answer == _NO_DATA_ANSWER
+
+
+def test__deterministic_answer_with_no_data_empty_sources(question: Question) -> None:
+    result = _deterministic_answer(question, NoData())
     assert result.sources_used == []
+
+
+def test__deterministic_answer_with_fetch_error_answer(question: Question) -> None:
+    result = _deterministic_answer(question, FetchError(reason=_FETCH_ERROR_REASON))
+    assert result.answer == f"Data fetch error: {_FETCH_ERROR_REASON}"
+
+
+def test__deterministic_answer_with_fetch_error_empty_sources(question: Question) -> None:
+    result = _deterministic_answer(question, FetchError(reason=_FETCH_ERROR_REASON))
+    assert result.sources_used == []
+
+
+def test__deterministic_answer_with_fetch_error_has_no_data_retrieved(question: Question) -> None:
+    result = _deterministic_answer(question, FetchError(reason=_FETCH_ERROR_REASON))
+    assert result.data_retrieved is None
+
+
+def test__deterministic_answer_with_fetch_error_logs_error(
+    question: Question, loguru_records: list[CapturedLog]
+) -> None:
+    _ = _deterministic_answer(question, FetchError(reason=_FETCH_ERROR_REASON))
+    assert any(
+        record.level == "ERROR" and question.id in record.message and _FETCH_ERROR_REASON in record.message
+        for record in loguru_records
+    )
 
 
 _BOGUS_QUESTION_ID = "Q999-unmatched"

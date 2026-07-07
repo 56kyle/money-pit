@@ -21,7 +21,7 @@ class Question(BaseModel):
     id: str
     category: QuestionCategory
     question: str
-    signal_source: str
+    signal_source: str | None
     signal_tier: SignalTier
     rationale: str
     data_sources: list[DataSourceToken]

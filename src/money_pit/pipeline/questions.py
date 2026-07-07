@@ -139,7 +139,7 @@ def _make_portfolio_gap_questions(
                 id="",
                 category=QuestionCategory.PORTFOLIO_GAP,
                 question="No portfolio overlap detected for current signals.",
-                signal_source="none",
+                signal_source=None,
                 signal_tier=SignalTier.PORTFOLIO,
                 rationale="Placeholder — no actionable overlap.",
                 data_sources=CATEGORY_TO_TOOLS[QuestionCategory.PORTFOLIO_GAP],

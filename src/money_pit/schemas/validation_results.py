@@ -5,6 +5,7 @@ from typing import ClassVar
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
+from money_pit.schemas.enums import OverallValidationStatus
 from money_pit.schemas.enums import ValidationStatus
 
 
@@ -36,7 +37,7 @@ class ActionStepsValidation(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
 
     slug: str
-    overall_status: str
+    overall_status: OverallValidationStatus
     steps: list[ValidationStep]
 
 
@@ -45,7 +46,7 @@ class ValidationStatusReport(BaseModel):
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
 
-    status: str
+    status: OverallValidationStatus
     validation_performed: bool
     unmatched_steps: list[str]
     error: str | None

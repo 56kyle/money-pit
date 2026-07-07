@@ -73,6 +73,11 @@ class ValidationStatus(str, Enum):
     UNMATCHED = "UNMATCHED"
 
 
+class OverallValidationStatus(str, Enum):
+    VALIDATED = "VALIDATED"
+    VALIDATION_FAILED = "VALIDATION_FAILED"
+
+
 class ExecutionPhase(str, Enum):
     PLANNED = "PLANNED"
     PREFLIGHT_OK = "PREFLIGHT_OK"

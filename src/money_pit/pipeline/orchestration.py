@@ -7,6 +7,9 @@ from datetime import datetime
 from datetime import timezone
 from pathlib import Path
 
+import requests
+from loguru import logger
+
 from money_pit.agents.answer_synthesis import make_answer_synthesis_agent
 from money_pit.agents.claim_questions import make_claim_questions_agent
 from money_pit.agents.corroboration import corroborate
@@ -44,6 +47,10 @@ from money_pit.schemas.enums import ActionType
 from money_pit.schemas.enums import ConvictionLevel
 from money_pit.schemas.enums import SignalTier
 from money_pit.schemas.enums import Step1Disposition
+from money_pit.schemas.fetch_result import FetchError
+from money_pit.schemas.fetch_result import FetchResult
+from money_pit.schemas.fetch_result import FetchValue
+from money_pit.schemas.fetch_result import NoData
 from money_pit.schemas.portfolio import PortfolioSnapshot
 from money_pit.schemas.provenance import SourceRef
 from money_pit.schemas.question_draft import DraftQuestion
@@ -57,6 +64,12 @@ _MISSING_DEP_MESSAGE: str = (
 )
 
 _EDGAR_IDENTITY_FALLBACK: str = f"money-pit research {DEFAULT_OWNER_RECIPIENT}"
+
+_FRED_OBSERVATIONS_URL: str = "https://api.stlouisfed.org/fred/series/observations"
+_BRAVE_SEARCH_URL: str = "https://api.search.brave.com/res/v1/web/search"
+_FETCH_TIMEOUT_SECONDS: int = 10
+_FRED_MISSING_VALUE: str = "."
+_TICKER_HISTORY_PERIOD: str = "1d"
 
 
 class MissingPipelineDependencyError(Exception):
@@ -87,14 +100,14 @@ class _DirectDeterministicTools:
     def __init__(self, fred_api_key: str | None) -> None:
         self._fred_api_key = fred_api_key
 
-    def fetch_fred_series(self, series_id: str) -> float | None:
+    def fetch_fred_series(self, series_id: str) -> FetchResult:
+        """Return the latest FRED observation, NoData on an empty series, FetchError on an upstream or config failure."""
         if self._fred_api_key is None:
-            return None
+            logger.warning("FRED API key not configured; cannot fetch series {series_id}", series_id=series_id)
+            return FetchError(reason=f"FRED API key not configured; cannot fetch series {series_id}.")
         try:
-            import requests
-
             response = requests.get(
-                "https://api.stlouisfed.org/fred/series/observations",
+                _FRED_OBSERVATIONS_URL,
                 params={
                     "series_id": series_id,
                     "api_key": self._fred_api_key,
@@ -102,34 +115,43 @@ class _DirectDeterministicTools:
                     "sort_order": "desc",
                     "limit": "1",
                 },
-                timeout=10,
+                timeout=_FETCH_TIMEOUT_SECONDS,
             )
-            data: dict[str, object] = response.json()
-            observations = data.get("observations")
-            if not isinstance(observations, list) or not observations:
-                return None
-            first = observations[0]
-            if not isinstance(first, dict):
-                return None
-            value_str = first.get("value")
-            if not isinstance(value_str, str) or value_str == ".":
-                return None
-            return float(value_str)
-        except Exception:
-            return None
-
-    def fetch_ticker_price(self, ticker: str) -> float | None:
+            data: object = response.json()
+        except (requests.RequestException, ValueError) as error:
+            logger.warning("FRED fetch failed for series {series_id}: {error}", series_id=series_id, error=error)
+            return FetchError(reason=f"FRED fetch failed for series {series_id}: {error}")
+        if not isinstance(data, dict):
+            return NoData()
+        observations = data.get("observations")
+        if not isinstance(observations, list) or not observations:
+            return NoData()
+        first = observations[0]
+        if not isinstance(first, dict):
+            return NoData()
+        value_str = first.get("value")
+        if not isinstance(value_str, str) or value_str == _FRED_MISSING_VALUE:
+            return NoData()
         try:
-            import yfinance as yf  # pyright: ignore[reportMissingTypeStubs]
+            return FetchValue(value=float(value_str))
+        except ValueError as error:
+            logger.warning("FRED value unparseable for series {series_id}: {error}", series_id=series_id, error=error)
+            return FetchError(reason=f"FRED value unparseable for series {series_id}: {error}")
 
-            hist = yf.Ticker(ticker).history(period="1d")  # pyright: ignore[reportUnknownMemberType]
-            if hist.empty:
-                return None
-            close_series = hist["Close"]
-            last = close_series.iloc[-1]  # pyright: ignore[reportAny]
-            return float(last)  # pyright: ignore[reportAny]
-        except Exception:
-            return None
+    def fetch_ticker_price(self, ticker: str) -> FetchResult:
+        """Return the latest close, NoData when the ticker has no recent bar, FetchError on a yfinance network failure."""
+        import yfinance as yf  # pyright: ignore[reportMissingTypeStubs]
+
+        try:
+            hist = yf.Ticker(ticker).history(period=_TICKER_HISTORY_PERIOD)  # pyright: ignore[reportUnknownMemberType]
+        except (requests.RequestException, OSError) as error:
+            logger.warning("yfinance fetch failed for ticker {ticker}: {error}", ticker=ticker, error=error)
+            return FetchError(reason=f"yfinance fetch failed for ticker {ticker}: {error}")
+        if hist.empty:
+            return NoData()
+        close_series = hist["Close"]
+        last = close_series.iloc[-1]  # pyright: ignore[reportAny]
+        return FetchValue(value=float(last))  # pyright: ignore[reportAny]
 
 
 class _DirectOpenEndedTools:
@@ -144,40 +166,41 @@ class _DirectOpenEndedTools:
         if self._brave_api_key is None:
             return []
         try:
-            import requests
-
             resp = requests.get(
-                "https://api.search.brave.com/res/v1/web/search",
+                _BRAVE_SEARCH_URL,
                 headers={
                     "Accept": "application/json",
                     "X-Subscription-Token": self._brave_api_key,
                 },
                 params={"q": query, "count": str(n_results)},
-                timeout=10,
+                timeout=_FETCH_TIMEOUT_SECONDS,
             )
-            data: dict[str, object] = resp.json()  # pyright: ignore[reportAny]
-            web = data.get("web")
-            if not isinstance(web, dict):
-                return []
-            results = web.get("results")
-            if not isinstance(results, list):
-                return []
-            snippets: list[str] = []
-            for item in results[:n_results]:
-                if isinstance(item, dict):
-                    title = item.get("title", "")
-                    desc = item.get("description", "")
-                    if isinstance(title, str) and isinstance(desc, str):
-                        snippets.append(f"{title}: {desc}")
-            return snippets
-        except Exception:
+            data: object = resp.json()  # pyright: ignore[reportAny]
+        except (requests.RequestException, ValueError) as error:
+            logger.warning("Brave search failed for query {query!r}: {error}", query=query, error=error)
             return []
+        if not isinstance(data, dict):
+            return []
+        web = data.get("web")
+        if not isinstance(web, dict):
+            return []
+        results = web.get("results")
+        if not isinstance(results, list):
+            return []
+        snippets: list[str] = []
+        for item in results[:n_results]:
+            if isinstance(item, dict):
+                title = item.get("title", "")
+                desc = item.get("description", "")
+                if isinstance(title, str) and isinstance(desc, str):
+                    snippets.append(f"{title}: {desc}")
+        return snippets
 
     def edgar_search(self, query: str, *, n_results: int = 5) -> list[str]:  # pragma: no cover
-        try:
-            from edgar import search_filings
-            from edgar import set_identity
+        from edgar import search_filings
+        from edgar import set_identity
 
+        try:
             set_identity(self._owner_recipient or _EDGAR_IDENTITY_FALLBACK)
             snippets: list[str] = []
             for result in search_filings(query, limit=n_results):
@@ -185,18 +208,19 @@ class _DirectOpenEndedTools:
                 if len(snippets) >= n_results:
                     break
             return snippets
-        except Exception:
+        except (requests.RequestException, OSError) as error:
+            logger.warning("EDGAR search failed for query {query!r}: {error}", query=query, error=error)
             return []
 
 
 class _Phase4DeterministicTools:
-    def fetch_fred_series(self, series_id: str) -> float | None:
+    def fetch_fred_series(self, series_id: str) -> FetchResult:
         _ = series_id
-        return None
+        return NoData()
 
-    def fetch_ticker_price(self, ticker: str) -> float | None:
+    def fetch_ticker_price(self, ticker: str) -> FetchResult:
         _ = ticker
-        return None
+        return NoData()
 
 
 def _phase4_fetch_portfolio(slug: str) -> PortfolioSnapshot:

@@ -4,6 +4,11 @@ from pathlib import Path
 
 from loguru import logger
 
+from money_pit.schemas.fetch_result import FetchError
+from money_pit.schemas.fetch_result import FetchResult
+from money_pit.schemas.fetch_result import FetchValue
+from money_pit.schemas.fetch_result import NoData
+
 from money_pit.agents.research_tools import DeterministicResearchTools
 from money_pit.compute.confidence import derive_confidence
 from money_pit.constants import AGGREGATED_SIGNALS_JSON_FILENAME
@@ -88,49 +93,64 @@ def _render_markdown(slug: str, answers: list[Answer]) -> str:
 def _fetch_deterministic(
     question: Question,
     tools: DeterministicResearchTools,
-) -> dict[str, object] | None:
-    """Return fetched data for a deterministic question, or None if unavailable."""
+) -> FetchResult:
+    """Return the deterministic fetch result, or NoData when the question carries no fetchable source."""
     if question.category == QuestionCategory.MACRO_REGIME:
-        if not question.signal_source.startswith(INDICATOR_PREFIX):
-            return None
-        indicator_name: str = question.signal_source[len(INDICATOR_PREFIX) :]
+        signal_source: str | None = question.signal_source
+        if signal_source is None or not signal_source.startswith(INDICATOR_PREFIX):
+            return NoData()
+        indicator_name: str = signal_source[len(INDICATOR_PREFIX) :]
         series_id: str | None = _FRED_SERIES.get(indicator_name)
         if series_id is None:
-            return None
-        fred_value: float | None = tools.fetch_fred_series(series_id)
-        if fred_value is None:
-            return None
-        fred_result: dict[str, object] = {"value": fred_value}
-        return fred_result
+            return NoData()
+        return tools.fetch_fred_series(series_id)
 
     if question.category == QuestionCategory.PORTFOLIO_GAP:
-        ticker: str = question.signal_source
-        price: float | None = tools.fetch_ticker_price(ticker) if ticker != "none" else None
-        if price is None:
-            return None
-        price_result: dict[str, object] = {"value": price}
-        return price_result
+        ticker: str | None = question.signal_source
+        if ticker is None:
+            return NoData()
+        return tools.fetch_ticker_price(ticker)
 
-    return None
+    return NoData()
 
 
-def _deterministic_answer(question: Question, data_retrieved: dict[str, object] | None) -> Answer:
-    """Build an Answer for a deterministic question, deriving confidence from provenance."""
+def _deterministic_answer(question: Question, result: FetchResult) -> Answer:
+    """Build an Answer for a deterministic question; logs at ERROR on a fetch failure."""
     source_token: DataSourceToken = (
         _MACRO_REGIME_SOURCE if question.category == QuestionCategory.MACRO_REGIME else _PORTFOLIO_GAP_SOURCE
     )
-    sources_used: list[DataSourceToken] = [source_token] if data_retrieved else []
+    match result:
+        case FetchValue(value=value):
+            data_retrieved: dict[str, object] | None = {"value": value}
+            sources_used: list[DataSourceToken] = [source_token]
+            answer: str = f"Fetched: {data_retrieved}"
+            limitations: str = "Direct deterministic fetch; no LLM synthesis."
+        case NoData():
+            data_retrieved = None
+            sources_used = []
+            answer = "Data unavailable."
+            limitations = "Fetch returned no data."
+        case FetchError(reason=reason):
+            logger.error(
+                "Deterministic fetch failed for question {question_id}: {reason}",
+                question_id=question.id,
+                reason=reason,
+            )
+            data_retrieved = None
+            sources_used = []
+            answer = f"Data fetch error: {reason}"
+            limitations = "Deterministic fetch failed against an upstream error."
     return Answer(
         question_id=question.id,
         question=question.question,
         category=question.category,
         signal_source=question.signal_source,
         signal_tier=question.signal_tier,
-        answer=f"Fetched: {data_retrieved}" if data_retrieved else "Data unavailable.",
+        answer=answer,
         confidence=derive_confidence(sources_used),
         sources_used=sources_used,
         data_retrieved=data_retrieved,
-        limitations=("Direct deterministic fetch; no LLM synthesis." if data_retrieved else "Fetch returned no data."),
+        limitations=limitations,
     )
 
 
@@ -150,10 +170,10 @@ def _answer_deterministic(
     deterministic_tools: DeterministicResearchTools,
 ) -> list[Answer]:
     """Fetch and answer the deterministic questions via code-owned research tools."""
-    deterministic_pairs: list[tuple[Question, dict[str, object] | None]] = [
+    deterministic_pairs: list[tuple[Question, FetchResult]] = [
         (q, _fetch_deterministic(q, deterministic_tools)) for q in deterministic_questions
     ]
-    return [_deterministic_answer(q, data_retrieved) for q, data_retrieved in deterministic_pairs]
+    return [_deterministic_answer(q, result) for q, result in deterministic_pairs]
 
 
 def _answer_open_ended(

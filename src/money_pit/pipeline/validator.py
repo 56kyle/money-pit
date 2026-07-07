@@ -19,6 +19,7 @@ from money_pit.graph.state import require_working_dir
 from money_pit.graph.state import with_completed_step
 from money_pit.mcp.manifest import pinned_manifest
 from money_pit.schemas.action_steps import ActionStep
+from money_pit.schemas.enums import OverallValidationStatus
 from money_pit.schemas.enums import ValidationStatus
 from money_pit.schemas.validation_results import ActionStepsValidation
 from money_pit.schemas.validation_results import ToolCall
@@ -105,7 +106,9 @@ def _validate_step(
 
 def _render_markdown(slug: str, validation: ActionStepsValidation) -> str:
     """Return a human-readable markdown summary of an ActionStepsValidation."""
-    status_label: str = "VALIDATED" if validation.overall_status == "validated" else "VALIDATION FAILED"
+    status_label: str = (
+        "VALIDATED" if validation.overall_status == OverallValidationStatus.VALIDATED else "VALIDATION FAILED"
+    )
     lines: list[str] = [
         f"# Action Steps Validation — {slug}",
         "",
@@ -123,12 +126,12 @@ def _render_markdown(slug: str, validation: ActionStepsValidation) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _overall_status(validation_steps: list[ValidationStep]) -> str:
-    """Return "validated" when no steps are UNMATCHED, otherwise "validation_failed"."""
+def _overall_status(validation_steps: list[ValidationStep]) -> OverallValidationStatus:
+    """Return VALIDATED when no steps are UNMATCHED, otherwise VALIDATION_FAILED."""
     return (
-        "validated"
+        OverallValidationStatus.VALIDATED
         if not any(vs.status == ValidationStatus.UNMATCHED for vs in validation_steps)
-        else "validation_failed"
+        else OverallValidationStatus.VALIDATION_FAILED
     )
 
 
@@ -175,7 +178,7 @@ def make_validator_node(
         )
 
         validation_steps: list[ValidationStep] = [_validate_step(step, slug, resolved_manifest) for step in steps]
-        overall_status: str = _overall_status(validation_steps)
+        overall_status: OverallValidationStatus = _overall_status(validation_steps)
 
         validation: ActionStepsValidation = ActionStepsValidation(
             slug=slug,

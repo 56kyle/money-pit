@@ -1,4 +1,4 @@
-"""MacroIndicators — five-indicator snapshot assembled by the A4 post-processor for regime classification."""
+"""Module containing MacroIndicators, the five-indicator snapshot assembled by the A4 post-processor for regime classification, for the money_pit package."""
 
 from typing import ClassVar
 

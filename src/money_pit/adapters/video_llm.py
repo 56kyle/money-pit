@@ -1,4 +1,4 @@
-"""A1 LLM core: multimodal/text → SignalSetDraft. Encapsulated inside the video adapter."""
+"""Module containing the A1 LLM core (multimodal/text into SignalSetDraft) encapsulated inside the video adapter of the money_pit package."""
 
 from collections.abc import Callable
 from enum import Enum

@@ -1,4 +1,4 @@
-"""PipelineState TypedDict: incremental LangGraph state accumulated across pipeline nodes."""
+"""Module containing the PipelineState TypedDict of incremental LangGraph state accumulated across pipeline nodes in the money_pit package."""
 
 from pathlib import Path
 from typing import Literal
@@ -27,14 +27,14 @@ class PipelineState(TypedDict, total=False):
 
 def require_working_dir(state: PipelineState) -> Path:
     """Return the working directory as a Path, raising if it is unset."""
-    working_dir = state.get("working_dir")
+    working_dir: str | None = state.get("working_dir")
     if working_dir is None:
         raise ValueError("PipelineState missing required key 'working_dir'")
     return Path(working_dir)
 
 
 def require_slug(state: PipelineState) -> str:
-    slug = state.get("slug")
+    slug: str | None = state.get("slug")
     if slug is None:
         raise ValueError("PipelineState missing required key 'slug'")
     return slug

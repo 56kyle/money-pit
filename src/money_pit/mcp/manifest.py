@@ -1,4 +1,4 @@
-"""Tool manifests consumed by A5: the static `pinned_manifest` default and the opt-in `live_manifest`.
+"""Module containing the tool manifests consumed by A5 (the static `pinned_manifest` default and the opt-in `live_manifest`) for the money_pit package.
 
 `pinned_manifest` is the *static pinned* contract-level record of which write tools exist for the
 closed Alpaca write-tool set — it is not a live view of any running server, and remains the default

@@ -1,4 +1,4 @@
-"""Claim, SignalSet, CorroborationEntry, AggregatedSignals — post-conversion contracts."""
+"""Module containing the Claim, SignalSet, CorroborationEntry, and AggregatedSignals post-conversion contracts for the money_pit package."""
 
 from typing import ClassVar
 

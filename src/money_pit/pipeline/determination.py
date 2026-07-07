@@ -1,4 +1,4 @@
-"""Agent 6: the pure determination seam plus the determination and finalizer graph nodes.
+"""Module containing the Agent 6 pure determination seam plus the determination and finalizer graph nodes for the money_pit package.
 
 The recompute/load/map functions are pure and directly testable; the two node factories
 compose them into the graph. The determination node decides PROCEED/HALT (or fails closed to

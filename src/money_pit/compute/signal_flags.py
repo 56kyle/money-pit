@@ -1,4 +1,4 @@
-"""requires_validation, has_actionable_content, ticker normalization, signal counts."""
+"""Module containing requires_validation, has_actionable_content, ticker normalization, and signal-count logic for the money_pit package."""
 
 import re
 

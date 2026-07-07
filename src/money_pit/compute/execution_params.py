@@ -1,4 +1,4 @@
-"""ActionType + judgment → execution_parameters with literal Alpaca MCP field names."""
+"""Module containing the ActionType-plus-judgment to execution_parameters mapping with literal Alpaca MCP field names for the money_pit package."""
 
 from pathlib import Path
 from typing import Literal

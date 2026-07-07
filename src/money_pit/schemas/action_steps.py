@@ -1,4 +1,4 @@
-"""ActionStep, ExecutionParameters — post-processor output, consumed by A5."""
+"""Module containing the ActionStep and ExecutionParameters post-processor output consumed by A5 in the money_pit package."""
 
 from typing import ClassVar
 from typing import Literal

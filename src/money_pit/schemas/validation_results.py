@@ -1,4 +1,4 @@
-"""ValidationStep, ActionStepsValidation, ValidationStatusReport — A5 output contracts."""
+"""Module containing the ValidationStep, ActionStepsValidation, and ValidationStatusReport A5 output contracts for the money_pit package."""
 
 from typing import ClassVar
 

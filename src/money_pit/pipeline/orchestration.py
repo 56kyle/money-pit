@@ -1,4 +1,4 @@
-"""Scheduler trigger, working-dir creation, slug assignment."""
+"""Module containing scheduler-trigger, working-dir creation, and slug-assignment logic for the money_pit package."""
 
 import shutil
 from dataclasses import dataclass
@@ -23,9 +23,6 @@ from money_pit.config import load_config
 from money_pit.config import resolve_alpaca_credentials
 from money_pit.constants import DAILY_SHOW_ROOT
 from money_pit.constants import SIGNALS_DIRNAME
-from money_pit.email_sender import make_gmail_email_sender
-from money_pit.mcp.clients import make_alpaca_write_deps
-from money_pit.mcp.manifest import live_manifest
 from money_pit.contracts import AnswerSynthesisAgent
 from money_pit.contracts import ClaimQuestionsAgent
 from money_pit.contracts import CorroborationAgent
@@ -34,8 +31,11 @@ from money_pit.contracts import OrderPlacer
 from money_pit.contracts import PortfolioFetcher
 from money_pit.contracts import ThesisAgent
 from money_pit.contracts import ToolManifest
+from money_pit.email_sender import make_gmail_email_sender
 from money_pit.graph.graph import build_graph
 from money_pit.graph.state import PipelineState
+from money_pit.mcp.clients import make_alpaca_write_deps
+from money_pit.mcp.manifest import live_manifest
 from money_pit.schemas.action_steps import ExecutionParameters
 from money_pit.schemas.aggregation_draft import ClaimRelations
 from money_pit.schemas.analysis_draft import AnalysisJudgment

@@ -1,4 +1,4 @@
-"""A3 node: deterministic known-param fetch, budget control, file writes."""
+"""Module containing the A3 node handling deterministic known-param fetch, budget control, and file writes for the money_pit package."""
 
 from pathlib import Path
 
@@ -149,10 +149,10 @@ def _deterministic_answer(question: Question, result: FetchResult) -> Answer:
 
 def _load_retrieval_inputs(working_dir: Path) -> tuple[InitialQuestions, AggregatedSignals]:
     """Load the A2 questions and aggregated signals for a retrieval run."""
-    initial_questions = InitialQuestions.model_validate_json(
+    initial_questions: InitialQuestions = InitialQuestions.model_validate_json(
         (working_dir / INITIAL_QUESTIONS_JSON_FILENAME).read_text(encoding="utf-8")
     )
-    aggregated_signals = AggregatedSignals.model_validate_json(
+    aggregated_signals: AggregatedSignals = AggregatedSignals.model_validate_json(
         (working_dir / AGGREGATED_SIGNALS_JSON_FILENAME).read_text(encoding="utf-8")
     )
     return initial_questions, aggregated_signals
@@ -184,7 +184,7 @@ def _answer_open_ended(
 
     llm_answers: list[Answer] = []
     for draft in drafts:
-        question = question_by_id.get(draft.question_id)
+        question: Question | None = question_by_id.get(draft.question_id)
         if question is None:
             logger.warning(
                 "Dropping A3 draft with unmatched question_id {question_id}",
@@ -219,8 +219,8 @@ def make_retrieval_node(
     """Return a LangGraph node that answers research questions via agent retrieval."""
 
     def retrieval_node(state: PipelineState) -> PipelineState:
-        working_dir = require_working_dir(state)
-        slug = require_slug(state)
+        working_dir: Path = require_working_dir(state)
+        slug: str = require_slug(state)
 
         initial_questions, aggregated_signals = _load_retrieval_inputs(working_dir)
         questions: list[Question] = initial_questions.questions
@@ -233,7 +233,7 @@ def make_retrieval_node(
         llm_answers: list[Answer] = _answer_open_ended(answer_synthesis_agent, open_ended_questions, sources)
 
         all_answers: list[Answer] = deterministic_answers + llm_answers
-        initial_answers = InitialAnswers(slug=slug, sources=sources, answers=all_answers)
+        initial_answers: InitialAnswers = InitialAnswers(slug=slug, sources=sources, answers=all_answers)
 
         _write_retrieval_outputs(working_dir, slug, initial_answers, all_answers)
 

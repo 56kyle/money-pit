@@ -1,4 +1,4 @@
-"""StateGraph assembly: add_node / add_edge / add_conditional_edges."""
+"""Module containing the StateGraph assembly (add_node / add_edge / add_conditional_edges) for the money_pit package."""
 
 from pathlib import Path
 

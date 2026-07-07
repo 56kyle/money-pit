@@ -1,4 +1,4 @@
-"""VideoAdapter: accepts a pre-built VideoPayload, persists it before LLM classification, and post-processes SignalSetDraft → SignalSet."""
+"""Module containing the VideoAdapter that persists a pre-built VideoPayload before LLM classification and post-processes SignalSetDraft into SignalSet for the money_pit package."""
 
 from collections.abc import Callable
 from pathlib import Path
@@ -39,14 +39,14 @@ class VideoAdapter(SourceAdapter[VideoPayload]):
     @override
     def process(self, payload: VideoPayload) -> SignalSet:
         """Persist the payload, call the LLM agent, and post-process the draft into a SignalSet."""
-        source_id = payload.source_ref.source_id
-        payload_dir = self._cache_dir / source_id
+        source_id: str = payload.source_ref.source_id
+        payload_dir: Path = self._cache_dir / source_id
         payload_dir.mkdir(parents=True, exist_ok=True)
-        payload_path = payload_dir / _PAYLOAD_FILENAME
+        payload_path: Path = payload_dir / _PAYLOAD_FILENAME
         _ = payload_path.write_text(payload.model_dump_json(indent=2), encoding="utf-8")
 
-        draft = self._agent(payload)
-        claims = [_to_claim(c, payload) for c in draft.claims]
+        draft: SignalSetDraft = self._agent(payload)
+        claims: list[Claim] = [_to_claim(c, payload) for c in draft.claims]
 
         return SignalSet(
             slug=payload.slug,
@@ -61,7 +61,7 @@ class VideoAdapter(SourceAdapter[VideoPayload]):
 
 
 def _to_claim(draft_claim: ClaimDraft, payload: VideoPayload) -> Claim:
-    tier = SignalTier(draft_claim.tier)
+    tier: SignalTier = SignalTier(draft_claim.tier)
     return Claim(
         claim_id=draft_claim.claim_id,
         tier=tier,

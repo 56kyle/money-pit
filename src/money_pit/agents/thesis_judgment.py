@@ -1,4 +1,4 @@
-"""A4 LLM core: claim disposition, thesis narratives, scenario estimates, invalidation conditions → AnalysisJudgment."""
+"""Module containing the A4 LLM core producing claim disposition, thesis narratives, scenario estimates, and invalidation conditions as AnalysisJudgment for the money_pit package."""
 
 from pydantic_ai import Agent
 

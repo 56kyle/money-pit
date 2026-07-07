@@ -1,4 +1,4 @@
-"""Calls Alpaca read MCP, writes portfolio_snapshot.json."""
+"""Module containing the node that calls the Alpaca read MCP and writes portfolio_snapshot.json for the money_pit package."""
 
 from collections.abc import Callable
 from pathlib import Path

@@ -1,4 +1,4 @@
-"""Notification sub-agent: email templating per terminal state, send_email call."""
+"""Module containing the notification sub-agent for per-terminal-state email templating and the send_email call in the money_pit package."""
 
 from collections.abc import Callable
 from pathlib import Path

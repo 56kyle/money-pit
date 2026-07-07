@@ -1,4 +1,4 @@
-"""AnswerDraft — A3 LLM output: answers to open-ended questions requiring relevance judgment."""
+"""Module containing AnswerDraft, the A3 LLM output of answers to open-ended questions requiring relevance judgment, for the money_pit package."""
 
 from typing import ClassVar
 

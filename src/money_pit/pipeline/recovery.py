@@ -1,4 +1,4 @@
-"""Prior-journal recovery: reads execution_journal.json, reconciles state before planning begins."""
+"""Module containing prior-journal recovery that reads execution_journal.json and reconciles state before planning begins for the money_pit package."""
 
 from pathlib import Path
 

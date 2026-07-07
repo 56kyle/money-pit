@@ -1,4 +1,4 @@
-"""Node factory that merges source SignalSets, corroborates claims, and writes AggregatedSignals."""
+"""Module containing the node factory that merges source SignalSets, corroborates claims, and writes AggregatedSignals for the money_pit package."""
 
 from pathlib import Path
 

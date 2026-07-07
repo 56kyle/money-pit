@@ -1,4 +1,4 @@
-"""Conditional edge functions: signal_gate, terminal_state_router, determination_router, post_notification_router."""
+"""Module containing the conditional edge functions (signal_gate, terminal_state_router, determination_router, post_notification_router) for the money_pit package."""
 
 from typing import Literal
 

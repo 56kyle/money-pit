@@ -1,4 +1,4 @@
-"""A5: manifest existence + jsonschema checks, action_type→tool routing, three-file write."""
+"""Module containing the A5 node handling manifest-existence and jsonschema checks, action_type-to-tool routing, and the three-file write for the money_pit package."""
 
 from pathlib import Path
 

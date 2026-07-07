@@ -1,4 +1,4 @@
-"""Answer, InitialAnswers — initial_answers.json contract."""
+"""Module containing the Answer and InitialAnswers models of the initial_answers.json contract for the money_pit package."""
 
 from typing import ClassVar
 

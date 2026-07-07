@@ -1,4 +1,4 @@
-"""Claim union, tier max across corroborations, run-level actionability flag."""
+"""Module containing claim union, tier-max-across-corroborations, and run-level actionability logic for the money_pit package."""
 
 from money_pit.schemas.enums import SignalTier
 from money_pit.schemas.signals import Claim

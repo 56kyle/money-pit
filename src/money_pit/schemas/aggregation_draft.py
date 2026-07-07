@@ -1,4 +1,4 @@
-"""ClaimRelations — aggregator thin LLM output: confirmed agree/disagree labels on pre-clustered claim groups."""
+"""Module containing ClaimRelations, the aggregator thin-LLM output of confirmed agree/disagree labels on pre-clustered claim groups, for the money_pit package."""
 
 from typing import ClassVar
 

@@ -1,4 +1,4 @@
-"""ActionType → Alpaca MCP tool name and compensating action mappings."""
+"""Module containing the ActionType-to-Alpaca-MCP tool-name and compensating-action mappings for the money_pit package."""
 
 from money_pit.mcp.constants import PLACE_STOCK_ORDER_TOOL
 from money_pit.schemas.enums import ActionType

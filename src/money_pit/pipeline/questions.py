@@ -1,4 +1,4 @@
-"""A2 node: template emission, ID assignment, routing-table data_sources, file writes."""
+"""Module containing the A2 node handling template emission, ID assignment, routing-table data_sources, and file writes for the money_pit package."""
 
 from datetime import datetime
 from datetime import timezone

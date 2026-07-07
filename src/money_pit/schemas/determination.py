@@ -1,4 +1,4 @@
-"""DeterminationReport — determination.json contract produced by the Agent 6 finalizer node."""
+"""Module containing DeterminationReport, the determination.json contract produced by the Agent 6 finalizer node, for the money_pit package."""
 
 from typing import ClassVar
 from typing import Literal

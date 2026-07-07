@@ -1,4 +1,4 @@
-"""A2 LLM core: claim-specific thesis-validation + invalidation questions only."""
+"""Module containing the A2 LLM core for claim-specific thesis-validation and invalidation questions in the money_pit package."""
 
 import json
 

@@ -1,4 +1,4 @@
-"""SignalSetDraft — raw A1 LLM output before ticker normalization, date parsing, and schema validation."""
+"""Module containing SignalSetDraft, the raw A1 LLM output before ticker normalization, date parsing, and schema validation, for the money_pit package."""
 
 from typing import ClassVar
 

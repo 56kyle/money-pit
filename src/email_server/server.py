@@ -1,4 +1,4 @@
-"""FastMCP email server exposing send_email(to, subject, body), folded into the money_pit package.
+"""Module containing the FastMCP email server exposing send_email(to, subject, body), folded into the money_pit package.
 
 Configuration follows the app's MONEY_PIT__ double-underscore convention, single-sourcing the SMTP
 defaults and the EmailSendError type from money_pit:

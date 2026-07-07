@@ -1,4 +1,4 @@
-"""A3 LLM core: open-ended Brave/EDGAR lookups + answer synthesis."""
+"""Module containing the A3 LLM core for open-ended Brave/EDGAR lookups and answer synthesis in the money_pit package."""
 
 import json
 

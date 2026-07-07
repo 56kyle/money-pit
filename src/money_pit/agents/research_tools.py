@@ -1,4 +1,4 @@
-"""Protocol types that decouple agent code from transport implementations.
+"""Module containing the protocol types that decouple agent code from transport implementations in the money_pit package.
 
 These protocols converge with `mcp.clients.ResearchDeps` in Phase 7 — the
 MCP-backed implementation satisfies both protocols structurally.

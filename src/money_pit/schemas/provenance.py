@@ -1,4 +1,4 @@
-"""SourceRef — structured provenance record for every pipeline signal source."""
+"""Module containing SourceRef, the structured provenance record for every pipeline signal source, for the money_pit package."""
 
 from typing import ClassVar
 

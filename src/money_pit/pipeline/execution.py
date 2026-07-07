@@ -1,4 +1,4 @@
-"""Execution sub-agent: independent-path order submission with a crash-survivable journal."""
+"""Module containing the execution sub-agent for independent-path order submission with a crash-survivable journal in the money_pit package."""
 
 from collections.abc import Callable
 from datetime import datetime

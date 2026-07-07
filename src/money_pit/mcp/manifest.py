@@ -9,6 +9,7 @@ and reports the tools it actually registers. It fails closed with `ManifestUnava
 connection or introspection failure, so an operator who opts in never trades against an assumed set.
 """
 
+from collections.abc import Callable
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -41,13 +42,16 @@ def pinned_manifest(
     return dict.fromkeys(set(ACTION_TYPE_TO_TOOL.values()), schema)
 
 
-def live_manifest(credentials: AlpacaCredentials) -> ToolManifest:
+def live_manifest(
+    credentials: AlpacaCredentials,
+    list_tools: Callable[[AlpacaCredentials], list[Tool]] = list_write_tools,
+) -> ToolManifest:
     """Return a live manifest by introspecting a freshly spawned Alpaca MCP write server.
 
     Fails closed with `ManifestUnavailableError` on any connection or introspection failure.
     """
     try:
-        tools: list[Tool] = list_write_tools(credentials)
+        tools: list[Tool] = list_tools(credentials)
     except Exception as err:
         raise ManifestUnavailableError(f"Live tool manifest unavailable: {err}") from err
     return {tool.name: tool.inputSchema for tool in tools}

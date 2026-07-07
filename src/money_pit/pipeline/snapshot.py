@@ -1,7 +1,7 @@
 """Module containing the node that calls the Alpaca read MCP and writes portfolio_snapshot.json for the money_pit package."""
 
 from collections.abc import Callable
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from money_pit.constants import PORTFOLIO_SNAPSHOT_FILENAME
 from money_pit.graph.state import PipelineNode
@@ -10,6 +10,10 @@ from money_pit.graph.state import require_slug
 from money_pit.graph.state import require_working_dir
 from money_pit.graph.state import with_completed_step
 from money_pit.schemas.portfolio import PortfolioSnapshot
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def make_snapshot_node(

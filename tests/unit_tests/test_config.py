@@ -204,13 +204,13 @@ def test_load_config_with_env_override(tmp_path: Path, monkeypatch: MonkeyPatch)
         ("brave_api_key", None),
     ],
 )
-def test_Config_with_defaults(field_name: str, expected_default: object) -> None:
+def test_config_with_defaults(field_name: str, expected_default: object) -> None:
     config: Config = Config(alpaca_service="alpaca-paper", alpaca_username="alpaca-api-key")
 
     assert getattr(config, field_name) == expected_default
 
 
-def test_Config_with_secret_fields() -> None:
+def test_config_with_secret_fields() -> None:
     config: Config = Config(
         alpaca_service="alpaca-paper",
         alpaca_username="alpaca-api-key",
@@ -224,7 +224,7 @@ def test_Config_with_secret_fields() -> None:
     assert config.brave_api_key.get_secret_value() == "brave-secret"
 
 
-def test_Config_with_assignment_is_frozen() -> None:
+def test_config_with_assignment_is_frozen() -> None:
     config: Config = Config(alpaca_service="alpaca-paper", alpaca_username="alpaca-api-key")
 
     with pytest.raises(ValidationError):

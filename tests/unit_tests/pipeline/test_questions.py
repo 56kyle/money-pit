@@ -13,26 +13,30 @@ Pins the draft→node→contract pattern for A2:
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 from pytest import FixtureRequest
 
-from tests.unit_tests.pipeline.conftest import CapturedLog
-
 from money_pit.compute.routing import CATEGORY_TO_TOOLS
-from money_pit.graph.state import PipelineState
-from money_pit.pipeline.questions import _draft_to_question, make_questions_node
-from money_pit.schemas.enums import (
-    ClaimCategory,
-    QuestionCategory,
-    SignalTier,
-    SourceType,
-)
+from money_pit.pipeline.questions import _draft_to_question
+from money_pit.pipeline.questions import make_questions_node
+from money_pit.schemas.enums import ClaimCategory
+from money_pit.schemas.enums import QuestionCategory
+from money_pit.schemas.enums import SignalTier
+from money_pit.schemas.enums import SourceType
 from money_pit.schemas.portfolio import PortfolioSnapshot
 from money_pit.schemas.provenance import SourceRef
 from money_pit.schemas.question_draft import DraftQuestion
 from money_pit.schemas.questions import InitialQuestions
-from money_pit.schemas.signals import AggregatedSignals, Claim
+from money_pit.schemas.signals import AggregatedSignals
+from money_pit.schemas.signals import Claim
+from tests.unit_tests.pipeline.conftest import CapturedLog
+
+
+if TYPE_CHECKING:
+    from money_pit.graph.state import PipelineState
+
 
 _SLUG = "test-run"
 _KNOWN_CLAIM_ID = "claim_high_001"

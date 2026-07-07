@@ -33,8 +33,8 @@ def pinned_manifest(
 ) -> Mapping[str, dict[str, object]]:
     """Return the static pinned manifest mapping each write tool to the pinned Alpaca order schema.
 
-     Fails closed with `ManifestUnavailableError` if the pinned schema cannot be loaded.
-     """
+    Fails closed with `ManifestUnavailableError` if the pinned schema cannot be loaded.
+    """
     try:
         schema: dict[str, object] = load_order_schema(schema_path)
     except AlpacaOrderSchemaError as err:

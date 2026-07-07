@@ -41,7 +41,7 @@ def require_slug(state: PipelineState) -> str:
 
 
 def with_completed_step(state: PipelineState, step: str) -> list[str]:
-    return list(state.get("completed_steps") or []) + [step]
+    return [*list(state.get("completed_steps") or []), step]
 
 
 class PipelineNode(Protocol):

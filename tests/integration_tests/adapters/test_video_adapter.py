@@ -8,10 +8,14 @@ from typing import cast
 import pytest
 
 from money_pit.adapters.video import VideoAdapter
-from money_pit.adapters.video_llm import TranscriptSource, VideoPayload
-from money_pit.schemas.enums import ClaimCategory, SignalTier, SourceType
+from money_pit.adapters.video_llm import TranscriptSource
+from money_pit.adapters.video_llm import VideoPayload
+from money_pit.schemas.enums import ClaimCategory
+from money_pit.schemas.enums import SignalTier
+from money_pit.schemas.enums import SourceType
 from money_pit.schemas.provenance import SourceRef
-from money_pit.schemas.signal_draft import ClaimDraft, SignalSetDraft
+from money_pit.schemas.signal_draft import ClaimDraft
+from money_pit.schemas.signal_draft import SignalSetDraft
 from money_pit.schemas.signals import SignalSet
 
 
@@ -157,7 +161,7 @@ def persisted_payload_path(processed_signal_set: tuple[SignalSet, Path]) -> Path
 
 @pytest.fixture
 def persisted_source_ref(persisted_payload_path: Path) -> object:
-    parsed = cast(dict[str, object], json.loads(persisted_payload_path.read_text(encoding="utf-8")))
+    parsed = cast("dict[str, object]", json.loads(persisted_payload_path.read_text(encoding="utf-8")))
     return parsed["source_ref"]
 
 

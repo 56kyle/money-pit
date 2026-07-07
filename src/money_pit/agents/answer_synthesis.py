@@ -5,11 +5,11 @@ import json
 from pydantic_ai import Agent
 from pydantic_ai import RunContext
 
-from money_pit.prompt_loader import system_prompt
 from money_pit.agents.research_tools import OpenEndedResearchTools
 from money_pit.config import Config
 from money_pit.constants import ANTHROPIC_MODEL_PREFIX
 from money_pit.contracts import AnswerSynthesisAgent
+from money_pit.prompt_loader import system_prompt
 from money_pit.schemas.answer_draft import AnswerDraft
 from money_pit.schemas.enums import QuestionCategory
 from money_pit.schemas.provenance import SourceRef

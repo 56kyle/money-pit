@@ -1,6 +1,7 @@
 """Module containing the node factory that merges source SignalSets, corroborates claims, and writes AggregatedSignals for the money_pit package."""
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from money_pit.compute.aggregation import compute_run_actionable
 from money_pit.compute.aggregation import tier_max
@@ -14,12 +15,15 @@ from money_pit.graph.state import PipelineState
 from money_pit.graph.state import require_slug
 from money_pit.graph.state import require_working_dir
 from money_pit.graph.state import with_completed_step
-from money_pit.schemas.aggregation_draft import ClaimRelations
 from money_pit.schemas.enums import ClaimRelationType
 from money_pit.schemas.signals import AggregatedSignals
 from money_pit.schemas.signals import Claim
 from money_pit.schemas.signals import CorroborationEntry
 from money_pit.schemas.signals import SignalSet
+
+
+if TYPE_CHECKING:
+    from money_pit.schemas.aggregation_draft import ClaimRelations
 
 
 def _render_aggregated_md(aggregated: AggregatedSignals) -> str:

@@ -28,6 +28,7 @@ from money_pit.schemas.enums import RegimeTag
 from money_pit.schemas.enums import ValidationStatus
 from money_pit.schemas.validation_results import ValidationStep
 
+
 _SLUG = "2026-01-01_00-00-00"
 
 

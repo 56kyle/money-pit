@@ -4,7 +4,8 @@ import pytest
 from pydantic import ValidationError
 
 from money_pit.schemas.answer_draft import AnswerDraft
-from money_pit.schemas.enums import Confidence, DataSourceToken
+from money_pit.schemas.enums import Confidence
+from money_pit.schemas.enums import DataSourceToken
 
 
 def test_answer_draft_rejects_confidence_field() -> None:

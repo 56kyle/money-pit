@@ -49,13 +49,13 @@ def _to_position(raw: object) -> Position:
         raise NonEquityPositionError(
             f"Position {getattr(raw, 'symbol', '?')!r} is not a us_equity asset; the v0 snapshot is equities-only."
         )
-    ticker: str = str(getattr(raw, "symbol"))
+    ticker: str = str(raw.symbol)
     return Position(
         ticker=ticker,
-        quantity=float(getattr(raw, "qty")),
-        cost_basis=float(getattr(raw, "avg_entry_price")),
-        current_value=float(getattr(raw, "market_value")),
-        unrealized_pl=float(getattr(raw, "unrealized_pl")),
+        quantity=float(raw.qty),
+        cost_basis=float(raw.avg_entry_price),
+        current_value=float(raw.market_value),
+        unrealized_pl=float(raw.unrealized_pl),
         sector=_resolve_sector(ticker),
         factor_tags=[],
     )
@@ -81,13 +81,13 @@ def make_alpaca_portfolio_fetcher(credentials: AlpacaCredentials) -> PortfolioFe
 
     def fetch_portfolio(slug: str) -> PortfolioSnapshot:  # pragma: no cover
         account = client.get_account()  # pyright: ignore[reportUnknownMemberType]
-        total_account_value: float = float(getattr(account, "portfolio_value"))
+        total_account_value: float = float(account.portfolio_value)
         positions: list[Position] = [_to_position(raw) for raw in client.get_all_positions()]  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
         return PortfolioSnapshot(
             slug=slug,
             as_of=slug,
             total_account_value=total_account_value,
-            available_cash=float(getattr(account, "cash")),
+            available_cash=float(account.cash),
             positions=positions,
             sector_weights=_sector_weights(positions, total_account_value),
             correlated_overlaps=[],

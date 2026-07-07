@@ -3,7 +3,8 @@
 import pytest
 
 from money_pit.compute.confidence import derive_confidence
-from money_pit.schemas.enums import Confidence, DataSourceToken
+from money_pit.schemas.enums import Confidence
+from money_pit.schemas.enums import DataSourceToken
 
 
 @pytest.mark.parametrize(

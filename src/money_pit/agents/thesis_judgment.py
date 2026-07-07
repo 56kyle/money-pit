@@ -2,10 +2,10 @@
 
 from pydantic_ai import Agent
 
-from money_pit.prompt_loader import system_prompt
 from money_pit.config import Config
 from money_pit.constants import ANTHROPIC_MODEL_PREFIX
 from money_pit.contracts import ThesisAgent
+from money_pit.prompt_loader import system_prompt
 from money_pit.schemas.analysis_draft import AnalysisJudgment
 from money_pit.schemas.answers import InitialAnswers
 from money_pit.schemas.portfolio import PortfolioSnapshot

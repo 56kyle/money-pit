@@ -8,6 +8,7 @@ EmailSendError / CredentialResolutionError TYPES and concrete header values, nev
 import smtplib
 from collections.abc import Iterator
 from email.message import EmailMessage
+from typing import TYPE_CHECKING
 
 import pytest
 from pytest import FixtureRequest
@@ -15,11 +16,14 @@ from pytest import MonkeyPatch
 
 from money_pit.config import Config
 from money_pit.config import CredentialResolutionError
-from money_pit.contracts import EmailSender
 from money_pit.email_sender import EmailSendError
 from money_pit.email_sender import _build_message
 from money_pit.email_sender import make_gmail_email_sender
 from tests.unit_tests.conftest import InMemoryKeyring
+
+
+if TYPE_CHECKING:
+    from money_pit.contracts import EmailSender
 
 
 class _FakeSMTP:
@@ -83,7 +87,7 @@ def keyring_with_gmail_password(
 def sent_messages(monkeypatch: MonkeyPatch) -> Iterator[list[EmailMessage]]:
     sent: list[EmailMessage] = []
     monkeypatch.setattr(smtplib, "SMTP", lambda _host, _port: _FakeSMTP(sent))
-    yield sent
+    return sent
 
 
 @pytest.fixture

@@ -6,22 +6,27 @@ from pathlib import Path
 import pytest
 from pytest import FixtureRequest
 
-from tests.unit_tests.pipeline.conftest import CapturedLog
-
 from money_pit.agents.research_tools import DeterministicResearchTools
-from money_pit.pipeline.retrieval import (
-    _deterministic_answer,
-    _draft_to_answer,
-    _fetch_deterministic,
-    make_retrieval_node,
-)
+from money_pit.pipeline.retrieval import _deterministic_answer
+from money_pit.pipeline.retrieval import _draft_to_answer
+from money_pit.pipeline.retrieval import _fetch_deterministic
+from money_pit.pipeline.retrieval import make_retrieval_node
 from money_pit.schemas.answer_draft import AnswerDraft
 from money_pit.schemas.answers import InitialAnswers
-from money_pit.schemas.enums import Confidence, DataSourceToken, QuestionCategory, SourceType
-from money_pit.schemas.fetch_result import FetchError, FetchResult, FetchValue, NoData
+from money_pit.schemas.enums import Confidence
+from money_pit.schemas.enums import DataSourceToken
+from money_pit.schemas.enums import QuestionCategory
+from money_pit.schemas.enums import SourceType
+from money_pit.schemas.fetch_result import FetchError
+from money_pit.schemas.fetch_result import FetchResult
+from money_pit.schemas.fetch_result import FetchValue
+from money_pit.schemas.fetch_result import NoData
 from money_pit.schemas.provenance import SourceRef
-from money_pit.schemas.questions import InitialQuestions, Question, SignalSummary
+from money_pit.schemas.questions import InitialQuestions
+from money_pit.schemas.questions import Question
+from money_pit.schemas.questions import SignalSummary
 from money_pit.schemas.signals import AggregatedSignals
+from tests.unit_tests.pipeline.conftest import CapturedLog
 
 
 @pytest.fixture

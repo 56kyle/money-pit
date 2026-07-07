@@ -2,7 +2,8 @@
 
 import pytest
 
-from money_pit.adapters.video_llm import TranscriptSource, VideoPayload
+from money_pit.adapters.video_llm import TranscriptSource
+from money_pit.adapters.video_llm import VideoPayload
 from money_pit.schemas.enums import SourceType
 from money_pit.schemas.provenance import SourceRef
 

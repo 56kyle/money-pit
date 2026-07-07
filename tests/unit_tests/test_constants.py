@@ -7,6 +7,7 @@ from pytest import MonkeyPatch
 
 from money_pit import constants
 
+
 _FolderAccessor = Callable[[], Path]
 
 

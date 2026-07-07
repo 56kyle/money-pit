@@ -2,10 +2,15 @@
 
 from collections.abc import Callable
 
-from money_pit.compute.aggregation import compute_run_actionable, tier_max, union_claims
-from money_pit.schemas.enums import ClaimRelationType, SignalTier
+from money_pit.compute.aggregation import compute_run_actionable
+from money_pit.compute.aggregation import tier_max
+from money_pit.compute.aggregation import union_claims
+from money_pit.schemas.enums import ClaimRelationType
+from money_pit.schemas.enums import SignalTier
 from money_pit.schemas.provenance import SourceRef
-from money_pit.schemas.signals import Claim, CorroborationEntry, SignalSet
+from money_pit.schemas.signals import Claim
+from money_pit.schemas.signals import CorroborationEntry
+from money_pit.schemas.signals import SignalSet
 
 
 def _signal_set(

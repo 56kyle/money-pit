@@ -4,11 +4,6 @@ from pathlib import Path
 
 from loguru import logger
 
-from money_pit.schemas.fetch_result import FetchError
-from money_pit.schemas.fetch_result import FetchResult
-from money_pit.schemas.fetch_result import FetchValue
-from money_pit.schemas.fetch_result import NoData
-
 from money_pit.agents.research_tools import DeterministicResearchTools
 from money_pit.compute.confidence import derive_confidence
 from money_pit.constants import AGGREGATED_SIGNALS_JSON_FILENAME
@@ -26,6 +21,10 @@ from money_pit.schemas.answers import Answer
 from money_pit.schemas.answers import InitialAnswers
 from money_pit.schemas.enums import DataSourceToken
 from money_pit.schemas.enums import QuestionCategory
+from money_pit.schemas.fetch_result import FetchError
+from money_pit.schemas.fetch_result import FetchResult
+from money_pit.schemas.fetch_result import FetchValue
+from money_pit.schemas.fetch_result import NoData
 from money_pit.schemas.macro import MACRO_INDICATOR_SERIES
 from money_pit.schemas.provenance import SourceRef
 from money_pit.schemas.questions import INDICATOR_PREFIX

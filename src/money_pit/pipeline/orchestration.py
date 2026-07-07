@@ -445,5 +445,4 @@ def run_pipeline(
         "completed_steps": [],
     }
 
-    result = graph.invoke(initial_state)
-    return result  # pyright: ignore[reportReturnType]
+    return graph.invoke(initial_state)

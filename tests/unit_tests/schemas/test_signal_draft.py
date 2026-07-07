@@ -10,8 +10,11 @@ Pins the draft→node→contract boundary for A1:
 import pytest
 from pydantic import ValidationError
 
-from money_pit.schemas.enums import ClaimCategory, SignalTier, SourceType
-from money_pit.schemas.signal_draft import ClaimDraft, SignalSetDraft
+from money_pit.schemas.enums import ClaimCategory
+from money_pit.schemas.enums import SignalTier
+from money_pit.schemas.enums import SourceType
+from money_pit.schemas.signal_draft import ClaimDraft
+from money_pit.schemas.signal_draft import SignalSetDraft
 
 
 def _valid_claim_draft_kwargs() -> dict[str, object]:

@@ -17,35 +17,31 @@ from pytest import FixtureRequest
 
 from money_pit.compute.regime import classify_regime
 from money_pit.config import Config
-from money_pit.pipeline.analysis import (
-    _compute_headrooms,
-    _extract_macro_indicators,
-    _materialize_action_steps,
-    make_analysis_node,
-)
+from money_pit.pipeline.analysis import _compute_headrooms
+from money_pit.pipeline.analysis import _extract_macro_indicators
+from money_pit.pipeline.analysis import _materialize_action_steps
+from money_pit.pipeline.analysis import make_analysis_node
 from money_pit.schemas.action_steps import ActionStep
-from money_pit.schemas.analysis_draft import (
-    AnalysisHalt,
-    AnalysisJudgment,
-    DroppedClaim,
-    MacroIndicatorReading,
-    Scenario,
-    ScenarioTable,
-    ThesisJudgment,
-)
-from money_pit.schemas.answers import Answer, InitialAnswers
-from money_pit.schemas.enums import (
-    ActionType,
-    Confidence,
-    ConvictionLevel,
-    QuestionCategory,
-    RegimeTag,
-    Step1Disposition,
-    TerminalState,
-)
+from money_pit.schemas.analysis_draft import AnalysisHalt
+from money_pit.schemas.analysis_draft import AnalysisJudgment
+from money_pit.schemas.analysis_draft import DroppedClaim
+from money_pit.schemas.analysis_draft import MacroIndicatorReading
+from money_pit.schemas.analysis_draft import Scenario
+from money_pit.schemas.analysis_draft import ScenarioTable
+from money_pit.schemas.analysis_draft import ThesisJudgment
+from money_pit.schemas.answers import Answer
+from money_pit.schemas.answers import InitialAnswers
+from money_pit.schemas.enums import ActionType
+from money_pit.schemas.enums import Confidence
+from money_pit.schemas.enums import ConvictionLevel
+from money_pit.schemas.enums import QuestionCategory
+from money_pit.schemas.enums import RegimeTag
+from money_pit.schemas.enums import Step1Disposition
+from money_pit.schemas.enums import TerminalState
 from money_pit.schemas.portfolio import PortfolioSnapshot
 from money_pit.schemas.questions import INDICATOR_PREFIX
 from money_pit.schemas.signals import AggregatedSignals
+
 
 _SLUG = "test-run"
 _ACTION_STEPS_ADAPTER: TypeAdapter[list[ActionStep]] = TypeAdapter(list[ActionStep])

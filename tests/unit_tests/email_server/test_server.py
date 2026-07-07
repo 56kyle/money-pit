@@ -56,7 +56,7 @@ def configured_env(monkeypatch: MonkeyPatch) -> None:
 def sent_messages(monkeypatch: MonkeyPatch) -> Iterator[list[EmailMessage]]:
     sent: list[EmailMessage] = []
     monkeypatch.setattr(smtplib, "SMTP", lambda _host, _port: _FakeSMTP(sent))
-    yield sent
+    return sent
 
 
 @pytest.fixture

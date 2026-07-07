@@ -2,10 +2,12 @@
 
 import pytest
 
-from money_pit.compute.regime import classify_regime, discretize
+from money_pit.compute.regime import classify_regime
+from money_pit.compute.regime import discretize
 from money_pit.config import Config
 from money_pit.schemas.enums import RegimeTag
 from money_pit.schemas.macro import MacroIndicators
+
 
 @pytest.fixture
 def stub_config() -> Config:
@@ -51,7 +53,7 @@ def test_discretize_with_value_at_threshold() -> None:
 
 
 @pytest.mark.parametrize(
-    "value,expected",
+    ("value", "expected"),
     [
         (0.6, 1),
         (0.5, 0),

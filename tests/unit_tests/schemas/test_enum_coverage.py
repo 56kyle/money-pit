@@ -2,28 +2,26 @@
 
 import pytest
 
-from money_pit.schemas.enums import (
-    ActionType,
-    ClaimCategory,
-    ClaimRelationType,
-    Confidence,
-    ConvictionLevel,
-    DataSourceToken,
-    Determination,
-    ExecutionOutcome,
-    ExecutionPhase,
-    FactorTag,
-    QuestionCategory,
-    RegimeTag,
-    SignalTier,
-    SourceType,
-    TerminalState,
-    ValidationStatus,
-)
+from money_pit.schemas.enums import ActionType
+from money_pit.schemas.enums import ClaimCategory
+from money_pit.schemas.enums import ClaimRelationType
+from money_pit.schemas.enums import Confidence
+from money_pit.schemas.enums import ConvictionLevel
+from money_pit.schemas.enums import DataSourceToken
+from money_pit.schemas.enums import Determination
+from money_pit.schemas.enums import ExecutionOutcome
+from money_pit.schemas.enums import ExecutionPhase
+from money_pit.schemas.enums import FactorTag
+from money_pit.schemas.enums import QuestionCategory
+from money_pit.schemas.enums import RegimeTag
+from money_pit.schemas.enums import SignalTier
+from money_pit.schemas.enums import SourceType
+from money_pit.schemas.enums import TerminalState
+from money_pit.schemas.enums import ValidationStatus
 
 
 @pytest.mark.parametrize(
-    "enum_cls, expected_values",
+    ("enum_cls", "expected_values"),
     [
         (SourceType, {"narrated_video", "newsletter", "rss", "research_pdf", "manual_note"}),
         (ClaimRelationType, {"agree", "disagree"}),

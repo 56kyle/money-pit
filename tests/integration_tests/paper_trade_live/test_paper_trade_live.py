@@ -6,19 +6,23 @@ or moving capital. Run explicitly with, e.g., `nox -s tests-python -- -m live` a
 """
 
 import os
+from typing import TYPE_CHECKING
 
 import pytest
 
 from money_pit.alpaca_portfolio import make_alpaca_portfolio_fetcher
 from money_pit.config import AlpacaCredentials
 from money_pit.config import Config
-from money_pit.contracts import EmailSender
-from money_pit.contracts import PortfolioFetcher
 from money_pit.email_sender import make_gmail_email_sender
 from money_pit.mcp.clients import list_write_tools
 from money_pit.mcp.constants import PLACE_STOCK_ORDER_TOOL
 from money_pit.mcp.manifest import live_manifest
 from money_pit.schemas.portfolio import PortfolioSnapshot
+
+
+if TYPE_CHECKING:
+    from money_pit.contracts import EmailSender
+    from money_pit.contracts import PortfolioFetcher
 
 
 pytestmark = [

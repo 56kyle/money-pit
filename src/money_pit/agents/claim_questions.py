@@ -1,16 +1,20 @@
 """Module containing the A2 LLM core for claim-specific thesis-validation and invalidation questions in the money_pit package."""
 
 import json
+from typing import TYPE_CHECKING
 
 from pydantic_ai import Agent
-from pydantic_ai.agent import AbstractAgent
 
-from money_pit.prompt_loader import system_prompt
 from money_pit.config import Config
 from money_pit.constants import ANTHROPIC_MODEL_PREFIX
 from money_pit.contracts import ClaimQuestionsAgent
+from money_pit.prompt_loader import system_prompt
 from money_pit.schemas.question_draft import DraftQuestion
 from money_pit.schemas.signals import Claim
+
+
+if TYPE_CHECKING:
+    from pydantic_ai.agent import AbstractAgent
 
 
 _PROMPT_NAME: str = "agent_2"

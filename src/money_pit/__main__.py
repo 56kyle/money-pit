@@ -1,9 +1,9 @@
 """Command-line interface."""
 
 import json
+from typing import TYPE_CHECKING
 
 import typer
-from mcp.types import Tool
 
 from money_pit.config import AlpacaCredentials
 from money_pit.config import CredentialResolutionError
@@ -14,6 +14,10 @@ from money_pit.mcp.clients import list_write_tools
 from money_pit.mcp.constants import PLACE_STOCK_ORDER_TOOL
 from money_pit.mcp.order_schema import ALPACA_ORDER_SCHEMA_PATH
 from money_pit.mcp.order_schema import ALPACA_ORDER_SCHEMA_STUB_SENTINEL
+
+
+if TYPE_CHECKING:
+    from mcp.types import Tool
 
 
 app: typer.Typer = typer.Typer()

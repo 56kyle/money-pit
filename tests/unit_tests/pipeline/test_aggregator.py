@@ -15,11 +15,19 @@ import pytest
 
 from money_pit.compute.aggregation import compute_run_actionable
 from money_pit.constants import SIGNALS_DIRNAME
-from money_pit.pipeline.aggregator import _corroborate_claims, _load_signal_sets, make_aggregator_node
+from money_pit.pipeline.aggregator import _corroborate_claims
+from money_pit.pipeline.aggregator import _load_signal_sets
+from money_pit.pipeline.aggregator import make_aggregator_node
 from money_pit.schemas.aggregation_draft import ClaimRelations
-from money_pit.schemas.enums import ClaimCategory, ClaimRelationType, SignalTier, SourceType
+from money_pit.schemas.enums import ClaimCategory
+from money_pit.schemas.enums import ClaimRelationType
+from money_pit.schemas.enums import SignalTier
+from money_pit.schemas.enums import SourceType
 from money_pit.schemas.provenance import SourceRef
-from money_pit.schemas.signals import AggregatedSignals, Claim, SignalSet
+from money_pit.schemas.signals import AggregatedSignals
+from money_pit.schemas.signals import Claim
+from money_pit.schemas.signals import SignalSet
+
 
 _SLUG = "test-run"
 

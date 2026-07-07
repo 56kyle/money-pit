@@ -4,7 +4,9 @@ from collections.abc import Callable
 
 import pytest
 
-from money_pit.schemas.enums import ClaimCategory, SignalTier, SourceType
+from money_pit.schemas.enums import ClaimCategory
+from money_pit.schemas.enums import SignalTier
+from money_pit.schemas.enums import SourceType
 from money_pit.schemas.provenance import SourceRef
 from money_pit.schemas.signals import Claim
 

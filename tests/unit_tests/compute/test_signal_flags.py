@@ -4,18 +4,16 @@ from collections.abc import Callable
 
 import pytest
 
-from money_pit.compute.signal_flags import (
-    count_by_tier,
-    has_actionable_content,
-    normalize_ticker,
-    requires_validation,
-)
+from money_pit.compute.signal_flags import count_by_tier
+from money_pit.compute.signal_flags import has_actionable_content
+from money_pit.compute.signal_flags import normalize_ticker
+from money_pit.compute.signal_flags import requires_validation
 from money_pit.schemas.enums import SignalTier
 from money_pit.schemas.signals import Claim
 
 
 @pytest.mark.parametrize(
-    "tier,expected",
+    ("tier", "expected"),
     [
         (SignalTier.HIGH, True),
         (SignalTier.MEDIUM, True),
@@ -45,7 +43,7 @@ def test_has_actionable_content_with_only_low_claims(
 
 
 @pytest.mark.parametrize(
-    "raw,expected",
+    ("raw", "expected"),
     [
         ("aapl", "AAPL"),
         ("NVDA ", "NVDA"),

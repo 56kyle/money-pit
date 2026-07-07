@@ -1,10 +1,12 @@
 """Shared fixtures for pipeline unit tests."""
 
 from collections.abc import Iterator
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING
+from typing import NamedTuple
 
 import pytest
 from loguru import logger
+
 
 if TYPE_CHECKING:
     from loguru import Message

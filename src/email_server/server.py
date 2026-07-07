@@ -23,6 +23,8 @@ class EmailServerConfigError(Exception):
     """Raised when a required SMTP environment variable is unset."""
 
 
+SENT_CONFIRMATION_TEMPLATE: str = "Sent email to {to}."
+
 mcp: FastMCP = FastMCP("money-pit email")
 
 
@@ -71,7 +73,7 @@ def _send(to: str, subject: str, body: str) -> None:
 def send_email(to: str, subject: str, body: str) -> str:
     """Send an email and return a short confirmation string, raising EmailServerConfigError on bad config and EmailSendError on transport failure."""
     _send(to, subject, body)
-    return f"Sent email to {to}."
+    return SENT_CONFIRMATION_TEMPLATE.format(to=to)
 
 
 if __name__ == "__main__":

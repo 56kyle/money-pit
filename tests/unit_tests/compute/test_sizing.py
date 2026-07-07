@@ -97,10 +97,6 @@ def max_position_weight_result(stub_config: Config) -> float | None:
     )
 
 
-def test_size_position_respects_max_position_weight_returns_value(max_position_weight_result: float | None) -> None:
-    assert max_position_weight_result is not None
-
-
 def test_size_position_respects_max_position_weight_within_cap(
     max_position_weight_result: float | None, stub_config: Config
 ) -> None:
@@ -119,14 +115,6 @@ def haircut_results(stub_config: Config) -> tuple[float | None, float | None]:
         scenarios, _TOTAL_ACCOUNT_VALUE, stub_config, False, False, _LARGE_HEADROOM, _LARGE_HEADROOM, _LARGE_HEADROOM
     )
     return verified_result, unverified_result
-
-
-def test_size_position_haircut_reduces_unverified_produces_values(
-    haircut_results: tuple[float | None, float | None],
-) -> None:
-    verified_result, unverified_result = haircut_results
-    assert verified_result is not None
-    assert unverified_result is not None
 
 
 def test_size_position_haircut_reduces_unverified(haircut_results: tuple[float | None, float | None]) -> None:
@@ -157,14 +145,6 @@ def monotonic_in_ev_results() -> tuple[float | None, float | None]:
         high_ev_scenarios, _TOTAL_ACCOUNT_VALUE, config, True, False, _LARGE_HEADROOM, _LARGE_HEADROOM, _LARGE_HEADROOM
     )
     return low_result, high_result
-
-
-def test_size_position_monotonic_in_ev_produces_values(
-    monotonic_in_ev_results: tuple[float | None, float | None],
-) -> None:
-    low_result, high_result = monotonic_in_ev_results
-    assert low_result is not None
-    assert high_result is not None
 
 
 def test_size_position_monotonic_in_ev(monotonic_in_ev_results: tuple[float | None, float | None]) -> None:
@@ -212,14 +192,6 @@ def variance_results(stub_config: Config) -> tuple[float | None, float | None]:
         _LARGE_HEADROOM,
     )
     return low_var_result, high_var_result
-
-
-def test_size_position_monotonic_decreasing_in_variance_produces_values(
-    variance_results: tuple[float | None, float | None],
-) -> None:
-    low_var_result, high_var_result = variance_results
-    assert low_var_result is not None
-    assert high_var_result is not None
 
 
 def test_size_position_monotonic_decreasing_in_variance(

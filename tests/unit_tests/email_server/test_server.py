@@ -13,6 +13,7 @@ from email.message import EmailMessage
 import pytest
 from pytest import MonkeyPatch
 
+from email_server.server import SENT_CONFIRMATION_TEMPLATE
 from email_server.server import EmailSendError
 from email_server.server import EmailServerConfigError
 from email_server.server import _env_port
@@ -68,7 +69,7 @@ _RECIPIENT: str = "owner@example.com"
 _SUBJECT: str = "the subject"
 _BODY: str = "the body"
 _SENDER_ADDRESS: str = "sender@gmail.com"
-_EXPECTED_CONFIRMATION: str = f"Sent email to {_RECIPIENT}."
+_EXPECTED_CONFIRMATION: str = SENT_CONFIRMATION_TEMPLATE.format(to=_RECIPIENT)
 
 
 @pytest.fixture

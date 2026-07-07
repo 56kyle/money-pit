@@ -19,6 +19,7 @@ import pytest
 from pytest import FixtureRequest
 
 from money_pit.compute.routing import CATEGORY_TO_TOOLS
+from money_pit.pipeline.questions import _A2_AGENT_FAILURE_LOG
 from money_pit.pipeline.questions import _draft_to_question
 from money_pit.pipeline.questions import make_questions_node
 from money_pit.schemas.enums import ClaimCategory
@@ -41,7 +42,6 @@ if TYPE_CHECKING:
 _SLUG = "test-run"
 _KNOWN_CLAIM_ID = "claim_high_001"
 _UNKNOWN_CLAIM_ID = "claim_unknown_999"
-_AGENT_FAILURE_LOG_FRAGMENT = "A2 claim questions agent failed"
 
 
 def _source_ref() -> SourceRef:
@@ -219,5 +219,5 @@ def test_make_questions_node_with_failing_agent_logs_failure_loudly(
     _ = node({"slug": _SLUG, "working_dir": str(questions_working_dir)})
 
     assert any(
-        record.level == "ERROR" and _AGENT_FAILURE_LOG_FRAGMENT in record.message for record in loguru_records
+        record.level == "ERROR" and record.message == _A2_AGENT_FAILURE_LOG for record in loguru_records
     )

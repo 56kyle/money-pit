@@ -33,6 +33,8 @@ from money_pit.schemas.signals import Claim
 
 _CLAIM_SUMMARY_MAX_LEN: int = 80
 
+_A2_AGENT_FAILURE_LOG: str = "A2 claim questions agent failed; proceeding with no LLM-authored questions"
+
 _MACRO_QUESTION_TEXT: dict[str, tuple[str, str]] = {
     "yield_curve": (
         "What is the current T10Y2Y 10-year minus 2-year Treasury yield spread in percentage points?",
@@ -218,7 +220,7 @@ def _make_llm_questions(
     try:
         drafts: list[DraftQuestion] = claim_questions_agent(high_medium_claims)
     except Exception:
-        logger.exception("A2 claim questions agent failed; proceeding with no LLM-authored questions")
+        logger.exception(_A2_AGENT_FAILURE_LOG)
         drafts = []
 
     claims_by_id: dict[str, Claim] = {c.claim_id: c for c in high_medium_claims}

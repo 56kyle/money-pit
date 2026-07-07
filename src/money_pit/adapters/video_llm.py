@@ -2,13 +2,13 @@
 
 from collections.abc import Callable
 from enum import Enum
-from pathlib import Path
 from typing import ClassVar
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic_ai import Agent
 
+from money_pit.prompt_loader import system_prompt
 from money_pit.config import Config
 from money_pit.constants import ANTHROPIC_MODEL_PREFIX
 from money_pit.schemas.provenance import SourceRef
@@ -36,8 +36,7 @@ class VideoPayload(BaseModel):
     on_screen_text: list[str]  # wired in Phase 7 when OCR/VLM keyframe extraction runs
 
 
-_PROMPT_PATH: Path = Path(__file__).parent.parent.parent.parent / "data" / "agents" / "agent_1.md"
-_SYSTEM_PROMPT: str = _PROMPT_PATH.read_text(encoding="utf-8")
+_PROMPT_NAME: str = "agent_1"
 
 
 def _build_user_message(payload: VideoPayload) -> str:
@@ -61,7 +60,7 @@ def make_video_llm_agent(
     agent: Agent[None, SignalSetDraft] = Agent(
         f"{ANTHROPIC_MODEL_PREFIX}{model or config.llm_model}",
         output_type=SignalSetDraft,
-        system_prompt=_SYSTEM_PROMPT,
+        system_prompt=system_prompt(_PROMPT_NAME),
     )
 
     def run(payload: VideoPayload) -> SignalSetDraft:

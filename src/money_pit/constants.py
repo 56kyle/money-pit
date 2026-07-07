@@ -14,11 +14,27 @@ APP_NAME: str = "money_pit"
 APP_AUTHOR: str = "56kyle"
 APP_START_TIME: datetime.datetime = datetime.datetime.now(tz=datetime.timezone.utc)
 
-USER_CONFIG_FOLDER: Path = user_config_path(appname=APP_NAME, appauthor=APP_AUTHOR, ensure_exists=True)
-USER_STATE_FOLDER: Path = user_state_path(appname=APP_NAME, appauthor=APP_AUTHOR, ensure_exists=True)
-USER_LOG_FOLDER: Path = user_log_path(appname=APP_NAME, appauthor=APP_AUTHOR, ensure_exists=True)
+_CONFIG_FILENAME: str = ".env"
 
-DEFAULT_CONFIG_PATH: Path = USER_CONFIG_FOLDER / ".env"
+
+def user_config_folder() -> Path:
+    """Return the per-user config folder, creating it on each call."""
+    return user_config_path(appname=APP_NAME, appauthor=APP_AUTHOR, ensure_exists=True)
+
+
+def user_state_folder() -> Path:
+    """Return the per-user state folder, creating it on each call."""
+    return user_state_path(appname=APP_NAME, appauthor=APP_AUTHOR, ensure_exists=True)
+
+
+def user_log_folder() -> Path:
+    """Return the per-user log folder, creating it on each call."""
+    return user_log_path(appname=APP_NAME, appauthor=APP_AUTHOR, ensure_exists=True)
+
+
+def default_config_path() -> Path:
+    """Return the default per-user config file path, creating its parent folder on each call."""
+    return user_config_folder() / _CONFIG_FILENAME
 
 ANTHROPIC_MODEL_PREFIX: str = "anthropic:"
 

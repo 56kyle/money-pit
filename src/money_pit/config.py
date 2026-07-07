@@ -11,10 +11,10 @@ from pydantic import ValidationError
 from pydantic_settings import BaseSettings
 from pydantic_settings import SettingsConfigDict
 
-from money_pit.constants import DEFAULT_CONFIG_PATH
 from money_pit.constants import DEFAULT_SMTP_HOST
 from money_pit.constants import DEFAULT_SMTP_PORT
 from money_pit.constants import GMAIL_KEYRING_SERVICE
+from money_pit.constants import default_config_path
 
 
 ENV_PREFIX: str = "MONEY_PIT__"
@@ -81,9 +81,10 @@ def _missing_required_env_vars(error: ValidationError) -> list[str]:
     ]
 
 
-def load_config(path: Path = DEFAULT_CONFIG_PATH) -> Config:
+def load_config(path: Path | None = None) -> Config:
     """Load a fresh, frozen Config, raising CredentialResolutionError on a missing required var and propagating pydantic.ValidationError on a mistyped one."""
-    _ = load_dotenv(path)
+    resolved_path: Path = path or default_config_path()
+    _ = load_dotenv(resolved_path)
     try:
         return Config()
     except ValidationError as error:

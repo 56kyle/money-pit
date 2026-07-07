@@ -1,9 +1,8 @@
 """A4 LLM core: claim disposition, thesis narratives, scenario estimates, invalidation conditions → AnalysisJudgment."""
 
-from pathlib import Path
-
 from pydantic_ai import Agent
 
+from money_pit.prompt_loader import system_prompt
 from money_pit.config import Config
 from money_pit.constants import ANTHROPIC_MODEL_PREFIX
 from money_pit.contracts import ThesisAgent
@@ -13,8 +12,7 @@ from money_pit.schemas.portfolio import PortfolioSnapshot
 from money_pit.schemas.signals import AggregatedSignals
 
 
-_PROMPT_PATH: Path = Path(__file__).parent.parent.parent.parent / "data" / "agents" / "agent_4.md"
-_SYSTEM_PROMPT: str = _PROMPT_PATH.read_text(encoding="utf-8")
+_PROMPT_NAME: str = "agent_4"
 
 
 def make_thesis_judgment_agent(
@@ -27,7 +25,7 @@ def make_thesis_judgment_agent(
     agent: Agent[None, AnalysisJudgment] = Agent(
         model=resolved_model,
         output_type=AnalysisJudgment,
-        system_prompt=_SYSTEM_PROMPT,
+        system_prompt=system_prompt(_PROMPT_NAME),
         defer_model_check=False,
     )
 

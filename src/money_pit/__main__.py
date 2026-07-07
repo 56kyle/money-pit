@@ -9,6 +9,7 @@ from money_pit.config import AlpacaCredentials
 from money_pit.config import CredentialResolutionError
 from money_pit.config import load_config
 from money_pit.config import resolve_alpaca_credentials
+from money_pit.log import configure_file_logging
 from money_pit.mcp.clients import list_write_tools
 from money_pit.mcp.constants import PLACE_STOCK_ORDER_TOOL
 from money_pit.mcp.order_schema import ALPACA_ORDER_SCHEMA_PATH
@@ -16,6 +17,12 @@ from money_pit.mcp.order_schema import ALPACA_ORDER_SCHEMA_STUB_SENTINEL
 
 
 app: typer.Typer = typer.Typer()
+
+
+@app.callback()
+def _configure() -> None:
+    """Configure process-wide file logging before any command runs."""
+    _ = configure_file_logging()
 
 
 @app.command(name="money-pit")

@@ -116,6 +116,9 @@ explicit = true
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools.package-data]
+"money_pit.prompts" = ["*.md"]
+
 [tool.pytest.ini_options]
 addopts = "-m 'not live'"
 markers = [

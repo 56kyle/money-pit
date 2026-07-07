@@ -64,7 +64,7 @@ select = [
     "TC",
     "W"
 ]
-ignore = ["E203", "E501"]
+ignore = ["E203", "E501", "PT013"]
 
 
 # Allow fix for all enabled rules (when `--fix`) is provided.

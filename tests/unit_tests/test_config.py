@@ -189,19 +189,25 @@ def test_load_config_with_env_override(tmp_path: Path, monkeypatch: MonkeyPatch)
     assert config.llm_model == "override-model"
 
 
-def test_Config_with_defaults() -> None:
+@pytest.mark.parametrize(
+    ("field_name", "expected_default"),
+    [
+        ("llm_model", "claude-sonnet-5"),
+        ("gmail_address", None),
+        ("gmail_service", GMAIL_KEYRING_SERVICE),
+        ("owner_recipient", DEFAULT_OWNER_RECIPIENT),
+        ("smtp_host", DEFAULT_SMTP_HOST),
+        ("smtp_port", DEFAULT_SMTP_PORT),
+        ("regime_lookback", 60),
+        ("kelly_fraction", 0.25),
+        ("fred_api_key", None),
+        ("brave_api_key", None),
+    ],
+)
+def test_Config_with_defaults(field_name: str, expected_default: object) -> None:
     config: Config = Config(alpaca_service="alpaca-paper", alpaca_username="alpaca-api-key")
 
-    assert config.llm_model == "claude-sonnet-5"
-    assert config.gmail_address is None
-    assert config.gmail_service == GMAIL_KEYRING_SERVICE
-    assert config.owner_recipient == DEFAULT_OWNER_RECIPIENT
-    assert config.smtp_host == DEFAULT_SMTP_HOST
-    assert config.smtp_port == DEFAULT_SMTP_PORT
-    assert config.regime_lookback == 60
-    assert config.kelly_fraction == 0.25
-    assert config.fred_api_key is None
-    assert config.brave_api_key is None
+    assert getattr(config, field_name) == expected_default
 
 
 def test_Config_with_secret_fields() -> None:

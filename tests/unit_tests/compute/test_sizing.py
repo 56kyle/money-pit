@@ -10,9 +10,13 @@ from money_pit.compute.sizing import solve_kelly
 from money_pit.config import Config
 
 
-_STUB_CONFIG = Config(alpaca_service="stub", alpaca_username="stub")
 _TOTAL_ACCOUNT_VALUE: float = 100_000.0
 _LARGE_HEADROOM: float = 1_000_000.0
+
+
+@pytest.fixture
+def stub_config() -> Config:
+    return Config(alpaca_service="stub", alpaca_username="stub")
 
 
 @pytest.mark.parametrize(
@@ -68,10 +72,10 @@ def test_solve_kelly_monotonic_in_ev() -> None:
     assert solve_kelly(low_ev_scenarios) < solve_kelly(high_ev_scenarios)
 
 
-def test_size_position_with_ev_below_gate() -> None:
+def test_size_position_with_ev_below_gate(stub_config: Config) -> None:
     scenarios: list[tuple[float, float]] = [(0.6, 0.01), (0.4, -0.005)]
     result = size_position(
-        scenarios, _TOTAL_ACCOUNT_VALUE, _STUB_CONFIG, True, False, _LARGE_HEADROOM, _LARGE_HEADROOM, _LARGE_HEADROOM
+        scenarios, _TOTAL_ACCOUNT_VALUE, stub_config, True, False, _LARGE_HEADROOM, _LARGE_HEADROOM, _LARGE_HEADROOM
     )
     assert result is None
 
@@ -85,38 +89,63 @@ def test_size_position_with_zero_kelly_fraction() -> None:
     assert result is None
 
 
-def test_size_position_respects_max_position_weight() -> None:
+@pytest.fixture
+def max_position_weight_result(stub_config: Config) -> float | None:
     scenarios: list[tuple[float, float]] = [(0.9, 1.0), (0.1, -0.05)]
-    result = size_position(
-        scenarios, _TOTAL_ACCOUNT_VALUE, _STUB_CONFIG, True, False, _LARGE_HEADROOM, _LARGE_HEADROOM, _LARGE_HEADROOM
+    return size_position(
+        scenarios, _TOTAL_ACCOUNT_VALUE, stub_config, True, False, _LARGE_HEADROOM, _LARGE_HEADROOM, _LARGE_HEADROOM
     )
-    assert result is not None
-    assert result <= _STUB_CONFIG.max_position_weight * _TOTAL_ACCOUNT_VALUE
 
 
-def test_size_position_haircut_reduces_unverified() -> None:
+def test_size_position_respects_max_position_weight_returns_value(max_position_weight_result: float | None) -> None:
+    assert max_position_weight_result is not None
+
+
+def test_size_position_respects_max_position_weight_within_cap(
+    max_position_weight_result: float | None, stub_config: Config
+) -> None:
+    assert max_position_weight_result is not None
+    assert max_position_weight_result <= stub_config.max_position_weight * _TOTAL_ACCOUNT_VALUE
+
+
+@pytest.fixture
+def haircut_results(stub_config: Config) -> tuple[float | None, float | None]:
     # Analytical f*=2/3: verified w=0.25*(2/3)=0.167>cap → $10k; unverified w=0.25*0.5*(2/3)=0.083<cap → $8333
     scenarios: list[tuple[float, float]] = [(0.8, 0.15), (0.2, -0.40)]
     verified_result = size_position(
-        scenarios, _TOTAL_ACCOUNT_VALUE, _STUB_CONFIG, True, False, _LARGE_HEADROOM, _LARGE_HEADROOM, _LARGE_HEADROOM
+        scenarios, _TOTAL_ACCOUNT_VALUE, stub_config, True, False, _LARGE_HEADROOM, _LARGE_HEADROOM, _LARGE_HEADROOM
     )
     unverified_result = size_position(
-        scenarios, _TOTAL_ACCOUNT_VALUE, _STUB_CONFIG, False, False, _LARGE_HEADROOM, _LARGE_HEADROOM, _LARGE_HEADROOM
+        scenarios, _TOTAL_ACCOUNT_VALUE, stub_config, False, False, _LARGE_HEADROOM, _LARGE_HEADROOM, _LARGE_HEADROOM
     )
+    return verified_result, unverified_result
+
+
+def test_size_position_haircut_reduces_unverified_produces_values(
+    haircut_results: tuple[float | None, float | None],
+) -> None:
+    verified_result, unverified_result = haircut_results
+    assert verified_result is not None
+    assert unverified_result is not None
+
+
+def test_size_position_haircut_reduces_unverified(haircut_results: tuple[float | None, float | None]) -> None:
+    verified_result, unverified_result = haircut_results
     assert verified_result is not None
     assert unverified_result is not None
     assert unverified_result < verified_result
 
 
-def test_size_position_clamped_by_sector_headroom() -> None:
+def test_size_position_clamped_by_sector_headroom(stub_config: Config) -> None:
     scenarios: list[tuple[float, float]] = [(0.7, 0.20), (0.3, -0.05)]
     result = size_position(
-        scenarios, _TOTAL_ACCOUNT_VALUE, _STUB_CONFIG, True, False, 100.0, _LARGE_HEADROOM, _LARGE_HEADROOM
+        scenarios, _TOTAL_ACCOUNT_VALUE, stub_config, True, False, 100.0, _LARGE_HEADROOM, _LARGE_HEADROOM
     )
     assert result == pytest.approx(100.0)
 
 
-def test_size_position_monotonic_in_ev() -> None:
+@pytest.fixture
+def monotonic_in_ev_results() -> tuple[float | None, float | None]:
     # max_position_weight=1.0 prevents both scenarios from hitting the same cap
     config = Config(alpaca_service="stub", alpaca_username="stub", max_position_weight=1.0)
     low_ev_scenarios: list[tuple[float, float]] = [(0.5, 0.30), (0.5, -0.20)]
@@ -127,12 +156,26 @@ def test_size_position_monotonic_in_ev() -> None:
     high_result = size_position(
         high_ev_scenarios, _TOTAL_ACCOUNT_VALUE, config, True, False, _LARGE_HEADROOM, _LARGE_HEADROOM, _LARGE_HEADROOM
     )
+    return low_result, high_result
+
+
+def test_size_position_monotonic_in_ev_produces_values(
+    monotonic_in_ev_results: tuple[float | None, float | None],
+) -> None:
+    low_result, high_result = monotonic_in_ev_results
+    assert low_result is not None
+    assert high_result is not None
+
+
+def test_size_position_monotonic_in_ev(monotonic_in_ev_results: tuple[float | None, float | None]) -> None:
+    low_result, high_result = monotonic_in_ev_results
     assert low_result is not None
     assert high_result is not None
     assert low_result < high_result
 
 
-def test_size_position_monotonic_decreasing_in_variance() -> None:
+@pytest.fixture
+def variance_results(stub_config: Config) -> tuple[float | None, float | None]:
     # Same EV=0.05, p_bull=0.6, p_bear=0.4; increasing |r_bear| raises variance
     # low variance: r_bear=-0.30 → Kelly caps at max_position_weight → larger position
     # high variance: r_bear=-0.60 → Kelly~0.172 → smaller position, below cap
@@ -151,7 +194,7 @@ def test_size_position_monotonic_decreasing_in_variance() -> None:
     low_var_result = size_position(
         low_var_scenarios,
         _TOTAL_ACCOUNT_VALUE,
-        _STUB_CONFIG,
+        stub_config,
         True,
         False,
         _LARGE_HEADROOM,
@@ -161,14 +204,28 @@ def test_size_position_monotonic_decreasing_in_variance() -> None:
     high_var_result = size_position(
         high_var_scenarios,
         _TOTAL_ACCOUNT_VALUE,
-        _STUB_CONFIG,
+        stub_config,
         True,
         False,
         _LARGE_HEADROOM,
         _LARGE_HEADROOM,
         _LARGE_HEADROOM,
     )
+    return low_var_result, high_var_result
 
+
+def test_size_position_monotonic_decreasing_in_variance_produces_values(
+    variance_results: tuple[float | None, float | None],
+) -> None:
+    low_var_result, high_var_result = variance_results
+    assert low_var_result is not None
+    assert high_var_result is not None
+
+
+def test_size_position_monotonic_decreasing_in_variance(
+    variance_results: tuple[float | None, float | None],
+) -> None:
+    low_var_result, high_var_result = variance_results
     assert low_var_result is not None
     assert high_var_result is not None
     assert low_var_result > high_var_result

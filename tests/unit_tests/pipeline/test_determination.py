@@ -13,8 +13,8 @@ Assertions target Determination / TerminalState / literal return values and exce
 never message text.
 """
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import pytest
 

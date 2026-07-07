@@ -17,6 +17,8 @@ from pathlib import Path
 import pytest
 from pytest import FixtureRequest
 
+from tests.unit_tests.pipeline.conftest import CapturedLog
+
 from money_pit.compute.routing import CATEGORY_TO_TOOLS
 from money_pit.graph.state import PipelineState
 from money_pit.pipeline.questions import _draft_to_question, make_questions_node
@@ -35,6 +37,7 @@ from money_pit.schemas.signals import AggregatedSignals, Claim
 _SLUG = "test-run"
 _KNOWN_CLAIM_ID = "claim_high_001"
 _UNKNOWN_CLAIM_ID = "claim_unknown_999"
+_AGENT_FAILURE_LOG_FRAGMENT = "A2 claim questions agent failed"
 
 
 def _source_ref() -> SourceRef:
@@ -202,13 +205,15 @@ def raising_claim_questions_agent() -> Callable[[list[Claim]], list[DraftQuestio
     return _agent
 
 
-def test_make_questions_node_with_failing_agent_warns(
+def test_make_questions_node_with_failing_agent_logs_failure_loudly(
     questions_working_dir: Path,
     raising_claim_questions_agent: Callable[[list[Claim]], list[DraftQuestion]],
-    loguru_warnings: list[str],
+    loguru_records: list[CapturedLog],
 ) -> None:
     node = make_questions_node(raising_claim_questions_agent)
 
     _ = node({"slug": _SLUG, "working_dir": str(questions_working_dir)})
 
-    assert loguru_warnings
+    assert any(
+        record.level == "ERROR" and _AGENT_FAILURE_LOG_FRAGMENT in record.message for record in loguru_records
+    )

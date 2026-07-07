@@ -99,16 +99,29 @@ def test__build_message_sets_headers() -> None:
     assert message["Subject"] == "the subject"
 
 
-def test_send_email_with_success(
+_REPORT_SUBJECT: str = "Daily report"
+_REPORT_BODY: str = "All positions nominal."
+
+
+@pytest.fixture
+def sent_report(
     config: Config, keyring_with_gmail_password: InMemoryKeyring, sent_messages: list[EmailMessage]
-) -> None:
+) -> list[EmailMessage]:
     sender: EmailSender = make_gmail_email_sender(config)
+    sender(_REPORT_SUBJECT, _REPORT_BODY)
+    return sent_messages
 
-    sender("Daily report", "All positions nominal.")
 
-    assert len(sent_messages) == 1
-    assert sent_messages[0]["To"] == config.owner_recipient
-    assert sent_messages[0]["Subject"] == "Daily report"
+def test_send_email_with_success(sent_report: list[EmailMessage]) -> None:
+    assert len(sent_report) == 1
+
+
+def test_send_email_addresses_owner_recipient(sent_report: list[EmailMessage], config: Config) -> None:
+    assert sent_report[0]["To"] == config.owner_recipient
+
+
+def test_send_email_sets_subject(sent_report: list[EmailMessage]) -> None:
+    assert sent_report[0]["Subject"] == _REPORT_SUBJECT
 
 
 def test_send_email_with_smtp_failure(

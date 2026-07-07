@@ -64,14 +64,38 @@ def failing_smtp(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(smtplib, "SMTP", lambda _host, _port: _FailingSMTP([]))
 
 
-def test_send_email_with_success(configured_env: None, sent_messages: list[EmailMessage]) -> None:
-    result = send_email("owner@example.com", "the subject", "the body")
+_RECIPIENT: str = "owner@example.com"
+_SUBJECT: str = "the subject"
+_BODY: str = "the body"
+_SENDER_ADDRESS: str = "sender@gmail.com"
+_EXPECTED_CONFIRMATION: str = f"Sent email to {_RECIPIENT}."
 
-    assert result == "Sent email to owner@example.com."
-    assert len(sent_messages) == 1
-    assert sent_messages[0]["From"] == "sender@gmail.com"
-    assert sent_messages[0]["To"] == "owner@example.com"
-    assert sent_messages[0]["Subject"] == "the subject"
+
+@pytest.fixture
+def send_result(configured_env: None, sent_messages: list[EmailMessage]) -> tuple[str, list[EmailMessage]]:
+    result = send_email(_RECIPIENT, _SUBJECT, _BODY)
+    return result, sent_messages
+
+
+def test_send_email_with_success(send_result: tuple[str, list[EmailMessage]]) -> None:
+    result, _ = send_result
+    assert result == _EXPECTED_CONFIRMATION
+
+
+def test_send_email_sends_one_message(send_result: tuple[str, list[EmailMessage]]) -> None:
+    _, sent = send_result
+    assert len(sent) == 1
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [("From", _SENDER_ADDRESS), ("To", _RECIPIENT), ("Subject", _SUBJECT)],
+)
+def test_send_email_composes_header(
+    send_result: tuple[str, list[EmailMessage]], header: str, expected: str
+) -> None:
+    _, sent = send_result
+    assert sent[0][header] == expected
 
 
 def test_send_email_with_smtp_failure(configured_env: None, failing_smtp: None) -> None:

@@ -1,4 +1,4 @@
-"""Fixtures for the opt-in live paper-trade acceptance tier.
+"""Fixtures for the opt-in live paper-trade integration tier.
 
 These fixtures resolve real credentials from the operator's config and keyring. They are only used by
 @pytest.mark.live tests, which are deselected by default and additionally skipped unless MONEY_PIT_LIVE=1.

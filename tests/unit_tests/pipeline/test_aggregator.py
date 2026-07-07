@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from money_pit.compute.aggregation import compute_run_actionable
+from money_pit.constants import SIGNALS_DIRNAME
 from money_pit.pipeline.aggregator import _corroborate_claims, _load_signal_sets, make_aggregator_node
 from money_pit.schemas.aggregation_draft import ClaimRelations
 from money_pit.schemas.enums import ClaimCategory, ClaimRelationType, SignalTier, SourceType
@@ -21,7 +22,6 @@ from money_pit.schemas.provenance import SourceRef
 from money_pit.schemas.signals import AggregatedSignals, Claim, SignalSet
 
 _SLUG = "test-run"
-_SIGNALS_DIRNAME = "signals"
 
 
 def _make_source_ref(source_id: str) -> SourceRef:
@@ -70,7 +70,7 @@ def _stub_agent(relations: ClaimRelations) -> Callable[[list[Claim]], ClaimRelat
 
 
 def _write_signal_sets(working_dir: Path, signal_sets: list[SignalSet]) -> None:
-    signals_dir = working_dir / _SIGNALS_DIRNAME
+    signals_dir = working_dir / SIGNALS_DIRNAME
     signals_dir.mkdir(parents=True, exist_ok=True)
     for signal_set in signal_sets:
         path = signals_dir / f"{signal_set.source_ref.source_id}.json"
@@ -83,7 +83,7 @@ def test__load_signal_sets_with_absent_signals_dir_raises() -> None:
 
 
 def test__load_signal_sets_with_empty_signals_dir_raises(tmp_path: Path) -> None:
-    (tmp_path / _SIGNALS_DIRNAME).mkdir()
+    (tmp_path / SIGNALS_DIRNAME).mkdir()
     with pytest.raises(FileNotFoundError):
         _ = _load_signal_sets(tmp_path)
 

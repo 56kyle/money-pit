@@ -12,13 +12,13 @@ from mcp.types import Tool
 
 from money_pit.config import AlpacaCredentials
 from money_pit.contracts import OrderPlacer
+from money_pit.mcp.constants import PLACE_STOCK_ORDER_TOOL
 from money_pit.pipeline.execution import OrderSubmissionError
 from money_pit.schemas.action_steps import ExecutionParameters
 
 
 _ALPACA_MCP_COMMAND: str = "alpaca-mcp-server"
 _ALPACA_WRITE_TOOLSET: str = "trading"
-_PLACE_STOCK_ORDER_TOOL: str = "place_stock_order"
 
 _ORDER_ID_KEYS: tuple[str, ...] = ("id", "order_id", "broker_order_id", "client_order_id")
 
@@ -79,7 +79,7 @@ async def _open_trading_session(credentials: AlpacaCredentials) -> AsyncIterator
 async def _submit_order(credentials: AlpacaCredentials, arguments: dict[str, object]) -> str:  # pragma: no cover
     """Spawn a fresh Alpaca MCP write session, place the order, and return the broker order id."""
     async with _open_trading_session(credentials) as session:
-        result = await session.call_tool(_PLACE_STOCK_ORDER_TOOL, arguments=arguments)
+        result = await session.call_tool(PLACE_STOCK_ORDER_TOOL, arguments=arguments)
         if result.isError:
             raise OrderSubmissionError(f"Alpaca rejected the order: {_result_text(result.content)}.")
         return _extract_order_id(result.structuredContent)

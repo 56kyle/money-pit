@@ -7,6 +7,7 @@ from money_pit.compute.aggregation import tier_max
 from money_pit.compute.aggregation import union_claims
 from money_pit.constants import AGGREGATED_SIGNALS_JSON_FILENAME
 from money_pit.constants import AGGREGATED_SIGNALS_MD_FILENAME
+from money_pit.constants import SIGNALS_DIRNAME
 from money_pit.contracts import CorroborationAgent
 from money_pit.graph.state import PipelineNode
 from money_pit.graph.state import PipelineState
@@ -19,9 +20,6 @@ from money_pit.schemas.signals import AggregatedSignals
 from money_pit.schemas.signals import Claim
 from money_pit.schemas.signals import CorroborationEntry
 from money_pit.schemas.signals import SignalSet
-
-
-_SIGNALS_DIRNAME: str = "signals"
 
 
 def _render_aggregated_md(aggregated: AggregatedSignals) -> str:
@@ -57,7 +55,7 @@ def _render_aggregated_md(aggregated: AggregatedSignals) -> str:
 
 def _load_signal_sets(working_dir: Path) -> list[SignalSet]:
     """Load and parse every source SignalSet from the working directory's signals folder."""
-    signals_dir: Path = working_dir / _SIGNALS_DIRNAME
+    signals_dir: Path = working_dir / SIGNALS_DIRNAME
     signal_files: list[Path] = sorted(signals_dir.glob("*.json"))
     if not signal_files:
         raise FileNotFoundError(f"No signal files found in {signals_dir}")

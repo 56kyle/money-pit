@@ -19,6 +19,7 @@ from money_pit.graph.state import require_working_dir
 from money_pit.graph.state import with_completed_step
 from money_pit.mcp.manifest import pinned_manifest
 from money_pit.schemas.action_steps import ActionStep
+from money_pit.schemas.enums import DataSourceToken
 from money_pit.schemas.enums import OverallValidationStatus
 from money_pit.schemas.enums import ValidationStatus
 from money_pit.schemas.validation_results import ActionStepsValidation
@@ -26,8 +27,6 @@ from money_pit.schemas.validation_results import ToolCall
 from money_pit.schemas.validation_results import ValidationStatusReport
 from money_pit.schemas.validation_results import ValidationStep
 
-
-_ALPACA_MCP_SERVER: str = "alpaca_mcp"
 
 _action_steps_adapter: TypeAdapter[list[ActionStep]] = TypeAdapter(list[ActionStep])
 
@@ -39,14 +38,14 @@ def _build_tool_calls(step: ActionStep) -> tuple[list[ToolCall], list[ToolCall]]
     tool_sequence: list[ToolCall] = [
         ToolCall(
             tool_name=primary_tool,
-            server=_ALPACA_MCP_SERVER,
+            server=DataSourceToken.ALPACA_MCP.value,
             input_parameters=step.execution_parameters.to_order_payload(),
         )
     ]
     compensation_sequence: list[ToolCall] = [
         ToolCall(
             tool_name=compensating_tool,
-            server=_ALPACA_MCP_SERVER,
+            server=DataSourceToken.ALPACA_MCP.value,
             input_parameters=None,
         )
     ]

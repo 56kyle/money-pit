@@ -8,6 +8,7 @@ from pydantic_ai import RunContext
 
 from money_pit.agents.research_tools import OpenEndedResearchTools
 from money_pit.config import Config
+from money_pit.constants import ANTHROPIC_MODEL_PREFIX
 from money_pit.contracts import AnswerSynthesisAgent
 from money_pit.schemas.answer_draft import AnswerDraft
 from money_pit.schemas.enums import QuestionCategory
@@ -40,7 +41,7 @@ def make_answer_synthesis_agent(
     The LLM emits only draft fields — confidence and canonical provenance are derived
     downstream in the retrieval node.
     """
-    resolved_model: str = f"anthropic:{model or config.llm_model}"
+    resolved_model: str = f"{ANTHROPIC_MODEL_PREFIX}{model or config.llm_model}"
 
     agent: Agent[OpenEndedResearchTools, list[AnswerDraft]] = Agent(
         model=resolved_model,

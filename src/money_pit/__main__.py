@@ -10,11 +10,9 @@ from money_pit.config import CredentialResolutionError
 from money_pit.config import load_config
 from money_pit.config import resolve_alpaca_credentials
 from money_pit.mcp.clients import list_write_tools
+from money_pit.mcp.constants import PLACE_STOCK_ORDER_TOOL
 from money_pit.mcp.order_schema import ALPACA_ORDER_SCHEMA_PATH
 from money_pit.mcp.order_schema import ALPACA_ORDER_SCHEMA_STUB_SENTINEL
-
-
-_PLACE_STOCK_ORDER_TOOL: str = "place_stock_order"
 
 
 app: typer.Typer = typer.Typer()
@@ -41,11 +39,11 @@ def pin_order_schema() -> None:
         raise typer.Exit(code=1) from error
 
     schema: dict[str, object] | None = next(
-        (tool.inputSchema for tool in tools if tool.name == _PLACE_STOCK_ORDER_TOOL), None
+        (tool.inputSchema for tool in tools if tool.name == PLACE_STOCK_ORDER_TOOL), None
     )
     if schema is None:
         typer.echo(
-            f"Tool {_PLACE_STOCK_ORDER_TOOL!r} is absent from the Alpaca MCP write server;"
+            f"Tool {PLACE_STOCK_ORDER_TOOL!r} is absent from the Alpaca MCP write server;"
             + " refusing to write a partial schema.",
             err=True,
         )
@@ -54,7 +52,7 @@ def pin_order_schema() -> None:
     pinned: dict[str, object] = dict(schema)
     _ = pinned.pop(ALPACA_ORDER_SCHEMA_STUB_SENTINEL, None)
     _ = ALPACA_ORDER_SCHEMA_PATH.write_text(json.dumps(pinned, indent=2), encoding="utf-8")
-    typer.echo(f"Pinned {_PLACE_STOCK_ORDER_TOOL} inputSchema to {ALPACA_ORDER_SCHEMA_PATH}")
+    typer.echo(f"Pinned {PLACE_STOCK_ORDER_TOOL} inputSchema to {ALPACA_ORDER_SCHEMA_PATH}")
 
 
 if __name__ == "__main__":

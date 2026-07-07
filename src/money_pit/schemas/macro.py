@@ -21,3 +21,12 @@ class MacroIndicators(BaseModel):
     earnings_revisions: float | None
     inflation: float | None
     as_of: str | None
+
+
+MACRO_INDICATOR_SERIES: dict[str, str] = {
+    "yield_curve": "T10Y2Y",
+    "credit_spreads": "BAMLH0A0HYM2",
+    "pmi": "NAPM",
+    "earnings_revisions": "SP500",
+    "inflation": "CPILFESL",
+}

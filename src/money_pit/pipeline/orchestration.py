@@ -22,6 +22,7 @@ from money_pit.config import Config
 from money_pit.config import load_config
 from money_pit.config import resolve_alpaca_credentials
 from money_pit.constants import DAILY_SHOW_ROOT
+from money_pit.constants import SIGNALS_DIRNAME
 from money_pit.email_sender import make_gmail_email_sender
 from money_pit.mcp.clients import make_alpaca_write_deps
 from money_pit.mcp.manifest import live_manifest
@@ -403,7 +404,7 @@ def run_pipeline(
     working_dir: Path = run_dir if run_dir is not None else DAILY_SHOW_ROOT / slug
     working_dir.mkdir(parents=True, exist_ok=True)
 
-    signals_out: Path = working_dir / "signals"
+    signals_out: Path = working_dir / SIGNALS_DIRNAME
     signals_out.mkdir(exist_ok=True)
 
     for signal_file in signals_dir.glob("*.json"):

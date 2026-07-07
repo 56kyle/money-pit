@@ -26,20 +26,13 @@ from money_pit.schemas.answers import Answer
 from money_pit.schemas.answers import InitialAnswers
 from money_pit.schemas.enums import DataSourceToken
 from money_pit.schemas.enums import QuestionCategory
+from money_pit.schemas.macro import MACRO_INDICATOR_SERIES
 from money_pit.schemas.provenance import SourceRef
 from money_pit.schemas.questions import INDICATOR_PREFIX
 from money_pit.schemas.questions import InitialQuestions
 from money_pit.schemas.questions import Question
 from money_pit.schemas.signals import AggregatedSignals
 
-
-_FRED_SERIES: dict[str, str] = {
-    "yield_curve": "T10Y2Y",
-    "credit_spreads": "BAMLH0A0HYM2",
-    "pmi": "NAPM",
-    "earnings_revisions": "SP500",
-    "inflation": "CPILFESL",
-}
 
 _DETERMINISTIC_CATEGORIES: frozenset[QuestionCategory] = frozenset(
     {
@@ -100,7 +93,7 @@ def _fetch_deterministic(
         if signal_source is None or not signal_source.startswith(INDICATOR_PREFIX):
             return NoData()
         indicator_name: str = signal_source[len(INDICATOR_PREFIX) :]
-        series_id: str | None = _FRED_SERIES.get(indicator_name)
+        series_id: str | None = MACRO_INDICATOR_SERIES.get(indicator_name)
         if series_id is None:
             return NoData()
         return tools.fetch_fred_series(series_id)

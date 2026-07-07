@@ -37,6 +37,7 @@ from money_pit.schemas.enums import QuestionCategory
 from money_pit.schemas.enums import RegimeTag
 from money_pit.schemas.enums import Step1Disposition
 from money_pit.schemas.enums import TerminalState
+from money_pit.schemas.macro import MACRO_INDICATOR_SERIES
 from money_pit.schemas.macro import MacroIndicators
 from money_pit.schemas.portfolio import PortfolioSnapshot
 from money_pit.schemas.questions import INDICATOR_PREFIX
@@ -49,13 +50,7 @@ _AGENT_EXCEPTION_HALT_REASON: str = "A4 thesis judgment agent raised an exceptio
 
 def _extract_macro_indicators(answers: list[Answer]) -> MacroIndicators:
     """Assemble MacroIndicators from macro_regime answers in initial_answers.json."""
-    values: dict[str, float | None] = {
-        "yield_curve": None,
-        "credit_spreads": None,
-        "pmi": None,
-        "earnings_revisions": None,
-        "inflation": None,
-    }
+    values: dict[str, float | None] = dict.fromkeys(MACRO_INDICATOR_SERIES, None)
     for ans in answers:
         if ans.category != QuestionCategory.MACRO_REGIME:
             continue

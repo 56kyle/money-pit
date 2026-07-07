@@ -5,6 +5,7 @@ from pathlib import Path
 from pydantic_ai import Agent
 
 from money_pit.config import Config
+from money_pit.constants import ANTHROPIC_MODEL_PREFIX
 from money_pit.contracts import ThesisAgent
 from money_pit.schemas.analysis_draft import AnalysisJudgment
 from money_pit.schemas.answers import InitialAnswers
@@ -22,7 +23,7 @@ def make_thesis_judgment_agent(
     model: str | None = None,
 ) -> ThesisAgent:
     """Return a callable that runs the A4 thesis judgment agent against the three pipeline inputs."""
-    resolved_model: str = f"anthropic:{model or config.llm_model}"
+    resolved_model: str = f"{ANTHROPIC_MODEL_PREFIX}{model or config.llm_model}"
     agent: Agent[None, AnalysisJudgment] = Agent(
         model=resolved_model,
         output_type=AnalysisJudgment,

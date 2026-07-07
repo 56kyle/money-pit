@@ -14,7 +14,6 @@ from money_pit.config import resolve_alpaca_credentials
 
 @pytest.fixture
 def live_config() -> Config:
-    load_config.cache_clear()
     return load_config()
 
 

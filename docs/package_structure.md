@@ -88,7 +88,7 @@ src/money_pit/
     ├── manifest.py          # pinned_manifest(): static {<place_stock_order>: <pinned schema>} for A5 (ADR 0004); live_manifest(credentials): opt-in live introspection of the connected server (ADR 0008), fail-closed ManifestUnavailableError
     └── alpaca_order_schema.json  # Pinned Alpaca MCP order tool inputSchema snapshot (still a stub; pin via `money-pit pin-order-schema`); read via mcp/order_schema.py by compute/execution_params.py and pipeline/validator.py → tool manifest consumed by A5
 
-src/email_server/            # Deployable MCP server (separate process; no imports from money_pit package)
+src/email_server/            # Deployable MCP server (separate process; single-sources SMTP defaults + EmailSendError from money_pit per ADR 0010)
 ├── __init__.py
 └── server.py                # FastMCP email server: exposes send_email(to, subject, body)
 ```
@@ -119,7 +119,7 @@ Each LLM boundary has two schema files: a `*_draft.py` (the model's raw output, 
 
 **`mcp/clients.py` exposes dependency types alongside factories.** Pydantic AI agents receive MCP clients via `RunContext` injection declared in `deps_type`. `AlpacaReadDeps` and `AlpacaWriteDeps` are the injection types; the factories construct them. The read/write safety boundary is structural: analysis agents are constructed with `AlpacaReadDeps`, the execution sub-agent with `AlpacaWriteDeps` — neither can reach the other's tool set by construction.
 
-**`src/email_server/` is a separate top-level package.** It has no import relationship to `money_pit`. Placing it at `src/email_server/` rather than `src/money_pit/servers/email/` means `import money_pit.servers.email.server` is impossible, which matches the stated isolation invariant.
+**`src/email_server/` is a separate top-level, separately-deployable package.** It runs as its own MCP-server process, but it is no longer import-isolated from `money_pit`: per ADR 0010 it single-sources the SMTP defaults (`DEFAULT_SMTP_HOST` / `DEFAULT_SMTP_PORT`) and the `EmailSendError` type from `money_pit`, killing the earlier drifting second copy of that config surface. Placing it at `src/email_server/` rather than `src/money_pit/servers/email/` keeps its process boundary and deployment story distinct.
 
 ---
 
@@ -139,7 +139,7 @@ After scaffolding (creating empty `__init__.py` files and stub modules):
 
 1. `python -c "from money_pit import schemas"` — confirms import graph works
 2. `python -c "from money_pit.schemas.enums import ActionType"` — confirms enums are importable
-3. `python -c "from email_server import server"` — confirms email server is importable with no cross-package contamination
+3. `python -c "from email_server import server"` — confirms the email server is importable, including its ADR 0010 single-sourced imports of SMTP defaults + `EmailSendError` from `money_pit`
 4. `basedpyright src/` — confirms no circular imports or missing stubs
 5. `pytest tests/unit_tests/` — deterministic compute modules can be tested in isolation with no MCP or LLM dependencies
 

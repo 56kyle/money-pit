@@ -1,8 +1,9 @@
-"""Tests for the standalone email_server FastMCP tool — send composition, config gate, and failure surfacing.
+"""Tests for the email_server FastMCP tool — send composition, config gate, and failure surfacing.
 
-email_server is a standalone deployable that must not import money_pit; these tests import only email_server.
-smtplib.SMTP is replaced with a hand-written fake (no unittest.mock) and configuration is supplied via real
-environment variables. Assertions target the EmailServerConfigError / EmailSendError TYPES and header values.
+email_server single-sources its SMTP defaults and EmailSendError from money_pit (per ADR 0010, superseding the
+ADR 0009 isolation invariant). smtplib.SMTP is replaced with a hand-written fake (no unittest.mock) and
+configuration is supplied via real environment variables. Assertions target the EmailServerConfigError /
+EmailSendError TYPES and header values.
 """
 
 import smtplib
@@ -14,6 +15,7 @@ from pytest import MonkeyPatch
 
 from email_server.server import EmailSendError
 from email_server.server import EmailServerConfigError
+from email_server.server import _env_port
 from email_server.server import send_email
 
 
@@ -82,3 +84,22 @@ def test_send_email_with_unset_env(monkeypatch: MonkeyPatch) -> None:
 
     with pytest.raises(EmailServerConfigError):
         _ = send_email("owner@example.com", "the subject", "the body")
+
+
+def test__env_port_with_valid(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("MONEY_PIT__SMTP_PORT", "2525")
+
+    assert _env_port("MONEY_PIT__SMTP_PORT", 587) == 2525
+
+
+def test__env_port_with_unset(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv("MONEY_PIT__SMTP_PORT", raising=False)
+
+    assert _env_port("MONEY_PIT__SMTP_PORT", 587) == 587
+
+
+def test__env_port_with_non_numeric(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("MONEY_PIT__SMTP_PORT", "not-a-port")
+
+    with pytest.raises(EmailServerConfigError):
+        _ = _env_port("MONEY_PIT__SMTP_PORT", 587)

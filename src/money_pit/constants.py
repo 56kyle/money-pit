@@ -22,6 +22,9 @@ DEFAULT_CONFIG_PATH: Path = USER_CONFIG_FOLDER / ".env"
 
 GMAIL_KEYRING_SERVICE: str = "money-pit-gmail"
 
+DEFAULT_SMTP_HOST: str = "smtp.gmail.com"
+DEFAULT_SMTP_PORT: int = 587
+
 DAILY_SHOW_ROOT: Path = Path("data") / "daily_show"
 
 AGGREGATED_SIGNALS_JSON_FILENAME: str = "aggregated_signals.json"

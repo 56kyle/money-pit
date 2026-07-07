@@ -1,24 +1,28 @@
 """Module responsible for handling config used throughout the money_pit package."""
 
-import os
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
+from typing import ClassVar
 
 import keyring
 from dotenv import load_dotenv
-from pydantic import BaseModel
+from pydantic import SecretStr
+from pydantic import ValidationError
+from pydantic_settings import BaseSettings
+from pydantic_settings import SettingsConfigDict
 
 from money_pit.constants import DEFAULT_CONFIG_PATH
+from money_pit.constants import DEFAULT_SMTP_HOST
+from money_pit.constants import DEFAULT_SMTP_PORT
 from money_pit.constants import GMAIL_KEYRING_SERVICE
 
 
+ENV_PREFIX: str = "MONEY_PIT__"
 _ALPACA_PAPER_SUFFIX: str = "-paper"
 _ALPACA_LIVE_SUFFIX: str = "-live"
+_DEFAULT_LLM_MODEL: str = "claude-sonnet-5"
 
 DEFAULT_OWNER_RECIPIENT: str = "56kyleoliver@gmail.com"
-_DEFAULT_SMTP_HOST: str = "smtp.gmail.com"
-_DEFAULT_SMTP_PORT: int = 587
 
 
 class CredentialResolutionError(Exception):
@@ -34,8 +38,10 @@ class AlpacaCredentials:
     paper: bool
 
 
-class Config(BaseModel):
+class Config(BaseSettings):
     """The primary config for the money_pit package."""
+
+    model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(env_prefix=ENV_PREFIX, frozen=True)
 
     alpaca_service: str
     alpaca_username: str
@@ -43,8 +49,8 @@ class Config(BaseModel):
     gmail_address: str | None = None
     gmail_service: str = GMAIL_KEYRING_SERVICE
     owner_recipient: str = DEFAULT_OWNER_RECIPIENT
-    smtp_host: str = _DEFAULT_SMTP_HOST
-    smtp_port: int = _DEFAULT_SMTP_PORT
+    smtp_host: str = DEFAULT_SMTP_HOST
+    smtp_port: int = DEFAULT_SMTP_PORT
 
     regime_lookback: int = 60
     regime_band: float = 0.5
@@ -61,51 +67,32 @@ class Config(BaseModel):
     threshold_pmi: float = 50.0
     threshold_earnings_revisions: float = 0.0
     threshold_inflation: float = 2.5
-    llm_model: str = "claude-sonnet-4-6"
-    fred_api_key: str | None = None
-    brave_api_key: str | None = None
+    llm_model: str = _DEFAULT_LLM_MODEL
+    fred_api_key: SecretStr | None = None
+    brave_api_key: SecretStr | None = None
 
 
-@lru_cache
+def _missing_required_env_vars(error: ValidationError) -> list[str]:
+    """Return the MONEY_PIT__ environment variable names for the missing-required fields in a Config error."""
+    return [
+        f"{ENV_PREFIX}{str(entry['loc'][0]).upper()}"
+        for entry in error.errors()
+        if entry["type"] == "missing" and entry["loc"]
+    ]
+
+
 def load_config(path: Path = DEFAULT_CONFIG_PATH) -> Config:
-    """Load the config for the money_pit package."""
+    """Load a fresh, frozen Config, raising CredentialResolutionError on a missing required var and propagating pydantic.ValidationError on a mistyped one."""
     _ = load_dotenv(path)
-    alpaca_service: str | None = os.environ.get("MONEY_PIT__ALPACA_SERVICE", None)
-
-    if alpaca_service is None:
-        raise ValueError("Failed to get alpaca_service from environment variable MONEY_PIT__ALPACA_SERVICE.")
-
-    alpaca_username: str | None = os.environ.get("MONEY_PIT__ALPACA_USERNAME", None)
-    if alpaca_username is None:
-        raise ValueError("Failed to get alpaca_username from environment variable MONEY_PIT__ALPACA_USERNAME.")
-
-    return Config(
-        alpaca_service=alpaca_service,
-        alpaca_username=alpaca_username,
-        gmail_address=os.environ.get("MONEY_PIT__GMAIL_ADDRESS", None),
-        gmail_service=os.environ.get("MONEY_PIT__GMAIL_SERVICE", GMAIL_KEYRING_SERVICE),
-        owner_recipient=os.environ.get("MONEY_PIT__OWNER_RECIPIENT", DEFAULT_OWNER_RECIPIENT),
-        smtp_host=os.environ.get("MONEY_PIT__SMTP_HOST", _DEFAULT_SMTP_HOST),
-        smtp_port=int(os.environ.get("MONEY_PIT__SMTP_PORT", _DEFAULT_SMTP_PORT)),
-        regime_lookback=int(os.environ.get("MONEY_PIT__REGIME_LOOKBACK", 60)),
-        regime_band=float(os.environ.get("MONEY_PIT__REGIME_BAND", 0.5)),
-        kelly_fraction=float(os.environ.get("MONEY_PIT__KELLY_FRACTION", 0.25)),
-        max_position_weight=float(os.environ.get("MONEY_PIT__MAX_POSITION_WEIGHT", 0.10)),
-        haircut_unverified=float(os.environ.get("MONEY_PIT__HAIRCUT_UNVERIFIED", 0.5)),
-        haircut_uncertain=float(os.environ.get("MONEY_PIT__HAIRCUT_UNCERTAIN", 0.75)),
-        ev_gate=float(os.environ.get("MONEY_PIT__EV_GATE", 0.03)),
-        sector_cap=float(os.environ.get("MONEY_PIT__SECTOR_CAP", 0.25)),
-        cash_min=float(os.environ.get("MONEY_PIT__CASH_MIN", 0.05)),
-        overlap_limit=float(os.environ.get("MONEY_PIT__OVERLAP_LIMIT", 0.30)),
-        threshold_yield_curve=float(os.environ.get("MONEY_PIT__THRESHOLD_YIELD_CURVE", 0.0)),
-        threshold_credit_spreads=float(os.environ.get("MONEY_PIT__THRESHOLD_CREDIT_SPREADS", 3.0)),
-        threshold_pmi=float(os.environ.get("MONEY_PIT__THRESHOLD_PMI", 50.0)),
-        threshold_earnings_revisions=float(os.environ.get("MONEY_PIT__THRESHOLD_EARNINGS_REVISIONS", 0.0)),
-        threshold_inflation=float(os.environ.get("MONEY_PIT__THRESHOLD_INFLATION", 2.5)),
-        llm_model=os.environ.get("MONEY_PIT__LLM_MODEL", "claude-sonnet-4-6"),
-        fred_api_key=os.environ.get("MONEY_PIT__FRED_API_KEY", None),
-        brave_api_key=os.environ.get("MONEY_PIT__BRAVE_API_KEY", None),
-    )
+    try:
+        return Config()
+    except ValidationError as error:
+        missing: list[str] = _missing_required_env_vars(error)
+        if not missing:
+            raise
+        raise CredentialResolutionError(
+            f"Missing required money_pit config from the environment: {', '.join(missing)}."
+        ) from error
 
 
 def _paper_from_service(service: str) -> bool:

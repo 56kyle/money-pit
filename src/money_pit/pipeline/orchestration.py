@@ -411,9 +411,12 @@ def run_pipeline(
 
     config = load_config()
 
-    det_tools: DeterministicResearchTools = ov.deterministic_tools or _DirectDeterministicTools(config.fred_api_key)
+    fred_api_key: str | None = config.fred_api_key.get_secret_value() if config.fred_api_key is not None else None
+    brave_api_key: str | None = config.brave_api_key.get_secret_value() if config.brave_api_key is not None else None
+
+    det_tools: DeterministicResearchTools = ov.deterministic_tools or _DirectDeterministicTools(fred_api_key)
     open_tools: OpenEndedResearchTools = ov.open_ended_tools or _DirectOpenEndedTools(
-        config.brave_api_key, config.owner_recipient
+        brave_api_key, config.owner_recipient
     )
 
     thesis = ov.thesis_agent or make_thesis_judgment_agent(config)

@@ -78,6 +78,9 @@ cu128 = [
     "torch>=2.8.0",
 ]
 
+[project.scripts]
+money-pit = "money_pit.__main__:app"
+
 [project.urls]
 Homepage = "https://github.com/56kyle/money-pit"
 Repository = "https://github.com/56kyle/money-pit"

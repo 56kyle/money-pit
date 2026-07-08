@@ -1,4 +1,4 @@
-"""AlpacaWriteDeps dep type + factory; connect-per-call OrderPlacer over the Alpaca MCP write server."""
+"""Module containing the AlpacaWriteDeps dep type, its factory, and the connect-per-call OrderPlacer over the Alpaca MCP write server for the money_pit package."""
 
 import asyncio
 from collections.abc import AsyncIterator
@@ -8,17 +8,19 @@ from dataclasses import dataclass
 from mcp import ClientSession
 from mcp import StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.types import CallToolResult
+from mcp.types import ListToolsResult
 from mcp.types import Tool
 
 from money_pit.config import AlpacaCredentials
 from money_pit.contracts import OrderPlacer
+from money_pit.mcp.constants import PLACE_STOCK_ORDER_TOOL
 from money_pit.pipeline.execution import OrderSubmissionError
 from money_pit.schemas.action_steps import ExecutionParameters
 
 
 _ALPACA_MCP_COMMAND: str = "alpaca-mcp-server"
 _ALPACA_WRITE_TOOLSET: str = "trading"
-_PLACE_STOCK_ORDER_TOOL: str = "place_stock_order"
 
 _ORDER_ID_KEYS: tuple[str, ...] = ("id", "order_id", "broker_order_id", "client_order_id")
 
@@ -79,7 +81,7 @@ async def _open_trading_session(credentials: AlpacaCredentials) -> AsyncIterator
 async def _submit_order(credentials: AlpacaCredentials, arguments: dict[str, object]) -> str:  # pragma: no cover
     """Spawn a fresh Alpaca MCP write session, place the order, and return the broker order id."""
     async with _open_trading_session(credentials) as session:
-        result = await session.call_tool(_PLACE_STOCK_ORDER_TOOL, arguments=arguments)
+        result: CallToolResult = await session.call_tool(PLACE_STOCK_ORDER_TOOL, arguments=arguments)
         if result.isError:
             raise OrderSubmissionError(f"Alpaca rejected the order: {_result_text(result.content)}.")
         return _extract_order_id(result.structuredContent)
@@ -88,7 +90,7 @@ async def _submit_order(credentials: AlpacaCredentials, arguments: dict[str, obj
 async def _list_trading_tools(credentials: AlpacaCredentials) -> list[Tool]:  # pragma: no cover
     """Spawn a fresh Alpaca MCP write session and return its registered trading tools."""
     async with _open_trading_session(credentials) as session:
-        result = await session.list_tools()
+        result: ListToolsResult = await session.list_tools()
         return list(result.tools)
 
 

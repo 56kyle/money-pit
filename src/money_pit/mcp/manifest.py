@@ -1,4 +1,4 @@
-"""Tool manifests consumed by A5: the static `pinned_manifest` default and the opt-in `live_manifest`.
+"""Module containing the tool manifests consumed by A5 (the static `pinned_manifest` default and the opt-in `live_manifest`) for the money_pit package.
 
 `pinned_manifest` is the *static pinned* contract-level record of which write tools exist for the
 closed Alpaca write-tool set — it is not a live view of any running server, and remains the default
@@ -9,6 +9,7 @@ and reports the tools it actually registers. It fails closed with `ManifestUnava
 connection or introspection failure, so an operator who opts in never trades against an assumed set.
 """
 
+from collections.abc import Callable
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -32,8 +33,8 @@ def pinned_manifest(
 ) -> Mapping[str, dict[str, object]]:
     """Return the static pinned manifest mapping each write tool to the pinned Alpaca order schema.
 
-     Fails closed with `ManifestUnavailableError` if the pinned schema cannot be loaded.
-     """
+    Fails closed with `ManifestUnavailableError` if the pinned schema cannot be loaded.
+    """
     try:
         schema: dict[str, object] = load_order_schema(schema_path)
     except AlpacaOrderSchemaError as err:
@@ -41,13 +42,16 @@ def pinned_manifest(
     return dict.fromkeys(set(ACTION_TYPE_TO_TOOL.values()), schema)
 
 
-def live_manifest(credentials: AlpacaCredentials) -> ToolManifest:
+def live_manifest(
+    credentials: AlpacaCredentials,
+    list_tools: Callable[[AlpacaCredentials], list[Tool]] = list_write_tools,
+) -> ToolManifest:
     """Return a live manifest by introspecting a freshly spawned Alpaca MCP write server.
 
     Fails closed with `ManifestUnavailableError` on any connection or introspection failure.
     """
     try:
-        tools: list[Tool] = list_write_tools(credentials)
+        tools: list[Tool] = list_tools(credentials)
     except Exception as err:
         raise ManifestUnavailableError(f"Live tool manifest unavailable: {err}") from err
     return {tool.name: tool.inputSchema for tool in tools}

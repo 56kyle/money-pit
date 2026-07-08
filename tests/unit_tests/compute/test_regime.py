@@ -2,12 +2,16 @@
 
 import pytest
 
-from money_pit.compute.regime import classify_regime, discretize
+from money_pit.compute.regime import classify_regime
+from money_pit.compute.regime import discretize
 from money_pit.config import Config
 from money_pit.schemas.enums import RegimeTag
 from money_pit.schemas.macro import MacroIndicators
 
-_cfg: Config = Config(alpaca_service="stub", alpaca_username="stub")
+
+@pytest.fixture
+def stub_config() -> Config:
+    return Config(alpaca_service="stub", alpaca_username="stub")
 
 
 def _good_macro() -> MacroIndicators:
@@ -49,7 +53,7 @@ def test_discretize_with_value_at_threshold() -> None:
 
 
 @pytest.mark.parametrize(
-    "value,expected",
+    ("value", "expected"),
     [
         (0.6, 1),
         (0.5, 0),
@@ -62,7 +66,7 @@ def test_discretize_with_band_boundary(value: float, expected: int) -> None:
 # --- classify_regime ---
 
 
-def test_classify_regime_with_all_none_indicators() -> None:
+def test_classify_regime_with_all_none_indicators(stub_config: Config) -> None:
     indicators = MacroIndicators(
         yield_curve=None,
         credit_spreads=None,
@@ -71,14 +75,14 @@ def test_classify_regime_with_all_none_indicators() -> None:
         inflation=None,
         as_of=None,
     )
-    assert classify_regime(indicators, _cfg) == RegimeTag.UNCERTAIN
+    assert classify_regime(indicators, stub_config) == RegimeTag.UNCERTAIN
 
 
 @pytest.mark.parametrize(
     "field",
     ["yield_curve", "credit_spreads", "pmi", "earnings_revisions", "inflation"],
 )
-def test_classify_regime_with_one_none_returns_uncertain(field: str) -> None:
+def test_classify_regime_with_one_none_returns_uncertain(field: str, stub_config: Config) -> None:
     base = MacroIndicators(
         yield_curve=0.8,
         credit_spreads=2.0,
@@ -88,10 +92,10 @@ def test_classify_regime_with_one_none_returns_uncertain(field: str) -> None:
         as_of="2026-01-01",
     )
     indicators = base.model_copy(update={field: None})
-    assert classify_regime(indicators, _cfg) == RegimeTag.UNCERTAIN
+    assert classify_regime(indicators, stub_config) == RegimeTag.UNCERTAIN
 
 
-def test_classify_regime_with_late_cycle_stress_signals() -> None:
+def test_classify_regime_with_late_cycle_stress_signals(stub_config: Config) -> None:
     # curve=-1, credit=-1, pmi=-1, earnings=-1 → Rule 1
     indicators = MacroIndicators(
         yield_curve=-0.8,
@@ -101,10 +105,10 @@ def test_classify_regime_with_late_cycle_stress_signals() -> None:
         inflation=2.5,
         as_of="2026-01-01",
     )
-    assert classify_regime(indicators, _cfg) == RegimeTag.LATE_CYCLE_STRESS
+    assert classify_regime(indicators, stub_config) == RegimeTag.LATE_CYCLE_STRESS
 
 
-def test_classify_regime_with_stagflation_signals() -> None:
+def test_classify_regime_with_stagflation_signals(stub_config: Config) -> None:
     # curve=0, credit=-1, pmi=-1, earnings=-1, inflation=-1 → Rule 2
     indicators = MacroIndicators(
         yield_curve=0.2,
@@ -114,15 +118,15 @@ def test_classify_regime_with_stagflation_signals() -> None:
         inflation=3.2,
         as_of="2026-01-01",
     )
-    assert classify_regime(indicators, _cfg) == RegimeTag.STAGFLATION
+    assert classify_regime(indicators, stub_config) == RegimeTag.STAGFLATION
 
 
-def test_classify_regime_with_growth_accelerating_signals() -> None:
+def test_classify_regime_with_growth_accelerating_signals(stub_config: Config) -> None:
     # curve=+1, credit=+1, pmi=+1, earnings=+1, inflation=0 → Rule 3
-    assert classify_regime(_good_macro(), _cfg) == RegimeTag.GROWTH_ACCELERATING
+    assert classify_regime(_good_macro(), stub_config) == RegimeTag.GROWTH_ACCELERATING
 
 
-def test_classify_regime_with_growth_decelerating_signals() -> None:
+def test_classify_regime_with_growth_decelerating_signals(stub_config: Config) -> None:
     # curve=0, credit=+1, pmi=-1, earnings=-1, inflation=0 → Rule 5
     indicators = MacroIndicators(
         yield_curve=0.2,
@@ -132,10 +136,10 @@ def test_classify_regime_with_growth_decelerating_signals() -> None:
         inflation=2.3,
         as_of="2026-01-01",
     )
-    assert classify_regime(indicators, _cfg) == RegimeTag.GROWTH_DECELERATING
+    assert classify_regime(indicators, stub_config) == RegimeTag.GROWTH_DECELERATING
 
 
-def test_classify_regime_with_conflict_guard_strong_financial_weak_growth() -> None:
+def test_classify_regime_with_conflict_guard_strong_financial_weak_growth(stub_config: Config) -> None:
     # curve=+1, credit=+1, pmi=-1, earnings=-1, inflation=-1
     # Rules 1-5 all fail; conflict guard: (1+1)>=1 and growth=-2<=-1
     indicators = MacroIndicators(
@@ -146,10 +150,10 @@ def test_classify_regime_with_conflict_guard_strong_financial_weak_growth() -> N
         inflation=3.2,
         as_of="2026-01-01",
     )
-    assert classify_regime(indicators, _cfg) == RegimeTag.UNCERTAIN
+    assert classify_regime(indicators, stub_config) == RegimeTag.UNCERTAIN
 
 
-def test_classify_regime_with_conflict_guard_weak_financial_strong_growth() -> None:
+def test_classify_regime_with_conflict_guard_weak_financial_strong_growth(stub_config: Config) -> None:
     # curve=-1, credit=-1, pmi=+1, earnings=+1, inflation=0
     # Rules 1-5 all fail; conflict guard: (-1-1)<=-1 and growth=+2>=1
     indicators = MacroIndicators(
@@ -160,10 +164,10 @@ def test_classify_regime_with_conflict_guard_weak_financial_strong_growth() -> N
         inflation=2.5,
         as_of="2026-01-01",
     )
-    assert classify_regime(indicators, _cfg) == RegimeTag.UNCERTAIN
+    assert classify_regime(indicators, stub_config) == RegimeTag.UNCERTAIN
 
 
-def test_classify_regime_with_signed_sum_fallback_uncertain() -> None:
+def test_classify_regime_with_signed_sum_fallback_uncertain(stub_config: Config) -> None:
     # curve=0, credit=0, pmi=0, earnings=+1, inflation=0
     # Rules 1-5 fail; no conflict; total=1 → not >1 → UNCERTAIN
     indicators = MacroIndicators(
@@ -174,10 +178,10 @@ def test_classify_regime_with_signed_sum_fallback_uncertain() -> None:
         inflation=2.5,
         as_of="2026-01-01",
     )
-    assert classify_regime(indicators, _cfg) == RegimeTag.UNCERTAIN
+    assert classify_regime(indicators, stub_config) == RegimeTag.UNCERTAIN
 
 
-def test_classify_regime_recovery_is_unreachable() -> None:
+def test_classify_regime_recovery_is_unreachable(stub_config: Config) -> None:
     _yc_vals: list[float] = [-0.8, 0.2, 0.8]
     _cs_vals: list[float] = [5.0, 3.0, 2.0]
     _pmi_vals: list[float] = [48.0, 50.3, 52.0]
@@ -197,5 +201,5 @@ def test_classify_regime_recovery_is_unreachable() -> None:
                             inflation=inf,
                             as_of="2026-01-01",
                         )
-                        results.add(classify_regime(indicators, _cfg))
+                        results.add(classify_regime(indicators, stub_config))
     assert RegimeTag.RECOVERY not in results

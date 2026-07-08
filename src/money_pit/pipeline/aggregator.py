@@ -1,19 +1,20 @@
-"""Node factory that merges source SignalSets, corroborates claims, and writes AggregatedSignals."""
+"""Module containing the node factory that merges source SignalSets, corroborates claims, and writes AggregatedSignals for the money_pit package."""
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from money_pit.compute.aggregation import compute_run_actionable
 from money_pit.compute.aggregation import tier_max
 from money_pit.compute.aggregation import union_claims
 from money_pit.constants import AGGREGATED_SIGNALS_JSON_FILENAME
 from money_pit.constants import AGGREGATED_SIGNALS_MD_FILENAME
+from money_pit.constants import SIGNALS_DIRNAME
 from money_pit.contracts import CorroborationAgent
 from money_pit.graph.state import PipelineNode
 from money_pit.graph.state import PipelineState
 from money_pit.graph.state import require_slug
 from money_pit.graph.state import require_working_dir
 from money_pit.graph.state import with_completed_step
-from money_pit.schemas.aggregation_draft import ClaimRelations
 from money_pit.schemas.enums import ClaimRelationType
 from money_pit.schemas.signals import AggregatedSignals
 from money_pit.schemas.signals import Claim
@@ -21,7 +22,8 @@ from money_pit.schemas.signals import CorroborationEntry
 from money_pit.schemas.signals import SignalSet
 
 
-_SIGNALS_DIRNAME: str = "signals"
+if TYPE_CHECKING:
+    from money_pit.schemas.aggregation_draft import ClaimRelations
 
 
 def _render_aggregated_md(aggregated: AggregatedSignals) -> str:
@@ -57,7 +59,7 @@ def _render_aggregated_md(aggregated: AggregatedSignals) -> str:
 
 def _load_signal_sets(working_dir: Path) -> list[SignalSet]:
     """Load and parse every source SignalSet from the working directory's signals folder."""
-    signals_dir: Path = working_dir / _SIGNALS_DIRNAME
+    signals_dir: Path = working_dir / SIGNALS_DIRNAME
     signal_files: list[Path] = sorted(signals_dir.glob("*.json"))
     if not signal_files:
         raise FileNotFoundError(f"No signal files found in {signals_dir}")

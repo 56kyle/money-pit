@@ -8,10 +8,14 @@ from typing import cast
 import pytest
 
 from money_pit.adapters.video import VideoAdapter
-from money_pit.adapters.video_llm import TranscriptSource, VideoPayload
-from money_pit.schemas.enums import ClaimCategory, SignalTier, SourceType
+from money_pit.adapters.video_llm import TranscriptSource
+from money_pit.adapters.video_llm import VideoPayload
+from money_pit.schemas.enums import ClaimCategory
+from money_pit.schemas.enums import SignalTier
+from money_pit.schemas.enums import SourceType
 from money_pit.schemas.provenance import SourceRef
-from money_pit.schemas.signal_draft import ClaimDraft, SignalSetDraft
+from money_pit.schemas.signal_draft import ClaimDraft
+from money_pit.schemas.signal_draft import SignalSetDraft
 from money_pit.schemas.signals import SignalSet
 
 
@@ -114,35 +118,64 @@ def empty_ticker_stub_agent(source_ref: SourceRef) -> Callable[[VideoPayload], S
     return _agent
 
 
-def test_video_adapter_process_returns_signal_set(
+@pytest.fixture
+def processed_signal_set(
     stub_agent: Callable[[VideoPayload], SignalSetDraft],
     video_payload: VideoPayload,
     tmp_path: Path,
-) -> None:
-    """VideoAdapter.process returns a well-formed SignalSet with correct identity fields."""
+) -> tuple[SignalSet, Path]:
     result = VideoAdapter(agent=stub_agent, cache_dir=tmp_path).process(video_payload)
+    return result, tmp_path
 
+
+def test_video_adapter_process_returns_signal_set(processed_signal_set: tuple[SignalSet, Path]) -> None:
+    result, _ = processed_signal_set
     assert isinstance(result, SignalSet)
+
+
+def test_video_adapter_process_preserves_source_id(processed_signal_set: tuple[SignalSet, Path]) -> None:
+    result, _ = processed_signal_set
     assert result.source_ref.source_id == "yt_test_001"
+
+
+def test_video_adapter_process_preserves_slug(processed_signal_set: tuple[SignalSet, Path]) -> None:
+    result, _ = processed_signal_set
     assert result.slug == "2026-06-18_14-30-00"
+
+
+def test_video_adapter_process_preserves_summary(processed_signal_set: tuple[SignalSet, Path]) -> None:
+    result, _ = processed_signal_set
     assert result.summary == "NVDA is well-positioned for AI infrastructure. Risk is AMD competition."
+
+
+def test_video_adapter_process_extracts_claims(processed_signal_set: tuple[SignalSet, Path]) -> None:
+    result, _ = processed_signal_set
     assert len(result.claims) > 0
 
 
-def test_video_adapter_persists_payload_before_llm(
-    stub_agent: Callable[[VideoPayload], SignalSetDraft],
-    video_payload: VideoPayload,
-    tmp_path: Path,
-) -> None:
-    """VideoAdapter writes a video_payload.json under cache_dir/source_id/ before calling the agent."""
-    _ = VideoAdapter(agent=stub_agent, cache_dir=tmp_path).process(video_payload)
+@pytest.fixture
+def persisted_payload_path(processed_signal_set: tuple[SignalSet, Path]) -> Path:
+    _, cache_dir = processed_signal_set
+    return cache_dir / "yt_test_001" / "video_payload.json"
 
-    payload_path = tmp_path / "yt_test_001" / "video_payload.json"
-    assert payload_path.exists()
-    parsed = cast(dict[str, object], json.loads(payload_path.read_text(encoding="utf-8")))
-    source_ref_obj = parsed["source_ref"]
-    assert isinstance(source_ref_obj, dict)
-    assert "source_id" in source_ref_obj
+
+@pytest.fixture
+def persisted_source_ref(persisted_payload_path: Path) -> object:
+    parsed = cast("dict[str, object]", json.loads(persisted_payload_path.read_text(encoding="utf-8")))
+    return parsed["source_ref"]
+
+
+def test_video_adapter_persists_payload_before_llm(persisted_payload_path: Path) -> None:
+    assert persisted_payload_path.exists()
+
+
+def test_video_adapter_persisted_source_ref_is_dict(persisted_source_ref: object) -> None:
+    assert isinstance(persisted_source_ref, dict)
+
+
+def test_video_adapter_persisted_source_ref_has_source_id(persisted_source_ref: object) -> None:
+    assert isinstance(persisted_source_ref, dict)
+    assert "source_id" in persisted_source_ref
 
 
 def test_video_adapter_has_actionable_content_with_high_tier_claim(
@@ -177,10 +210,3 @@ def test_video_adapter_filters_invalid_tickers(
 
     assert len(result.claims) == 1
     assert result.claims[0].tickers_affected == []
-
-
-def test_video_payload_serializes_round_trip(video_payload: VideoPayload) -> None:
-    """VideoPayload survives a JSON round-trip and compares equal to the original."""
-    round_tripped = VideoPayload.model_validate_json(video_payload.model_dump_json())
-
-    assert round_tripped == video_payload

@@ -23,9 +23,11 @@ from money_pit.schemas.analysis_draft import Scenario
 from money_pit.schemas.analysis_draft import ScenarioTable
 from money_pit.schemas.enums import ActionType
 from money_pit.schemas.enums import ConvictionLevel
+from money_pit.schemas.enums import OverallValidationStatus
 from money_pit.schemas.enums import RegimeTag
 from money_pit.schemas.enums import ValidationStatus
 from money_pit.schemas.validation_results import ValidationStep
+
 
 _SLUG = "2026-01-01_00-00-00"
 
@@ -187,7 +189,7 @@ def test__overall_status_with_all_matched() -> None:
         _make_validation_step("A002", ValidationStatus.MATCHED),
     ]
 
-    assert _overall_status(steps) == "validated"
+    assert _overall_status(steps) == OverallValidationStatus.VALIDATED
 
 
 def test__overall_status_with_one_unmatched() -> None:
@@ -196,8 +198,8 @@ def test__overall_status_with_one_unmatched() -> None:
         _make_validation_step("A002", ValidationStatus.UNMATCHED),
     ]
 
-    assert _overall_status(steps) == "validation_failed"
+    assert _overall_status(steps) == OverallValidationStatus.VALIDATION_FAILED
 
 
 def test__overall_status_with_empty_steps() -> None:
-    assert _overall_status([]) == "validated"
+    assert _overall_status([]) == OverallValidationStatus.VALIDATED

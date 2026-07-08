@@ -1,4 +1,4 @@
-"""Category → tool routing table, consumed by A2 templating and A3 fetch."""
+"""Module containing the category-to-tool routing table consumed by A2 templating and A3 fetch in the money_pit package."""
 
 from money_pit.schemas.enums import DataSourceToken
 from money_pit.schemas.enums import QuestionCategory

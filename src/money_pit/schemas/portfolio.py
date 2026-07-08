@@ -1,4 +1,4 @@
-"""Position, CorrelatedOverlap, PortfolioSnapshot — portfolio_snapshot.json contract."""
+"""Module containing the Position, CorrelatedOverlap, and PortfolioSnapshot models of the portfolio_snapshot.json contract for the money_pit package."""
 
 from typing import ClassVar
 

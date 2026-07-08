@@ -1,4 +1,4 @@
-"""AnalysisJudgment container — the §6.5 A4 judgment output consumed by pipeline/analysis.py."""
+"""Module containing the AnalysisJudgment container (the §6.5 A4 judgment output consumed by pipeline/analysis.py) for the money_pit package."""
 
 from typing import ClassVar
 

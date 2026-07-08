@@ -1,4 +1,4 @@
-"""A2 node: template emission, ID assignment, routing-table data_sources, file writes."""
+"""Module containing the A2 node handling template emission, ID assignment, routing-table data_sources, and file writes for the money_pit package."""
 
 from datetime import datetime
 from datetime import timezone
@@ -20,6 +20,7 @@ from money_pit.graph.state import require_working_dir
 from money_pit.graph.state import with_completed_step
 from money_pit.schemas.enums import QuestionCategory
 from money_pit.schemas.enums import SignalTier
+from money_pit.schemas.macro import MACRO_INDICATOR_SERIES
 from money_pit.schemas.portfolio import PortfolioSnapshot
 from money_pit.schemas.question_draft import DraftQuestion
 from money_pit.schemas.questions import INDICATOR_PREFIX
@@ -32,49 +33,49 @@ from money_pit.schemas.signals import Claim
 
 _CLAIM_SUMMARY_MAX_LEN: int = 80
 
-_MACRO_QUESTIONS: list[tuple[str, str, str]] = [
-    (
-        "yield_curve",
+_A2_AGENT_FAILURE_LOG: str = "A2 claim questions agent failed; proceeding with no LLM-authored questions"
+
+_MACRO_QUESTION_TEXT: dict[str, tuple[str, str]] = {
+    "yield_curve": (
         "What is the current T10Y2Y 10-year minus 2-year Treasury yield spread in percentage points?",
         "Yield curve shape determines credit cycle phase.",
     ),
-    (
-        "credit_spreads",
+    "credit_spreads": (
         "What is the current ICE BofA US High Yield OAS credit spread in percentage points?",
         "Credit spread width signals financial stress.",
     ),
-    (
-        "pmi",
+    "pmi": (
         "What is the current ISM Manufacturing PMI reading?",
         "PMI above/below 50 signals expansion/contraction.",
     ),
-    (
-        "earnings_revisions",
+    "earnings_revisions": (
         "What is the current S&P 500 forward EPS breadth — fraction of constituents with upward revisions minus downward?",
         "Positive earnings revision breadth confirms growth acceleration.",
     ),
-    (
-        "inflation",
+    "inflation": (
         "What is the most recent US CPI core (CPILFESL) year-over-year percentage change?",
         "Inflation above target constrains monetary easing.",
     ),
-]
+}
 
 
 def _make_macro_questions() -> list[Question]:
-    return [
-        Question(
-            id="",
-            category=QuestionCategory.MACRO_REGIME,
-            question=question,
-            signal_source=f"{INDICATOR_PREFIX}{indicator_name}",
-            signal_tier=SignalTier.LOW,
-            rationale=rationale,
-            data_sources=CATEGORY_TO_TOOLS[QuestionCategory.MACRO_REGIME],
-            answer=None,
+    questions: list[Question] = []
+    for indicator_name in MACRO_INDICATOR_SERIES:
+        question, rationale = _MACRO_QUESTION_TEXT[indicator_name]
+        questions.append(
+            Question(
+                id="",
+                category=QuestionCategory.MACRO_REGIME,
+                question=question,
+                signal_source=f"{INDICATOR_PREFIX}{indicator_name}",
+                signal_tier=SignalTier.LOW,
+                rationale=rationale,
+                data_sources=CATEGORY_TO_TOOLS[QuestionCategory.MACRO_REGIME],
+                answer=None,
+            )
         )
-        for indicator_name, question, rationale in _MACRO_QUESTIONS
-    ]
+    return questions
 
 
 def _make_current_events_questions(high_medium_claims: list[Claim]) -> list[Question]:
@@ -139,7 +140,7 @@ def _make_portfolio_gap_questions(
                 id="",
                 category=QuestionCategory.PORTFOLIO_GAP,
                 question="No portfolio overlap detected for current signals.",
-                signal_source="none",
+                signal_source=None,
                 signal_tier=SignalTier.PORTFOLIO,
                 rationale="Placeholder — no actionable overlap.",
                 data_sources=CATEGORY_TO_TOOLS[QuestionCategory.PORTFOLIO_GAP],
@@ -219,7 +220,7 @@ def _make_llm_questions(
     try:
         drafts: list[DraftQuestion] = claim_questions_agent(high_medium_claims)
     except Exception:
-        logger.exception("A2 claim questions agent failed; proceeding with no LLM-authored questions")
+        logger.exception(_A2_AGENT_FAILURE_LOG)
         drafts = []
 
     claims_by_id: dict[str, Claim] = {c.claim_id: c for c in high_medium_claims}

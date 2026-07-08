@@ -1,4 +1,4 @@
-"""Confidence derivation from sources_used (primary/secondary/Brave rule)."""
+"""Module containing confidence derivation from sources_used (primary/secondary/Brave rule) for the money_pit package."""
 
 from money_pit.schemas.enums import Confidence
 from money_pit.schemas.enums import DataSourceToken

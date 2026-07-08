@@ -1,4 +1,4 @@
-"""Neutral home for the cross-layer dependency and contract aliases shared by the agents, pipeline, and graph layers.
+"""Module containing the cross-layer dependency and contract aliases shared by the agents, pipeline, and graph layers of the money_pit package.
 
 Depends only on money_pit.schemas so it stays a cycle-free leaf importable by every layer
 that produces or consumes these callables.

@@ -8,7 +8,9 @@ construction. Red today because the field is an unconstrained `str`.
 import pytest
 from pydantic import ValidationError
 
-from money_pit.schemas.enums import DataSourceToken, QuestionCategory, SignalTier
+from money_pit.schemas.enums import DataSourceToken
+from money_pit.schemas.enums import QuestionCategory
+from money_pit.schemas.enums import SignalTier
 from money_pit.schemas.questions import Question
 
 

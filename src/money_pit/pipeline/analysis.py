@@ -1,9 +1,8 @@
-"""A4 node: calls agents/thesis_judgment + compute/ post-processor functions, writes action_steps.json."""
+"""Module containing the A4 node that calls agents/thesis_judgment plus the compute/ post-processor functions and writes action_steps.json for the money_pit package."""
 
 import json
 from pathlib import Path
 from typing import NamedTuple
-from typing import Optional
 
 from loguru import logger
 
@@ -37,6 +36,7 @@ from money_pit.schemas.enums import QuestionCategory
 from money_pit.schemas.enums import RegimeTag
 from money_pit.schemas.enums import Step1Disposition
 from money_pit.schemas.enums import TerminalState
+from money_pit.schemas.macro import MACRO_INDICATOR_SERIES
 from money_pit.schemas.macro import MacroIndicators
 from money_pit.schemas.portfolio import PortfolioSnapshot
 from money_pit.schemas.questions import INDICATOR_PREFIX
@@ -49,24 +49,18 @@ _AGENT_EXCEPTION_HALT_REASON: str = "A4 thesis judgment agent raised an exceptio
 
 def _extract_macro_indicators(answers: list[Answer]) -> MacroIndicators:
     """Assemble MacroIndicators from macro_regime answers in initial_answers.json."""
-    values: dict[str, float | None] = {
-        "yield_curve": None,
-        "credit_spreads": None,
-        "pmi": None,
-        "earnings_revisions": None,
-        "inflation": None,
-    }
+    values: dict[str, float | None] = dict.fromkeys(MACRO_INDICATOR_SERIES, None)
     for ans in answers:
         if ans.category != QuestionCategory.MACRO_REGIME:
             continue
-        if not ans.signal_source.startswith(INDICATOR_PREFIX):
+        if ans.signal_source is None or not ans.signal_source.startswith(INDICATOR_PREFIX):
             continue
-        name = ans.signal_source[len(INDICATOR_PREFIX) :]
+        name: str = ans.signal_source[len(INDICATOR_PREFIX) :]
         if name not in values:
             continue
-        data = ans.data_retrieved
+        data: dict[str, object] | None = ans.data_retrieved
         if data is not None:
-            raw = data.get("value")
+            raw: object = data.get("value")
             if isinstance(raw, (int, float)):
                 values[name] = float(raw)
     return MacroIndicators(
@@ -99,8 +93,8 @@ def _render_action_steps_md(slug: str, action_steps: list[ActionStep]) -> str:
     """Render action_steps.md content from a list of ActionStep objects."""
     lines: list[str] = [f"# Action Steps — {slug}", ""]
     for step in action_steps:
-        notional = step.execution_parameters.notional
-        notional_str = f"${notional:.2f}" if notional is not None else "N/A"
+        notional: float | None = step.execution_parameters.notional
+        notional_str: str = f"${notional:.2f}" if notional is not None else "N/A"
         lines.extend(
             [
                 f"## {step.step_id} — {step.action_type.value} {step.instrument}",
@@ -163,8 +157,8 @@ def _render_analysis_md(
     lines.append("## Action Steps")
     if action_steps:
         for step in action_steps:
-            notional = step.execution_parameters.notional
-            notional_str = f"${notional:.2f}" if notional is not None else "N/A"
+            notional: float | None = step.execution_parameters.notional
+            notional_str: str = f"${notional:.2f}" if notional is not None else "N/A"
             lines.append(f"- {step.step_id}: {step.action_type.value} {step.instrument} ({notional_str})")
     else:
         lines.append("- No action steps produced.")
@@ -281,7 +275,7 @@ def _materialize_action_steps(
     for i, thesis in enumerate(container.theses):
         verified: bool = thesis.disposition == Step1Disposition.SUPPORTED
         scenarios: list[tuple[float, float]] = _to_scenario_list(thesis.scenario_table)
-        dollar_amount: Optional[float] = size_position(
+        dollar_amount: float | None = size_position(
             scenarios,
             portfolio_snapshot.total_account_value,
             config,

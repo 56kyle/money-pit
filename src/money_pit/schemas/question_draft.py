@@ -1,4 +1,4 @@
-"""DraftQuestion — A2 LLM output: claim-specific thesis_validation and invalidation_conditions questions only."""
+"""Module containing DraftQuestion, the A2 LLM output of claim-specific thesis_validation and invalidation_conditions questions, for the money_pit package."""
 
 from typing import ClassVar
 

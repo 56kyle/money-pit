@@ -1,4 +1,4 @@
-"""StateGraph assembly: add_node / add_edge / add_conditional_edges."""
+"""Module containing the StateGraph assembly (add_node / add_edge / add_conditional_edges) for the money_pit package."""
 
 from pathlib import Path
 
@@ -45,7 +45,7 @@ from money_pit.schemas.enums import TerminalState
 def _no_action_terminal(state: PipelineState) -> PipelineState:
     result: PipelineState = {
         "terminal_state": TerminalState.NO_ACTION,
-        "completed_steps": list(state.get("completed_steps") or []) + ["no_action_terminal"],
+        "completed_steps": [*list(state.get("completed_steps") or []), "no_action_terminal"],
     }
     return result
 

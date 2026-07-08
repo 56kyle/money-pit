@@ -1,4 +1,4 @@
-"""ExecutionJournalEntry, ExecutionJournal — execution_journal.json contract."""
+"""Module containing the ExecutionJournalEntry and ExecutionJournal models of the execution_journal.json contract for the money_pit package."""
 
 from typing import ClassVar
 

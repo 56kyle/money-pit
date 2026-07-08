@@ -1,4 +1,4 @@
-"""MacroIndicators — five-indicator snapshot assembled by the A4 post-processor for regime classification."""
+"""Module containing MacroIndicators, the five-indicator snapshot assembled by the A4 post-processor for regime classification, for the money_pit package."""
 
 from typing import ClassVar
 
@@ -21,3 +21,12 @@ class MacroIndicators(BaseModel):
     earnings_revisions: float | None
     inflation: float | None
     as_of: str | None
+
+
+MACRO_INDICATOR_SERIES: dict[str, str] = {
+    "yield_curve": "T10Y2Y",
+    "credit_spreads": "BAMLH0A0HYM2",
+    "pmi": "NAPM",
+    "earnings_revisions": "SP500",
+    "inflation": "CPILFESL",
+}

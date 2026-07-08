@@ -9,7 +9,10 @@ import pytest
 from pydantic import ValidationError
 
 from money_pit.schemas.answers import Answer
-from money_pit.schemas.enums import Confidence, DataSourceToken, QuestionCategory, SignalTier
+from money_pit.schemas.enums import Confidence
+from money_pit.schemas.enums import DataSourceToken
+from money_pit.schemas.enums import QuestionCategory
+from money_pit.schemas.enums import SignalTier
 
 
 def _answer(signal_tier: object) -> Answer:

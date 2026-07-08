@@ -1,17 +1,28 @@
 """Module containing logic for logging used throughout the money_pit package."""
 
+import functools
 from pathlib import Path
 
 from loguru import logger
 
 from money_pit.constants import APP_START_TIME
 from money_pit.constants import FILE_SAFE_DATETIME_FORMAT
-from money_pit.constants import USER_LOG_FOLDER
+from money_pit.constants import user_log_folder
 
 
-_FILE_SAFE_DATETIME_SLUG: str = APP_START_TIME.strftime(FILE_SAFE_DATETIME_FORMAT)
-
-LOG_PATH: Path = USER_LOG_FOLDER / f"log_{_FILE_SAFE_DATETIME_SLUG}.log"
+_LOG_FILENAME_TEMPLATE: str = "log_{slug}.log"
 
 
-logger.add(LOG_PATH, serialize=True)
+@functools.cache
+def log_path() -> Path:
+    """Return the process-start log file path, creating the log folder on first call."""
+    slug: str = APP_START_TIME.strftime(FILE_SAFE_DATETIME_FORMAT)
+    return user_log_folder() / _LOG_FILENAME_TEMPLATE.format(slug=slug)
+
+
+@functools.cache
+def configure_file_logging() -> Path:
+    """Register the serialized file sink exactly once, returning the log path; call from process entrypoints."""
+    path: Path = log_path()
+    _ = logger.add(path, serialize=True)
+    return path

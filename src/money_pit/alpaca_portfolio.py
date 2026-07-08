@@ -4,7 +4,9 @@ sector is resolved best-effort via yfinance and falls back to "unknown"; factor_
 correlated_overlaps are v0-deferred and always emitted empty.
 """
 
+import requests
 from alpaca.trading.client import TradingClient
+from loguru import logger
 
 from money_pit.config import AlpacaCredentials
 from money_pit.contracts import PortfolioFetcher
@@ -28,16 +30,17 @@ def _asset_class_value(asset_class: object) -> str:
 
 def _resolve_sector(ticker: str) -> str:  # pragma: no cover
     """Return the yfinance sector for a ticker, best-effort, falling back to "unknown" (mirrors the _Direct* tools)."""
-    try:
-        import yfinance as yf  # pyright: ignore[reportMissingTypeStubs]
+    import yfinance as yf  # pyright: ignore[reportMissingTypeStubs]
 
+    try:
         info: dict[str, object] = yf.Ticker(ticker).info  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-        sector: object = info.get("sector")  # pyright: ignore[reportUnknownMemberType]
-        if isinstance(sector, str) and sector:
-            return sector
+    except (requests.RequestException, OSError, KeyError, ValueError) as error:
+        logger.debug("yfinance sector lookup failed for {ticker}; using {fallback}: {error}", ticker=ticker, fallback=_UNKNOWN_SECTOR, error=error)
         return _UNKNOWN_SECTOR
-    except Exception:
-        return _UNKNOWN_SECTOR
+    sector: object = info.get("sector")  # pyright: ignore[reportUnknownMemberType]
+    if isinstance(sector, str) and sector:
+        return sector
+    return _UNKNOWN_SECTOR
 
 
 def _to_position(raw: object) -> Position:
@@ -46,13 +49,13 @@ def _to_position(raw: object) -> Position:
         raise NonEquityPositionError(
             f"Position {getattr(raw, 'symbol', '?')!r} is not a us_equity asset; the v0 snapshot is equities-only."
         )
-    ticker: str = str(getattr(raw, "symbol"))
+    ticker: str = str(raw.symbol)
     return Position(
         ticker=ticker,
-        quantity=float(getattr(raw, "qty")),
-        cost_basis=float(getattr(raw, "avg_entry_price")),
-        current_value=float(getattr(raw, "market_value")),
-        unrealized_pl=float(getattr(raw, "unrealized_pl")),
+        quantity=float(raw.qty),
+        cost_basis=float(raw.avg_entry_price),
+        current_value=float(raw.market_value),
+        unrealized_pl=float(raw.unrealized_pl),
         sector=_resolve_sector(ticker),
         factor_tags=[],
     )
@@ -78,13 +81,13 @@ def make_alpaca_portfolio_fetcher(credentials: AlpacaCredentials) -> PortfolioFe
 
     def fetch_portfolio(slug: str) -> PortfolioSnapshot:  # pragma: no cover
         account = client.get_account()  # pyright: ignore[reportUnknownMemberType]
-        total_account_value: float = float(getattr(account, "portfolio_value"))
+        total_account_value: float = float(account.portfolio_value)
         positions: list[Position] = [_to_position(raw) for raw in client.get_all_positions()]  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
         return PortfolioSnapshot(
             slug=slug,
             as_of=slug,
             total_account_value=total_account_value,
-            available_cash=float(getattr(account, "cash")),
+            available_cash=float(account.cash),
             positions=positions,
             sector_weights=_sector_weights(positions, total_account_value),
             correlated_overlaps=[],

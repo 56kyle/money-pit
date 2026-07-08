@@ -1,4 +1,4 @@
-"""Regime decision table: five indicators → RegimeTag (UNCERTAIN on missing/conflict)."""
+"""Module containing the regime decision table mapping five indicators to a RegimeTag (UNCERTAIN on missing/conflict) for the money_pit package."""
 
 from money_pit.config import Config
 from money_pit.schemas.enums import RegimeTag

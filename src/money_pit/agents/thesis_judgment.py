@@ -1,19 +1,18 @@
-"""A4 LLM core: claim disposition, thesis narratives, scenario estimates, invalidation conditions → AnalysisJudgment."""
-
-from pathlib import Path
+"""Module containing the A4 LLM core producing claim disposition, thesis narratives, scenario estimates, and invalidation conditions as AnalysisJudgment for the money_pit package."""
 
 from pydantic_ai import Agent
 
 from money_pit.config import Config
+from money_pit.constants import ANTHROPIC_MODEL_PREFIX
 from money_pit.contracts import ThesisAgent
+from money_pit.prompt_loader import system_prompt
 from money_pit.schemas.analysis_draft import AnalysisJudgment
 from money_pit.schemas.answers import InitialAnswers
 from money_pit.schemas.portfolio import PortfolioSnapshot
 from money_pit.schemas.signals import AggregatedSignals
 
 
-_PROMPT_PATH: Path = Path(__file__).parent.parent.parent.parent / "data" / "agents" / "agent_4.md"
-_SYSTEM_PROMPT: str = _PROMPT_PATH.read_text(encoding="utf-8")
+_PROMPT_NAME: str = "agent_4"
 
 
 def make_thesis_judgment_agent(
@@ -22,11 +21,11 @@ def make_thesis_judgment_agent(
     model: str | None = None,
 ) -> ThesisAgent:
     """Return a callable that runs the A4 thesis judgment agent against the three pipeline inputs."""
-    resolved_model: str = f"anthropic:{model or config.llm_model}"
+    resolved_model: str = f"{ANTHROPIC_MODEL_PREFIX}{model or config.llm_model}"
     agent: Agent[None, AnalysisJudgment] = Agent(
         model=resolved_model,
         output_type=AnalysisJudgment,
-        system_prompt=_SYSTEM_PROMPT,
+        system_prompt=system_prompt(_PROMPT_NAME),
         defer_model_check=False,
     )
 

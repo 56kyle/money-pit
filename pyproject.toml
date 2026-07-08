@@ -38,6 +38,7 @@ dependencies = [
     "jsonschema>=4.0.0",
     "langgraph>=0.2.0",
     "pydantic>=2.12.3",
+    "pydantic-settings>=2.14",
     "python-dotenv>=1.2.1",
     "typer>=0.15.4",
     "typing-extensions>=4.13.2",
@@ -114,6 +115,9 @@ explicit = true
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.package-data]
+"money_pit.prompts" = ["*.md"]
 
 [tool.pytest.ini_options]
 addopts = "-m 'not live'"

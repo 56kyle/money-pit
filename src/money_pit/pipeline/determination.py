@@ -1,4 +1,4 @@
-"""Agent 6: the pure determination seam plus the determination and finalizer graph nodes.
+"""Module containing the Agent 6 pure determination seam plus the determination and finalizer graph nodes for the money_pit package.
 
 The recompute/load/map functions are pure and directly testable; the two node factories
 compose them into the graph. The determination node decides PROCEED/HALT (or fails closed to
@@ -11,6 +11,7 @@ from datetime import timezone
 from pathlib import Path
 from typing import Literal
 
+from loguru import logger
 from pydantic import ValidationError
 
 from money_pit.constants import ACTION_STEPS_VALIDATION_JSON_FILENAME
@@ -131,12 +132,18 @@ def make_determination_node() -> PipelineNode:
 
 
 def _read_journal_outcome(working_dir: Path) -> ExecutionOutcome | None:
+    """Return the journal outcome, or None when absent; logs at ERROR on a corrupt journal."""
     path: Path = working_dir / EXECUTION_JOURNAL_FILENAME
     if not path.exists():
         return None
     try:
         journal: ExecutionJournal = ExecutionJournal.model_validate_json(path.read_text(encoding="utf-8"))
-    except ValidationError:
+    except ValidationError as error:
+        logger.error(
+            "Execution journal at {path} is corrupt; treating outcome as absent: {error}",
+            path=path,
+            error=error,
+        )
         return None
     return journal.outcome
 

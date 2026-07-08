@@ -1,4 +1,4 @@
-"""A3 node: deterministic known-param fetch, budget control, file writes."""
+"""Module containing the A3 node handling deterministic known-param fetch, budget control, and file writes for the money_pit package."""
 
 from pathlib import Path
 
@@ -21,20 +21,17 @@ from money_pit.schemas.answers import Answer
 from money_pit.schemas.answers import InitialAnswers
 from money_pit.schemas.enums import DataSourceToken
 from money_pit.schemas.enums import QuestionCategory
+from money_pit.schemas.fetch_result import FetchError
+from money_pit.schemas.fetch_result import FetchResult
+from money_pit.schemas.fetch_result import FetchValue
+from money_pit.schemas.fetch_result import NoData
+from money_pit.schemas.macro import MACRO_INDICATOR_SERIES
 from money_pit.schemas.provenance import SourceRef
 from money_pit.schemas.questions import INDICATOR_PREFIX
 from money_pit.schemas.questions import InitialQuestions
 from money_pit.schemas.questions import Question
 from money_pit.schemas.signals import AggregatedSignals
 
-
-_FRED_SERIES: dict[str, str] = {
-    "yield_curve": "T10Y2Y",
-    "credit_spreads": "BAMLH0A0HYM2",
-    "pmi": "NAPM",
-    "earnings_revisions": "SP500",
-    "inflation": "CPILFESL",
-}
 
 _DETERMINISTIC_CATEGORIES: frozenset[QuestionCategory] = frozenset(
     {
@@ -88,58 +85,73 @@ def _render_markdown(slug: str, answers: list[Answer]) -> str:
 def _fetch_deterministic(
     question: Question,
     tools: DeterministicResearchTools,
-) -> dict[str, object] | None:
-    """Return fetched data for a deterministic question, or None if unavailable."""
+) -> FetchResult:
+    """Return the deterministic fetch result, or NoData when the question carries no fetchable source."""
     if question.category == QuestionCategory.MACRO_REGIME:
-        if not question.signal_source.startswith(INDICATOR_PREFIX):
-            return None
-        indicator_name: str = question.signal_source[len(INDICATOR_PREFIX) :]
-        series_id: str | None = _FRED_SERIES.get(indicator_name)
+        signal_source: str | None = question.signal_source
+        if signal_source is None or not signal_source.startswith(INDICATOR_PREFIX):
+            return NoData()
+        indicator_name: str = signal_source[len(INDICATOR_PREFIX) :]
+        series_id: str | None = MACRO_INDICATOR_SERIES.get(indicator_name)
         if series_id is None:
-            return None
-        fred_value: float | None = tools.fetch_fred_series(series_id)
-        if fred_value is None:
-            return None
-        fred_result: dict[str, object] = {"value": fred_value}
-        return fred_result
+            return NoData()
+        return tools.fetch_fred_series(series_id)
 
     if question.category == QuestionCategory.PORTFOLIO_GAP:
-        ticker: str = question.signal_source
-        price: float | None = tools.fetch_ticker_price(ticker) if ticker != "none" else None
-        if price is None:
-            return None
-        price_result: dict[str, object] = {"value": price}
-        return price_result
+        ticker: str | None = question.signal_source
+        if ticker is None:
+            return NoData()
+        return tools.fetch_ticker_price(ticker)
 
-    return None
+    return NoData()
 
 
-def _deterministic_answer(question: Question, data_retrieved: dict[str, object] | None) -> Answer:
-    """Build an Answer for a deterministic question, deriving confidence from provenance."""
+def _deterministic_answer(question: Question, result: FetchResult) -> Answer:
+    """Build an Answer for a deterministic question; logs at ERROR on a fetch failure."""
     source_token: DataSourceToken = (
         _MACRO_REGIME_SOURCE if question.category == QuestionCategory.MACRO_REGIME else _PORTFOLIO_GAP_SOURCE
     )
-    sources_used: list[DataSourceToken] = [source_token] if data_retrieved else []
+    match result:
+        case FetchValue(value=value):
+            data_retrieved: dict[str, object] | None = {"value": value}
+            sources_used: list[DataSourceToken] = [source_token]
+            answer: str = f"Fetched: {data_retrieved}"
+            limitations: str = "Direct deterministic fetch; no LLM synthesis."
+        case NoData():
+            data_retrieved = None
+            sources_used = []
+            answer = "Data unavailable."
+            limitations = "Fetch returned no data."
+        case FetchError(reason=reason):
+            logger.error(
+                "Deterministic fetch failed for question {question_id}: {reason}",
+                question_id=question.id,
+                reason=reason,
+            )
+            data_retrieved = None
+            sources_used = []
+            answer = f"Data fetch error: {reason}"
+            limitations = "Deterministic fetch failed against an upstream error."
     return Answer(
         question_id=question.id,
         question=question.question,
         category=question.category,
         signal_source=question.signal_source,
         signal_tier=question.signal_tier,
-        answer=f"Fetched: {data_retrieved}" if data_retrieved else "Data unavailable.",
+        answer=answer,
         confidence=derive_confidence(sources_used),
         sources_used=sources_used,
         data_retrieved=data_retrieved,
-        limitations=("Direct deterministic fetch; no LLM synthesis." if data_retrieved else "Fetch returned no data."),
+        limitations=limitations,
     )
 
 
 def _load_retrieval_inputs(working_dir: Path) -> tuple[InitialQuestions, AggregatedSignals]:
     """Load the A2 questions and aggregated signals for a retrieval run."""
-    initial_questions = InitialQuestions.model_validate_json(
+    initial_questions: InitialQuestions = InitialQuestions.model_validate_json(
         (working_dir / INITIAL_QUESTIONS_JSON_FILENAME).read_text(encoding="utf-8")
     )
-    aggregated_signals = AggregatedSignals.model_validate_json(
+    aggregated_signals: AggregatedSignals = AggregatedSignals.model_validate_json(
         (working_dir / AGGREGATED_SIGNALS_JSON_FILENAME).read_text(encoding="utf-8")
     )
     return initial_questions, aggregated_signals
@@ -150,10 +162,10 @@ def _answer_deterministic(
     deterministic_tools: DeterministicResearchTools,
 ) -> list[Answer]:
     """Fetch and answer the deterministic questions via code-owned research tools."""
-    deterministic_pairs: list[tuple[Question, dict[str, object] | None]] = [
+    deterministic_pairs: list[tuple[Question, FetchResult]] = [
         (q, _fetch_deterministic(q, deterministic_tools)) for q in deterministic_questions
     ]
-    return [_deterministic_answer(q, data_retrieved) for q, data_retrieved in deterministic_pairs]
+    return [_deterministic_answer(q, result) for q, result in deterministic_pairs]
 
 
 def _answer_open_ended(
@@ -171,7 +183,7 @@ def _answer_open_ended(
 
     llm_answers: list[Answer] = []
     for draft in drafts:
-        question = question_by_id.get(draft.question_id)
+        question: Question | None = question_by_id.get(draft.question_id)
         if question is None:
             logger.warning(
                 "Dropping A3 draft with unmatched question_id {question_id}",
@@ -206,8 +218,8 @@ def make_retrieval_node(
     """Return a LangGraph node that answers research questions via agent retrieval."""
 
     def retrieval_node(state: PipelineState) -> PipelineState:
-        working_dir = require_working_dir(state)
-        slug = require_slug(state)
+        working_dir: Path = require_working_dir(state)
+        slug: str = require_slug(state)
 
         initial_questions, aggregated_signals = _load_retrieval_inputs(working_dir)
         questions: list[Question] = initial_questions.questions
@@ -220,7 +232,7 @@ def make_retrieval_node(
         llm_answers: list[Answer] = _answer_open_ended(answer_synthesis_agent, open_ended_questions, sources)
 
         all_answers: list[Answer] = deterministic_answers + llm_answers
-        initial_answers = InitialAnswers(slug=slug, sources=sources, answers=all_answers)
+        initial_answers: InitialAnswers = InitialAnswers(slug=slug, sources=sources, answers=all_answers)
 
         _write_retrieval_outputs(working_dir, slug, initial_answers, all_answers)
 

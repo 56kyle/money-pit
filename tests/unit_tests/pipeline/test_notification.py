@@ -10,6 +10,7 @@ is pinned.
 from money_pit.pipeline.notification import _build_subject
 from money_pit.schemas.enums import TerminalState
 
+
 _SLUG = "test-run"
 
 

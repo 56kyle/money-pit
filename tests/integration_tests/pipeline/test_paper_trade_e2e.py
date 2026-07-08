@@ -51,61 +51,21 @@ def _assert_file_valid(run_dir: Path, filename: str, model_class: type[ModelT]) 
     return model_class.model_validate_json(path.read_text(encoding="utf-8"))
 
 
-def test_paper_trade_execute_path(
-    tmp_path: Path, pipeline_signals_dir: Path, stub_free_order_schema_path: Path
-) -> None:
-    """Full pipeline run with stub agents completes via the execute branch."""
-    run_dir = tmp_path / "run"
+_EXECUTE_PATH_JSON_FILES: list[tuple[str, type[BaseModel]]] = [
+    ("portfolio_snapshot.json", PortfolioSnapshot),
+    ("aggregated_signals.json", AggregatedSignals),
+    ("initial_questions.json", InitialQuestions),
+    ("initial_answers.json", InitialAnswers),
+    ("action_steps_validation.json", ActionStepsValidation),
+    ("execution_journal.json", ExecutionJournal),
+]
 
-    overrides = phase4_overrides()
-    overrides.order_schema_path = stub_free_order_schema_path
-    overrides.manifest = pinned_manifest(stub_free_order_schema_path)
-    final_state = run_pipeline(signals_dir=pipeline_signals_dir, run_dir=run_dir, overrides=overrides)
-
-    completed = final_state.get("completed_steps", [])
-    for step in _EXECUTE_PATH_STEPS:
-        assert step in completed, f"Missing completed step: {step}"
-
-    _ = _assert_file_valid(run_dir, "portfolio_snapshot.json", PortfolioSnapshot)
-    _ = _assert_file_valid(run_dir, "aggregated_signals.json", AggregatedSignals)
-    _ = _assert_file_valid(run_dir, "initial_questions.json", InitialQuestions)
-    _ = _assert_file_valid(run_dir, "initial_answers.json", InitialAnswers)
-    _ = _assert_file_valid(run_dir, "action_steps_validation.json", ActionStepsValidation)
-    _ = _assert_file_valid(run_dir, "execution_journal.json", ExecutionJournal)
-
-    action_steps = _action_steps_adapter.validate_json((run_dir / "action_steps.json").read_text(encoding="utf-8"))
-    assert len(action_steps) >= 1, "Expected at least one action step on the execute path"
-    assert all(s.step_failed is None for s in action_steps), "All action steps must have step_failed=None"
-
-    for md_filename in ("initial_questions.md", "initial_answers.md", "action_steps.md", "action_steps_validation.md"):
-        md_path = run_dir / md_filename
-        assert md_path.exists(), f"Missing markdown file: {md_filename}"
-        assert len(md_path.read_text(encoding="utf-8")) > 0, f"Empty markdown file: {md_filename}"
-
-    assert final_state.get("terminal_state") is None, "Execute path must not set terminal_state"
-
-
-def test_paper_trade_no_action_path(
-    tmp_path: Path, pipeline_signals_dir: Path, stub_free_order_schema_path: Path
-) -> None:
-    """Pipeline sets NO_ACTION terminal state when signals are not actionable."""
-    no_action_signals = pipeline_signals_dir / "no_action_signal.json"
-    signals_dir = tmp_path / "signals_in"
-    signals_dir.mkdir()
-    _ = shutil.copy2(no_action_signals, signals_dir / "no_action_signal.json")
-    run_dir = tmp_path / "run"
-
-    overrides = phase4_overrides()
-    overrides.manifest = pinned_manifest(stub_free_order_schema_path)
-    final_state = run_pipeline(signals_dir=signals_dir, run_dir=run_dir, overrides=overrides)
-
-    assert final_state.get("terminal_state") == TerminalState.NO_ACTION
-    assert "no_action_terminal" in (final_state.get("completed_steps") or [])
-    # Questions/retrieval/analysis nodes should NOT have run
-    assert "analysis" not in (final_state.get("completed_steps") or [])
-    # Portfolio snapshot and aggregated signals are still written (run up to signal_gate)
-    assert (run_dir / "portfolio_snapshot.json").exists()
-    assert (run_dir / "aggregated_signals.json").exists()
+_EXECUTE_PATH_MARKDOWN_FILES: list[str] = [
+    "initial_questions.md",
+    "initial_answers.md",
+    "action_steps.md",
+    "action_steps_validation.md",
+]
 
 
 @pytest.fixture(scope="module")
@@ -149,6 +109,90 @@ def test_paper_trade_execute_path_terminal_state_none(
 ) -> None:
     _, final_state = execute_run
     assert final_state.get("terminal_state") is None
+
+
+@pytest.mark.parametrize("step", _EXECUTE_PATH_STEPS)
+def test_paper_trade_execute_path_completes_step(
+    execute_run: tuple[Path, PipelineState], step: str
+) -> None:
+    _, final_state = execute_run
+    assert step in final_state.get("completed_steps", [])
+
+
+@pytest.mark.parametrize(("filename", "model_class"), _EXECUTE_PATH_JSON_FILES)
+def test_paper_trade_execute_path_writes_valid_json(
+    execute_run: tuple[Path, PipelineState], filename: str, model_class: type[BaseModel]
+) -> None:
+    run_dir, _ = execute_run
+    _ = _assert_file_valid(run_dir, filename, model_class)
+
+
+def test_paper_trade_execute_path_writes_action_steps(
+    execute_run: tuple[Path, PipelineState],
+) -> None:
+    run_dir, _ = execute_run
+    action_steps = _action_steps_adapter.validate_json((run_dir / "action_steps.json").read_text(encoding="utf-8"))
+    assert len(action_steps) >= 1
+
+
+def test_paper_trade_execute_path_action_steps_all_succeed(
+    execute_run: tuple[Path, PipelineState],
+) -> None:
+    run_dir, _ = execute_run
+    action_steps = _action_steps_adapter.validate_json((run_dir / "action_steps.json").read_text(encoding="utf-8"))
+    assert all(s.step_failed is None for s in action_steps)
+
+
+@pytest.mark.parametrize("md_filename", _EXECUTE_PATH_MARKDOWN_FILES)
+def test_paper_trade_execute_path_renders_markdown(
+    execute_run: tuple[Path, PipelineState], md_filename: str
+) -> None:
+    run_dir, _ = execute_run
+    md_path = run_dir / md_filename
+    assert md_path.exists()
+    assert len(md_path.read_text(encoding="utf-8")) > 0
+
+
+@pytest.fixture(scope="module")
+def no_action_run(
+    tmp_path_factory: pytest.TempPathFactory, pipeline_signals_dir: Path, stub_free_order_schema_path: Path
+) -> tuple[Path, PipelineState]:
+    signals_dir = tmp_path_factory.mktemp("no_action_signals_in")
+    _ = shutil.copy2(pipeline_signals_dir / "no_action_signal.json", signals_dir / "no_action_signal.json")
+    run_dir = tmp_path_factory.mktemp("no_action_run")
+    overrides = phase4_overrides()
+    overrides.manifest = pinned_manifest(stub_free_order_schema_path)
+    final_state = run_pipeline(signals_dir=signals_dir, run_dir=run_dir, overrides=overrides)
+    return run_dir, final_state
+
+
+def test_paper_trade_no_action_path_terminal_state_no_action(
+    no_action_run: tuple[Path, PipelineState],
+) -> None:
+    _, final_state = no_action_run
+    assert final_state.get("terminal_state") == TerminalState.NO_ACTION
+
+
+def test_paper_trade_no_action_path_completes_terminal_step(
+    no_action_run: tuple[Path, PipelineState],
+) -> None:
+    _, final_state = no_action_run
+    assert "no_action_terminal" in (final_state.get("completed_steps") or [])
+
+
+def test_paper_trade_no_action_path_skips_analysis(
+    no_action_run: tuple[Path, PipelineState],
+) -> None:
+    _, final_state = no_action_run
+    assert "analysis" not in (final_state.get("completed_steps") or [])
+
+
+@pytest.mark.parametrize("filename", ["portfolio_snapshot.json", "aggregated_signals.json"])
+def test_paper_trade_no_action_path_writes_pre_gate_file(
+    no_action_run: tuple[Path, PipelineState], filename: str
+) -> None:
+    run_dir, _ = no_action_run
+    assert (run_dir / filename).exists()
 
 
 class _RecordingEmail:

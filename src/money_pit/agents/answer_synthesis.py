@@ -1,22 +1,22 @@
-"""A3 LLM core: open-ended Brave/EDGAR lookups + answer synthesis."""
+"""Module containing the A3 LLM core for open-ended Brave/EDGAR lookups and answer synthesis in the money_pit package."""
 
 import json
-from pathlib import Path
 
 from pydantic_ai import Agent
 from pydantic_ai import RunContext
 
 from money_pit.agents.research_tools import OpenEndedResearchTools
 from money_pit.config import Config
+from money_pit.constants import ANTHROPIC_MODEL_PREFIX
 from money_pit.contracts import AnswerSynthesisAgent
+from money_pit.prompt_loader import system_prompt
 from money_pit.schemas.answer_draft import AnswerDraft
 from money_pit.schemas.enums import QuestionCategory
 from money_pit.schemas.provenance import SourceRef
 from money_pit.schemas.questions import Question
 
 
-_PROMPT_PATH: Path = Path(__file__).parent.parent.parent.parent / "data" / "agents" / "agent_3.md"
-_SYSTEM_PROMPT: str = _PROMPT_PATH.read_text(encoding="utf-8")
+_PROMPT_NAME: str = "agent_3"
 
 _OPEN_ENDED_CATEGORIES: frozenset[QuestionCategory] = frozenset(
     {
@@ -40,13 +40,13 @@ def make_answer_synthesis_agent(
     The LLM emits only draft fields — confidence and canonical provenance are derived
     downstream in the retrieval node.
     """
-    resolved_model: str = f"anthropic:{model or config.llm_model}"
+    resolved_model: str = f"{ANTHROPIC_MODEL_PREFIX}{model or config.llm_model}"
 
     agent: Agent[OpenEndedResearchTools, list[AnswerDraft]] = Agent(
         model=resolved_model,
         output_type=list[AnswerDraft],
         deps_type=OpenEndedResearchTools,
-        system_prompt=_SYSTEM_PROMPT,
+        system_prompt=system_prompt(_PROMPT_NAME),
     )
 
     @agent.tool

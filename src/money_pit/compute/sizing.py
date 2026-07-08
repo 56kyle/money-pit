@@ -1,4 +1,4 @@
-"""EV = ΣP*R, EV gate, constraint extraction, position sizing, clamps."""
+"""Module containing expected-value, EV-gate, constraint-extraction, position-sizing, and clamp logic for the money_pit package."""
 
 from money_pit.config import Config
 
@@ -20,11 +20,7 @@ def solve_kelly(
     tol: float = 1e-8,
     max_iter: int = 100,
 ) -> float:
-    """Return the Kelly-optimal fraction via bisection on the log-growth derivative.
-
-    tol: convergence tolerance for the bisection interval width.
-    max_iter: maximum number of bisection steps before early return.
-    """
+    """Return the Kelly-optimal fraction via bisection on the log-growth derivative."""
     if compute_ev(scenarios) <= 0:
         return 0.0
 

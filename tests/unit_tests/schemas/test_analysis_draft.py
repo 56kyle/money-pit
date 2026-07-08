@@ -7,16 +7,16 @@ MacroIndicatorReading, AnalysisHalt (pure data, no TerminalState), and the conta
 import pytest
 from pydantic import ValidationError
 
-from money_pit.schemas.analysis_draft import (
-    AnalysisHalt,
-    AnalysisJudgment,
-    DroppedClaim,
-    MacroIndicatorReading,
-    Scenario,
-    ScenarioTable,
-    ThesisJudgment,
-)
-from money_pit.schemas.enums import ActionType, ConvictionLevel, Step1Disposition
+from money_pit.schemas.analysis_draft import AnalysisHalt
+from money_pit.schemas.analysis_draft import AnalysisJudgment
+from money_pit.schemas.analysis_draft import DroppedClaim
+from money_pit.schemas.analysis_draft import MacroIndicatorReading
+from money_pit.schemas.analysis_draft import Scenario
+from money_pit.schemas.analysis_draft import ScenarioTable
+from money_pit.schemas.analysis_draft import ThesisJudgment
+from money_pit.schemas.enums import ActionType
+from money_pit.schemas.enums import ConvictionLevel
+from money_pit.schemas.enums import Step1Disposition
 
 
 def _scenario_table() -> ScenarioTable:

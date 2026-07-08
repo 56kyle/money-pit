@@ -1,4 +1,4 @@
-"""Every canonical enum used throughout the money_pit pipeline boundary contracts."""
+"""Module containing every canonical enum used throughout the money_pit pipeline boundary contracts."""
 
 from enum import Enum
 
@@ -71,6 +71,11 @@ class FactorTag(str, Enum):
 class ValidationStatus(str, Enum):
     MATCHED = "MATCHED"
     UNMATCHED = "UNMATCHED"
+
+
+class OverallValidationStatus(str, Enum):
+    VALIDATED = "VALIDATED"
+    VALIDATION_FAILED = "VALIDATION_FAILED"
 
 
 class ExecutionPhase(str, Enum):

@@ -1,4 +1,4 @@
-"""Answer, InitialAnswers — initial_answers.json contract."""
+"""Module containing the Answer and InitialAnswers models of the initial_answers.json contract for the money_pit package."""
 
 from typing import ClassVar
 
@@ -20,7 +20,7 @@ class Answer(BaseModel):
     question_id: str
     question: str
     category: QuestionCategory
-    signal_source: str
+    signal_source: str | None
     signal_tier: SignalTier
     answer: str
     confidence: Confidence

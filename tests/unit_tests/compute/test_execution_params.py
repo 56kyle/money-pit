@@ -13,6 +13,7 @@ import jsonschema
 import pytest
 from pytest import FixtureRequest
 
+from money_pit.compute.execution_params import InvalidExecutionAmountError
 from money_pit.compute.execution_params import build_execution_params
 from money_pit.mcp.order_schema import ALPACA_ORDER_SCHEMA_PATH
 from money_pit.mcp.order_schema import AlpacaOrderSchemaMalformedError
@@ -126,6 +127,55 @@ def test_build_execution_params_emitted_payload_validates_against_real_schema(
     assert isinstance(payload["notional"], str)
     assert "quantity" not in payload
     assert "qty" not in payload
+
+
+def test_build_execution_params_with_minimum_notional(
+    stub_free_order_schema_path: Path,
+) -> None:
+    result = build_execution_params(
+        step_id="A001",
+        slug="2026-01-01_00-00-00",
+        symbol="MSFT",
+        action_type=ActionType.BUY,
+        dollar_amount=0.01,
+        schema_path=stub_free_order_schema_path,
+    )
+    payload = result.to_order_payload()
+
+    jsonschema.validate(instance=payload, schema=load_order_schema(ALPACA_ORDER_SCHEMA_PATH))
+    assert result.notional == "0.01"
+
+
+@pytest.mark.parametrize(
+    "dollar_amount",
+    [float("nan"), float("inf"), float("-inf"), 0.0, -100.0, 0.004],
+)
+def test_build_execution_params_with_invalid_amount(
+    dollar_amount: float, stub_free_order_schema_path: Path
+) -> None:
+    with pytest.raises(InvalidExecutionAmountError):
+        _ = build_execution_params(
+            step_id="A001",
+            slug="2026-01-01_00-00-00",
+            symbol="NVDA",
+            action_type=ActionType.BUY,
+            dollar_amount=dollar_amount,
+            schema_path=stub_free_order_schema_path,
+        )
+
+
+def test_build_execution_params_with_invalid_amount_precedes_schema_load(tmp_path: Path) -> None:
+    missing_schema: Path = tmp_path / "not_yet_pinned.json"
+
+    with pytest.raises(InvalidExecutionAmountError):
+        _ = build_execution_params(
+            step_id="A001",
+            slug="2026-01-01_00-00-00",
+            symbol="NVDA",
+            action_type=ActionType.BUY,
+            dollar_amount=-100.0,
+            schema_path=missing_schema,
+        )
 
 
 @pytest.fixture

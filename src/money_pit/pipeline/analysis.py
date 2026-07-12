@@ -322,9 +322,10 @@ def make_analysis_node(
     The returned node fails closed on an unpinned, absent, or malformed order schema:
     AlpacaOrderSchemaNotPinnedError / AlpacaOrderSchemaMissingError /
     AlpacaOrderSchemaMalformedError (and jsonschema.ValidationError when the emitted
-    payload violates the schema) propagate uncaught from build_execution_params. This is
-    a deliberate asymmetry with the A4 agent failure path, which is caught and turned into
-    an ANALYSIS_HALT.
+    payload violates the schema, and InvalidExecutionAmountError when the sized dollar
+    amount is not finite or is below the minimum notional) propagate uncaught from
+    build_execution_params. This is a deliberate asymmetry with the A4 agent failure
+    path, which is caught and turned into an ANALYSIS_HALT.
     """
     resolved_order_schema_path: Path = order_schema_path or ALPACA_ORDER_SCHEMA_PATH
 

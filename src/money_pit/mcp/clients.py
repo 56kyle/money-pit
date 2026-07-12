@@ -40,21 +40,6 @@ def _write_env(credentials: AlpacaCredentials) -> dict[str, str]:
     }
 
 
-def _order_arguments(params: ExecutionParameters) -> dict[str, object]:
-    """Map ExecutionParameters onto place_stock_order arguments by literal field name.
-
-    TRANSITIONAL SHIM: to_order_payload() still emits "quantity", but the live place_stock_order
-    tool takes "qty". We remap the key here so a real quantity-sized order is placed rather than
-    silently dropped. Terminus: rename ExecutionParameters.quantity -> qty during the deferred
-    pin-order-schema reconciliation (ADR 0007), after which this remap is deleted.
-    """
-    payload: dict[str, object] = params.to_order_payload()
-    quantity: object | None = payload.pop("quantity", None)
-    if quantity is not None:
-        payload["qty"] = quantity
-    return payload
-
-
 def _extract_order_id(structured: object) -> str:
     """Return the structured broker order id, raising OrderSubmissionError on a rejection or missing structured id."""
     if isinstance(structured, dict):
@@ -119,7 +104,7 @@ class AlpacaWriteDeps:
 
     def __call__(self, params: ExecutionParameters) -> str:
         """Submit one equity order, returning the broker order id or raising OrderSubmissionError on rejection."""
-        return asyncio.run(_submit_order(self.credentials, _order_arguments(params)))  # pragma: no cover
+        return asyncio.run(_submit_order(self.credentials, params.to_order_payload()))  # pragma: no cover
 
 
 def make_alpaca_write_deps(credentials: AlpacaCredentials) -> OrderPlacer:

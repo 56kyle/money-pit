@@ -18,6 +18,8 @@ _SIDE_SELL: Literal["sell"] = "sell"
 _ORDER_TYPE_MARKET: Literal["market"] = "market"
 _TIME_IN_FORCE_DAY: Literal["day"] = "day"
 
+_NOTIONAL_DECIMAL_PLACES: int = 2
+
 
 def build_execution_params(
     step_id: str,
@@ -36,10 +38,11 @@ def build_execution_params(
     """
     schema: dict[str, object] = load_order_schema(schema_path)
     side: Literal["buy", "sell"] = _SIDE_BUY if action_type in _BUY_SIDES else _SIDE_SELL
+    notional: str = f"{dollar_amount:.{_NOTIONAL_DECIMAL_PLACES}f}"
     params: ExecutionParameters = ExecutionParameters(
         symbol=symbol,
-        notional=dollar_amount,
-        quantity=None,
+        notional=notional,
+        qty=None,
         side=side,
         type=_ORDER_TYPE_MARKET,
         time_in_force=_TIME_IN_FORCE_DAY,

@@ -93,8 +93,8 @@ def _render_action_steps_md(slug: str, action_steps: list[ActionStep]) -> str:
     """Render action_steps.md content from a list of ActionStep objects."""
     lines: list[str] = [f"# Action Steps — {slug}", ""]
     for step in action_steps:
-        notional: float | None = step.execution_parameters.notional
-        notional_str: str = f"${notional:.2f}" if notional is not None else "N/A"
+        notional: str | None = step.execution_parameters.notional
+        notional_str: str = f"${notional}" if notional is not None else "N/A"
         lines.extend(
             [
                 f"## {step.step_id} — {step.action_type.value} {step.instrument}",
@@ -157,8 +157,8 @@ def _render_analysis_md(
     lines.append("## Action Steps")
     if action_steps:
         for step in action_steps:
-            notional: float | None = step.execution_parameters.notional
-            notional_str: str = f"${notional:.2f}" if notional is not None else "N/A"
+            notional: str | None = step.execution_parameters.notional
+            notional_str: str = f"${notional}" if notional is not None else "N/A"
             lines.append(f"- {step.step_id}: {step.action_type.value} {step.instrument} ({notional_str})")
     else:
         lines.append("- No action steps produced.")

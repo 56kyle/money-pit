@@ -66,8 +66,8 @@ def action_step__execution_parameters(
         "param",
         ExecutionParameters(
             symbol="NVDA",
-            notional=1500.0,
-            quantity=None,
+            notional="1500.00",
+            qty=None,
             side="buy",
             type="market",
             time_in_force="day",

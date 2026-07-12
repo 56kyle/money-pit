@@ -301,7 +301,11 @@ def test_make_analysis_node_with_disposition_sizes_supported_larger(
     )
     _ = _run_node(config, container, analysis_working_dir, stub_free_order_schema_path)
     steps = {step.instrument: step for step in _read_action_steps(analysis_working_dir)}
-    assert steps["NVDA"].execution_parameters.notional > steps["AMD"].execution_parameters.notional
+    supported_notional = steps["NVDA"].execution_parameters.notional
+    unverified_notional = steps["AMD"].execution_parameters.notional
+    assert supported_notional is not None
+    assert unverified_notional is not None
+    assert float(supported_notional) > float(unverified_notional)
 
 
 @pytest.mark.parametrize("analysis_working_dir__macro_answers", [_GROWTH_ACCELERATING_ANSWERS], indirect=True)

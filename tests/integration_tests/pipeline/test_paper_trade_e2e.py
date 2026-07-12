@@ -1,5 +1,6 @@
 """End-to-end integration test: paper-trade run with stub agents completes all expected nodes."""
 
+import json
 import shutil
 from pathlib import Path
 from typing import TypeVar
@@ -9,8 +10,8 @@ from pydantic import BaseModel
 from pydantic import TypeAdapter
 
 from money_pit.graph.state import PipelineState
-from money_pit.mcp.manifest import ManifestUnavailableError
 from money_pit.mcp.manifest import pinned_manifest
+from money_pit.mcp.order_schema import ALPACA_ORDER_SCHEMA_STUB_SENTINEL
 from money_pit.mcp.order_schema import AlpacaOrderSchemaNotPinnedError
 from money_pit.pipeline.orchestration import PipelineOverrides
 from money_pit.pipeline.orchestration import phase4_overrides
@@ -66,6 +67,15 @@ _EXECUTE_PATH_MARKDOWN_FILES: list[str] = [
     "action_steps.md",
     "action_steps_validation.md",
 ]
+
+
+@pytest.fixture
+def unpinned_stub_order_schema_path(tmp_path: Path, stub_free_order_schema_path: Path) -> Path:
+    schema: dict[str, object] = json.loads(stub_free_order_schema_path.read_text(encoding="utf-8"))
+    schema[ALPACA_ORDER_SCHEMA_STUB_SENTINEL] = True
+    path: Path = tmp_path / "alpaca_order_schema.json"
+    _ = path.write_text(json.dumps(schema), encoding="utf-8")
+    return path
 
 
 @pytest.fixture(scope="module")
@@ -299,32 +309,39 @@ def test_paper_trade_validation_error_sends_email(
     assert email.calls
 
 
-def test_paper_trade_fully_default_schema_fails_closed_at_build(tmp_path: Path, pipeline_signals_dir: Path) -> None:
-    """A fully-default run cannot even build its graph while the committed schema is the unpinned stub.
+def test_paper_trade_fully_default_schema_builds_and_proceeds(tmp_path: Path, pipeline_signals_dir: Path) -> None:
+    """A fully-default run now builds and reaches a PROCEED determination — the committed schema is pinned.
 
-    make_validator_node resolves pinned_manifest() eagerly at graph construction, so a
-    run_pipeline with no manifest override loudly raises ManifestUnavailableError (wrapping
-    the NotPinned sentinel error) before any node executes — the earliest fail-closed gate.
+    make_validator_node resolves pinned_manifest() eagerly at graph construction against the
+    default committed path, and the analysis post-processor emits execution params against that
+    same pinned schema. Before the pin this raised ManifestUnavailableError at build; this test
+    is the e2e regression guard that pinning the real schema un-breaks the default paper-trade run.
     """
     run_dir = tmp_path / "run"
 
-    with pytest.raises(ManifestUnavailableError):
-        _ = run_pipeline(signals_dir=pipeline_signals_dir, run_dir=run_dir, overrides=phase4_overrides())
+    final_state = run_pipeline(
+        signals_dir=pipeline_signals_dir, run_dir=run_dir, overrides=phase4_overrides()
+    )
+
+    assert final_state.get("terminal_state") is None
+    report = _assert_file_valid(run_dir, "determination.json", DeterminationReport)
+    assert report.determination == Determination.PROCEED
 
 
 def test_paper_trade_unpinned_order_schema_fails_closed_at_analysis(
-    tmp_path: Path, pipeline_signals_dir: Path, stub_free_order_schema_path: Path
+    tmp_path: Path, pipeline_signals_dir: Path, stub_free_order_schema_path: Path, unpinned_stub_order_schema_path: Path
 ) -> None:
-    """With a pinned manifest but no order_schema_path opt-in, the analysis node fails closed.
+    """With a pinned manifest but an explicitly unpinned order_schema_path, the analysis node fails closed.
 
-    The graph builds (manifest injected), then the analysis post-processor emits execution
-    params against the default committed stub; load_order_schema raises NotPinned and it
-    propagates uncaught out of run_pipeline. This pins the specific re-enforced gate: a real
-    unpinned production run cannot silently proceed to materialize orders.
+    The graph builds (pinned manifest injected), then the analysis post-processor emits execution
+    params against the injected unpinned-stub schema; load_order_schema raises NotPinned and it
+    propagates uncaught out of run_pipeline. This pins the re-enforced gate independently of the
+    committed file's state: a real unpinned production run cannot silently proceed to materialize orders.
     """
     run_dir = tmp_path / "run"
     overrides = phase4_overrides()
     overrides.manifest = pinned_manifest(stub_free_order_schema_path)
+    overrides.order_schema_path = unpinned_stub_order_schema_path
 
     with pytest.raises(AlpacaOrderSchemaNotPinnedError):
         _ = run_pipeline(signals_dir=pipeline_signals_dir, run_dir=run_dir, overrides=overrides)

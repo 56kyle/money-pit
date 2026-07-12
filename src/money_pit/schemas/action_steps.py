@@ -19,8 +19,8 @@ class ExecutionParameters(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
 
     symbol: str
-    notional: float | None
-    quantity: float | None
+    notional: str | None
+    qty: str | None
     side: Literal["buy", "sell"]
     type: Literal["market"]
     time_in_force: Literal["day"]
@@ -37,8 +37,8 @@ class ExecutionParameters(BaseModel):
         }
         if self.notional is not None:
             payload["notional"] = self.notional
-        if self.quantity is not None:
-            payload["quantity"] = self.quantity
+        if self.qty is not None:
+            payload["qty"] = self.qty
         return payload
 
 

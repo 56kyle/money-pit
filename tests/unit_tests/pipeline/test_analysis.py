@@ -161,6 +161,7 @@ def _config(**overrides: object) -> Config:
     defaults: dict[str, object] = {
         "alpaca_service": "stub",
         "alpaca_username": "stub",
+        "alpaca_paper": True,
         "max_position_weight": 1.0,
         "sector_cap": 1.0,
         "overlap_limit": 1.0,
@@ -186,6 +187,7 @@ def config() -> Config:
     return Config(
         alpaca_service="stub",
         alpaca_username="stub",
+        alpaca_paper=True,
         max_position_weight=1.0,
         sector_cap=1.0,
         overlap_limit=1.0,

@@ -31,6 +31,7 @@ def config() -> Config:
     return Config(
         alpaca_service="alpaca-paper",
         alpaca_username="the-key",
+        alpaca_paper=True,
         gmail_address="sender@gmail.com",
     )
 

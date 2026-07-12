@@ -16,7 +16,7 @@ _LARGE_HEADROOM: float = 1_000_000.0
 
 @pytest.fixture
 def stub_config() -> Config:
-    return Config(alpaca_service="stub", alpaca_username="stub")
+    return Config(alpaca_service="stub", alpaca_username="stub", alpaca_paper=True)
 
 
 @pytest.mark.parametrize(
@@ -81,7 +81,7 @@ def test_size_position_with_ev_below_gate(stub_config: Config) -> None:
 
 
 def test_size_position_with_zero_kelly_fraction() -> None:
-    config = Config(alpaca_service="stub", alpaca_username="stub", kelly_fraction=0.0)
+    config = Config(alpaca_service="stub", alpaca_username="stub", alpaca_paper=True, kelly_fraction=0.0)
     scenarios: list[tuple[float, float]] = [(0.9, 0.50), (0.1, -0.05)]
     result = size_position(
         scenarios, _TOTAL_ACCOUNT_VALUE, config, True, False, _LARGE_HEADROOM, _LARGE_HEADROOM, _LARGE_HEADROOM
@@ -135,7 +135,7 @@ def test_size_position_clamped_by_sector_headroom(stub_config: Config) -> None:
 @pytest.fixture
 def monotonic_in_ev_results() -> tuple[float | None, float | None]:
     # max_position_weight=1.0 prevents both scenarios from hitting the same cap
-    config = Config(alpaca_service="stub", alpaca_username="stub", max_position_weight=1.0)
+    config = Config(alpaca_service="stub", alpaca_username="stub", alpaca_paper=True, max_position_weight=1.0)
     low_ev_scenarios: list[tuple[float, float]] = [(0.5, 0.30), (0.5, -0.20)]
     high_ev_scenarios: list[tuple[float, float]] = [(0.7, 0.30), (0.3, -0.20)]
     low_result = size_position(

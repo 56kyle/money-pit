@@ -11,7 +11,7 @@ from money_pit.schemas.macro import MacroIndicators
 
 @pytest.fixture
 def stub_config() -> Config:
-    return Config(alpaca_service="stub", alpaca_username="stub")
+    return Config(alpaca_service="stub", alpaca_username="stub", alpaca_paper=True)
 
 
 def _good_macro() -> MacroIndicators:

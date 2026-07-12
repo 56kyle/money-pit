@@ -70,6 +70,7 @@ def config(config__gmail_address: str | None) -> Config:
     return Config(
         alpaca_service="alpaca-paper",
         alpaca_username="alpaca-api-key",
+        alpaca_paper=True,
         gmail_address=config__gmail_address,
     )
 

@@ -1,6 +1,6 @@
-"""Tests for money_pit.config's credential resolution — the fail-closed keyring + paper/live routing gates.
+"""Tests for money_pit.config's credential resolution — the fail-closed keyring + paper/live gates.
 
-Pins _paper_from_service's suffix routing, resolve_alpaca_credentials' keyring-backed resolution, and
+Pins resolve_alpaca_credentials' keyring-backed resolution reflecting config.alpaca_paper, and
 resolve_gmail_app_password's fail-closed behavior. A real in-memory keyring backend stands in for the OS
 keyring (no mocks). Assertions target the CredentialResolutionError TYPE and enum/field values, never text.
 """
@@ -14,11 +14,11 @@ from pytest import FixtureRequest
 from pytest import MonkeyPatch
 
 from money_pit.config import DEFAULT_OWNER_RECIPIENT
+from money_pit.config import ENV_PREFIX
 from money_pit.config import AlpacaCredentials
 from money_pit.config import Config
 from money_pit.config import CredentialResolutionError
 from money_pit.config import _missing_required_env_vars
-from money_pit.config import _paper_from_service
 from money_pit.config import load_config
 from money_pit.config import resolve_alpaca_credentials
 from money_pit.config import resolve_gmail_app_password
@@ -28,7 +28,10 @@ from money_pit.constants import GMAIL_KEYRING_SERVICE
 from tests.unit_tests.conftest import InMemoryKeyring
 
 
-_REQUIRED_ENV: str = "MONEY_PIT__ALPACA_SERVICE=alpaca-paper\nMONEY_PIT__ALPACA_USERNAME=alpaca-api-key\n"
+_REQUIRED_ENV_WITHOUT_PAPER: str = (
+    "MONEY_PIT__ALPACA_SERVICE=alpaca-paper\nMONEY_PIT__ALPACA_USERNAME=alpaca-api-key\n"
+)
+_REQUIRED_ENV: str = f"{_REQUIRED_ENV_WITHOUT_PAPER}MONEY_PIT__ALPACA_PAPER=true\n"
 
 
 @pytest.fixture
@@ -47,6 +50,11 @@ def config__gmail_address(request: FixtureRequest) -> str | None:
 
 
 @pytest.fixture
+def config__alpaca_paper(request: FixtureRequest) -> bool:
+    return getattr(request, "param", True)
+
+
+@pytest.fixture
 def secret_key(request: FixtureRequest) -> str:
     return getattr(request, "param", "alpaca-secret-key")
 
@@ -62,6 +70,7 @@ def config(
     config__alpaca_service: str,
     config__alpaca_username: str,
     config__gmail_address: str | None,
+    config__alpaca_paper: bool,
 ) -> Config:
     return getattr(
         request,
@@ -70,43 +79,29 @@ def config(
             alpaca_service=config__alpaca_service,
             alpaca_username=config__alpaca_username,
             gmail_address=config__gmail_address,
+            alpaca_paper=config__alpaca_paper,
         ),
     )
 
 
-@pytest.mark.parametrize(("service", "expected"), [("alpaca-paper", True), ("alpaca-live", False)])
-def test__paper_from_service_with_valid(service: str, expected: bool) -> None:
-    assert _paper_from_service(service) is expected
-
-
-def test__paper_from_service_with_unrecognized_suffix() -> None:
-    with pytest.raises(CredentialResolutionError):
-        _ = _paper_from_service("alpaca-sandbox")
-
-
+@pytest.mark.parametrize(
+    ("config__alpaca_paper", "expected_paper"),
+    [(True, True), (False, False)],
+    indirect=["config__alpaca_paper"],
+)
 def test_resolve_alpaca_credentials_with_valid(
-    config: Config, secret_key: str, in_memory_keyring: InMemoryKeyring
+    config: Config, secret_key: str, in_memory_keyring: InMemoryKeyring, expected_paper: bool
 ) -> None:
     in_memory_keyring.set_password(config.alpaca_service, config.alpaca_username, secret_key)
 
     result: AlpacaCredentials = resolve_alpaca_credentials(config)
 
     assert result == AlpacaCredentials(
-        api_key=config.alpaca_username, secret_key=secret_key, paper=True
+        api_key=config.alpaca_username, secret_key=secret_key, paper=expected_paper
     )
 
 
 def test_resolve_alpaca_credentials_with_missing_secret(config: Config, in_memory_keyring: InMemoryKeyring) -> None:
-    with pytest.raises(CredentialResolutionError):
-        _ = resolve_alpaca_credentials(config)
-
-
-@pytest.mark.parametrize("config__alpaca_service", ["alpaca-sandbox"], indirect=True)
-def test_resolve_alpaca_credentials_with_ambiguous_service(
-    config: Config, secret_key: str, in_memory_keyring: InMemoryKeyring
-) -> None:
-    in_memory_keyring.set_password(config.alpaca_service, config.alpaca_username, secret_key)
-
     with pytest.raises(CredentialResolutionError):
         _ = resolve_alpaca_credentials(config)
 
@@ -156,7 +151,7 @@ def test__missing_required_env_vars() -> None:
 
     missing: list[str] = _missing_required_env_vars(exc_info.value)
 
-    assert missing == ["MONEY_PIT__ALPACA_SERVICE", "MONEY_PIT__ALPACA_USERNAME"]
+    assert missing == ["MONEY_PIT__ALPACA_SERVICE", "MONEY_PIT__ALPACA_USERNAME", "MONEY_PIT__ALPACA_PAPER"]
 
 
 @pytest.mark.parametrize("env_file__content", ["MONEY_PIT__ALPACA_SERVICE=alpaca-paper\n"], indirect=True)
@@ -167,11 +162,7 @@ def test_load_config_with_missing_required_var(env_file: Path) -> None:
 
 @pytest.mark.parametrize(
     "env_file__content",
-    [
-        "MONEY_PIT__ALPACA_SERVICE=alpaca-paper\n"
-        "MONEY_PIT__ALPACA_USERNAME=alpaca-api-key\n"
-        "MONEY_PIT__SMTP_PORT=not-a-port\n"
-    ],
+    [f"{_REQUIRED_ENV}MONEY_PIT__SMTP_PORT=not-a-port\n"],
     indirect=True,
 )
 def test_load_config_with_mistyped_var(env_file: Path) -> None:
@@ -179,9 +170,24 @@ def test_load_config_with_mistyped_var(env_file: Path) -> None:
         _ = load_config(env_file)
 
 
+@pytest.mark.parametrize("env_file__content", [_REQUIRED_ENV_WITHOUT_PAPER], indirect=True)
+def test_load_config_with_alpaca_paper_unset(env_file: Path) -> None:
+    with pytest.raises(CredentialResolutionError) as exc_info:
+        _ = load_config(env_file)
+
+    assert f"{ENV_PREFIX}ALPACA_PAPER" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("env_file__content", [f"{_REQUIRED_ENV_WITHOUT_PAPER}MONEY_PIT__ALPACA_PAPER=notabool\n"], indirect=True)
+def test_load_config_with_alpaca_paper_mistyped(env_file: Path) -> None:
+    with pytest.raises(ValidationError):
+        _ = load_config(env_file)
+
+
 def test_load_config_with_env_override(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("MONEY_PIT__ALPACA_SERVICE", "alpaca-paper")
     monkeypatch.setenv("MONEY_PIT__ALPACA_USERNAME", "alpaca-api-key")
+    monkeypatch.setenv("MONEY_PIT__ALPACA_PAPER", "true")
     monkeypatch.setenv("MONEY_PIT__LLM_MODEL", "override-model")
 
     config: Config = load_config(tmp_path / "absent.env")
@@ -205,7 +211,7 @@ def test_load_config_with_env_override(tmp_path: Path, monkeypatch: MonkeyPatch)
     ],
 )
 def test_config_with_defaults(field_name: str, expected_default: object) -> None:
-    config: Config = Config(alpaca_service="alpaca-paper", alpaca_username="alpaca-api-key")
+    config: Config = Config(alpaca_service="alpaca-paper", alpaca_username="alpaca-api-key", alpaca_paper=True)
 
     assert getattr(config, field_name) == expected_default
 
@@ -214,6 +220,7 @@ def test_config_with_secret_fields() -> None:
     config: Config = Config(
         alpaca_service="alpaca-paper",
         alpaca_username="alpaca-api-key",
+        alpaca_paper=True,
         fred_api_key="fred-secret",
         brave_api_key="brave-secret",
     )
@@ -225,7 +232,7 @@ def test_config_with_secret_fields() -> None:
 
 
 def test_config_with_assignment_is_frozen() -> None:
-    config: Config = Config(alpaca_service="alpaca-paper", alpaca_username="alpaca-api-key")
+    config: Config = Config(alpaca_service="alpaca-paper", alpaca_username="alpaca-api-key", alpaca_paper=True)
 
     with pytest.raises(ValidationError):
         config.llm_model = "mutated"

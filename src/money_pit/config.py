@@ -18,15 +18,13 @@ from money_pit.constants import default_config_path
 
 
 ENV_PREFIX: str = "MONEY_PIT__"
-_ALPACA_PAPER_SUFFIX: str = "-paper"
-_ALPACA_LIVE_SUFFIX: str = "-live"
 _DEFAULT_LLM_MODEL: str = "claude-sonnet-5"
 
 DEFAULT_OWNER_RECIPIENT: str = "56kyleoliver@gmail.com"
 
 
 class CredentialResolutionError(Exception):
-    """Raised when a required secret cannot be resolved, or a service name is ambiguous about paper vs live."""
+    """Raised when a required secret or required credential config cannot be resolved."""
 
 
 @dataclass(frozen=True)
@@ -45,6 +43,7 @@ class Config(BaseSettings):
 
     alpaca_service: str
     alpaca_username: str
+    alpaca_paper: bool
 
     gmail_address: str | None = None
     gmail_service: str = GMAIL_KEYRING_SERVICE
@@ -96,20 +95,8 @@ def load_config(path: Path | None = None) -> Config:
         ) from error
 
 
-def _paper_from_service(service: str) -> bool:
-    """Return the paper/live routing decision from the service suffix, never guessing when the suffix is absent."""
-    if service.endswith(_ALPACA_PAPER_SUFFIX):
-        return True
-    if service.endswith(_ALPACA_LIVE_SUFFIX):
-        return False
-    raise CredentialResolutionError(
-        f"Alpaca service {service!r} does not end in {_ALPACA_PAPER_SUFFIX!r} or {_ALPACA_LIVE_SUFFIX!r};"
-        + " refusing to guess paper vs live."
-    )
-
-
 def resolve_alpaca_credentials(config: Config) -> AlpacaCredentials:
-    """Resolve Alpaca credentials from config plus keyring, failing closed on a missing secret or ambiguous routing."""
+    """Resolve Alpaca credentials from config plus keyring, failing closed on a missing secret."""
     secret_key: str | None = keyring.get_password(config.alpaca_service, config.alpaca_username)
     if secret_key is None:
         raise CredentialResolutionError(
@@ -118,7 +105,7 @@ def resolve_alpaca_credentials(config: Config) -> AlpacaCredentials:
     return AlpacaCredentials(
         api_key=config.alpaca_username,
         secret_key=secret_key,
-        paper=_paper_from_service(config.alpaca_service),
+        paper=config.alpaca_paper,
     )
 
 

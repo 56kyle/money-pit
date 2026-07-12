@@ -9,6 +9,7 @@ import pytest
 _INTEGRATION_ENV: dict[str, str] = {
     "MONEY_PIT__ALPACA_SERVICE": "alpaca-paper",
     "MONEY_PIT__ALPACA_USERNAME": "56kyle",
+    "MONEY_PIT__ALPACA_PAPER": "true",
 }
 
 

@@ -102,6 +102,19 @@ Architecture phase is complete. All six agent prompts, `docs/design_decisions.md
   sentinel removed), flipping the ADR-0007 gate green; the payload was reconciled to the real schema
   (string `notional`/`qty`, cents-formatted notional — ADR 0014) and guarded against invalid amounts (ADR 0015).
 
+**Fill observability (independent-order path) — COMPLETE (ADR 0017).**
+
+- The execution node now **observes** each submitted order's real fill via a new `FillObserver` dep
+  (alpaca-py `get_order_by_client_id`, reads-via-SDK per ADR 0008), journaling the true phase
+  (`FILLED`/`PARTIALLY_FILLED`/`REJECTED`/`SUBMITTED`) and fill fields; the poll loop fails closed
+  (404/transient = retryable in-flight, never a fabricated fill).
+- `EXECUTED_CLEAN` reverts to "all legs **filled**"; new `EXECUTED_INCOMPLETE` = "submitted but not
+  cleanly filled" → routes to `failure` **and** emails the owner ("Execution Incomplete"). New `Config`
+  knobs `execution_fill_poll_interval_seconds` (1.0) / `execution_fill_poll_timeout_seconds` (30.0).
+  New modules `alpaca_orders.py`, `schemas/fills.py`, `compute/fills.py`. Atomic-group compensation
+  remains the deferred `AtomicGroupNotSupportedError` stub.
+- This **unblocks Phase 8 recovery**: its input — real observed fills in the journal — now exists.
+
 ---
 
 ## Phase 1: `schemas/` — COMPLETE
@@ -274,6 +287,11 @@ integration time.
 ## Phase 8: `pipeline/recovery.py`
 
 Prior-journal reconciliation: reads `execution_journal.json`, checks for in-flight orders (partial fills, compensation needed), reconciles before planning a new run.
+
+Recovery now builds on the **real observed fills** journaled by the independent-order path (ADR 0017) —
+`EXECUTED_INCOMPLETE` runs (open-at-timeout / terminal partial) are the primary reconciliation input. The
+`COMPENSATION_FAILED` reconciliation branch stays a fail-closed stub, aligned with the deferred
+atomic-group path.
 
 ---
 

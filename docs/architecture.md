@@ -297,14 +297,18 @@ satisfy neither the write nor the outcome (→ see ADR 0006).
   if any leg fails; execute legs in safe order (least-harmful-solo-failure first); on a mid-flight leg
   failure, compute compensations from **realized fills** and unwind the filled legs; if a compensation
   itself fails, escalate urgently (`COMPENSATION_FAILED`) — the one state with un-neutralized exposure.
-- **Output:** an `ExecutionOutcome` (`EXECUTED_CLEAN` | `PARTIAL_COMPENSATED` | `COMPENSATION_FAILED` |
-  `EXECUTION_FAILED`) written to the journal and mapped into `determination.json`. At the current
-  submission-level wave, the injected order placer (`OrderPlacer`) returns only a broker order id — a
-  successful call proves _"submitted,"_ not _"filled"_ — so `EXECUTED_CLEAN` is redefined as **"all
-  independent legs submitted without
-  exception"** (entries stay `phase=SUBMITTED`; `filled_*` stay `None`). The journal `outcome` is
+- **Output:** an `ExecutionOutcome` (`EXECUTED_CLEAN` | `EXECUTED_INCOMPLETE` | `PARTIAL_COMPENSATED` |
+  `COMPENSATION_FAILED` | `EXECUTION_FAILED`) written to the journal and mapped into `determination.json`.
+  For the independent-order path the node now **observes** each order's real fill via the injected
+  `FillObserver` (alpaca-py `get_order_by_client_id` read, ADR 0008), journaling the true `phase` and the
+  real `filled_qty`/`filled_avg_price`/`realized_notional`; the poll loop fails closed (404/transient =
+  retryable in-flight, never a fabricated fill). `EXECUTED_CLEAN` reverts to **"all independent legs
+  filled,"** and a leg still open at poll timeout or a terminal partial yields `EXECUTED_INCOMPLETE`, which
+  routes to `failure` **and** notifies the owner (→ see ADR 0017). The atomic-group path remains the
+  deferred `AtomicGroupNotSupportedError` stub (a non-null `group_id` fails closed before any order).
+  The journal `outcome` is
   **nullable**: `None` is the truthful value during incremental writes and the value a mid-run crash
-  leaves behind; a terminal member is written only at clean completion (→ see ADR 0003).
+  leaves behind; a terminal member is written only at completion (→ see ADR 0003).
 
 ### 6.9 Notification sub-agent (node + communication tool)
 
@@ -312,9 +316,11 @@ satisfy neither the write nor the outcome (→ see ADR 0006).
   `money-pit: <reason> - {slug}`; body templated from the relevant report. An LLM for prose is
   optional, not required.
 - **Distinct notifications:** `ANALYSIS_HALT` (A4 could not complete a step), validation-error (A6
-  found unmatched capabilities), the **urgent** `COMPENSATION_FAILED` (un-neutralized exposure after a
-  failed unwind — its own high-priority subject), and optionally a low-priority `NO_ACTION` digest.
-  These are separate subjects and bodies, never conflated.
+  found unmatched capabilities), the **execution-incomplete** notification (subject
+  `money-pit: Execution Incomplete - {slug}`, sent when a run finishes `EXECUTED_INCOMPLETE` — real
+  capital moved but not as sized; → see ADR 0017), the **urgent** `COMPENSATION_FAILED` (un-neutralized
+  exposure after a failed unwind — its own high-priority subject), and optionally a low-priority
+  `NO_ACTION` digest. These are separate subjects and bodies, never conflated.
 
 ---
 
@@ -463,7 +469,8 @@ crashed run (per ADR 0003) and maps to `failure`.
 
 | `ExecutionOutcome`    | trigger                                                            | recorded as                                                         |
 | --------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `EXECUTED_CLEAN`      | A6 `PROCEED` → all independent legs submitted without exception   | success; journal `phase=SUBMITTED`, `filled_*` null pre-Phase-7     |
+| `EXECUTED_CLEAN`      | A6 `PROCEED` → all independent legs observed **filled**            | success; journal carries real `phase=FILLED` + fill fields (ADR 0017) |
+| `EXECUTED_INCOMPLETE` | a submitted independent leg open at poll timeout or terminally partial | failure + owner emailed "Execution Incomplete"; next run reconciles (ADR 0017) |
 | `PARTIAL_COMPENSATED` | an atomic group leg failed mid-flight but filled legs were unwound | net no unintended exposure; recorded as success with journal detail |
 | `COMPENSATION_FAILED` | an unwind itself failed — un-neutralized exposure remains          | **urgent** high-priority email; flagged for next-run reconciliation |
 | `EXECUTION_FAILED`    | a submission failed and the loop recorded the leg `phase=FAILED`   | failure; `sub_agent_outcome=failure` in `determination.json`        |
@@ -546,7 +553,9 @@ the read instance (market-data) and the write instance (trading) — the scoping
 read/write safety boundary; the **required** `alpaca_paper` flag (`MONEY_PIT__ALPACA_PAPER`) that
 explicitly routes paper vs. live capital (ADR 0013) — no default, so an unset value fails closed rather
 than silently choosing an account; data-source API keys; the schedule; the sub-agent timeout window (owned by
-the LangGraph node definition, not by any agent); the **regime decision table** and
+the LangGraph node definition, not by any agent); the execution fill-poll cadence and timeout
+(`execution_fill_poll_interval_seconds` / `execution_fill_poll_timeout_seconds` — the order-status poll
+loop, ADR 0017); the **regime decision table** and
 **conviction-band thresholds**; and the `action_type → tool` mapping consumed by A5. The
 working-directory root (`data/daily_show/`) is the only persistent on-disk state.
 

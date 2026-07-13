@@ -15,6 +15,7 @@ src/money_pit/
 ├── constants.py             # (existing) APP_NAME, paths, slug datetime format
 ├── contracts.py             # Cross-layer DI TypeAliases (cycle-free leaf, imports only schemas): ToolManifest, ThesisAgent, PortfolioFetcher, OrderPlacer, EmailSender, CorroborationAgent, ClaimQuestionsAgent, AnswerSynthesisAgent
 ├── alpaca_portfolio.py     # alpaca-py-backed PortfolioFetcher (reads snapshot via TradingClient, not MCP — ADR 0008); yfinance best-effort sector, v0-deferred factor_tags/overlaps; NonEquityPositionError
+├── alpaca_orders.py        # alpaca-py-backed FillObserver: observes an order's real fill by client_order_id (reads via SDK — ADR 0008/0017); typed OrderNotYetVisibleError/FillObservationError
 ├── email_sender.py         # Gmail smtplib EmailSender for the pipeline (direct, not over MCP — ADR 0009); typed EmailSendError
 ├── prompt_loader.py        # Loads the packaged agent prompts from prompts/ (ADR 0012)
 │
@@ -39,6 +40,7 @@ src/money_pit/
 │   ├── validation_results.py  # ValidationStep, ActionStepsValidation, ValidationStatus
 │   ├── determination.py     # Determination
 │   ├── journal.py           # ExecutionJournalEntry, ExecutionJournal
+│   ├── fills.py             # FillObservation — typed order-fill observation (raw status, mapped phase, filled_qty/avg_price/realized_notional) — ADR 0017
 │   └── portfolio.py         # Position, PortfolioSnapshot
 │
 ├── graph/                   # LangGraph wiring only — zero business logic
@@ -85,7 +87,8 @@ src/money_pit/
 │   ├── routing.py           # Category → tool routing table (consumed by A2 templating and A3 fetch)
 │   ├── tool_map.py          # ActionType → MCP tool name + ActionType → compensating tool; shared by pipeline/validator.py, compute/execution_params.py, pipeline/execution.py
 │   ├── confidence.py        # Confidence derivation from sources_used (primary/secondary/Brave rule)
-│   └── execution_params.py  # ActionType + judgment → execution_parameters with literal Alpaca MCP field names
+│   ├── execution_params.py  # ActionType + judgment → execution_parameters with literal Alpaca MCP field names
+│   └── fills.py             # Alpaca-status → ExecutionPhase mapping, terminal-status classification, execution-outcome derivation (ADR 0017)
 │
 └── mcp/                     # MCP client configuration; runs inside the pipeline process
     ├── __init__.py

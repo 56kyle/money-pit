@@ -175,8 +175,13 @@ populated. Define grouping criteria when the first interdependent thesis appears
 The stub has a **marked terminus** (→ see ADR 0003): a non-null `group_id` fails closed by raising
 `AtomicGroupNotSupportedError` **before** any `place_stock_order` call, rather than executing one leg of an
 all-or-nothing group. The same ADR makes the execution journal honest at this wave — `outcome` is
-**nullable** (`None` = incomplete/crashed) and `EXECUTED_CLEAN` means "all independent legs submitted"
-(not filled) pre-Phase-7.
+**nullable** (`None` = incomplete/crashed).
+
+The **independent-order fill path is now real** (→ see ADR 0017): the node observes each submitted order's
+actual fill (`FillObserver` over alpaca-py), so `EXECUTED_CLEAN` again means "all independent legs
+**filled**," an open-at-timeout or terminal-partial leg lands in the new `EXECUTED_INCOMPLETE` (fail +
+notify), and the journal carries the real `phase`/fill fields. Only the atomic-group **compensation** path
+(pre-flight, realized-fill unwind, `PARTIAL_COMPENSATED`/`COMPENSATION_FAILED`) remains the deferred stub.
 
 ## 6. Tier reconciliation (§15 #15) — **RESOLVED (inert at N=1)**
 
@@ -230,5 +235,6 @@ named field in `Config` with a documented default; everything fixed is either th
 | `haircut_unverified`, `haircut_uncertain` | multiplicative size penalties                | risk policy |
 | `ev_gate` (= 3%)                          | entry go/no-go floor                         | risk policy |
 | `sector_cap` (= 25%), cash, overlap       | concentration limits                         | risk policy |
+| `execution_fill_poll_interval_seconds`, `execution_fill_poll_timeout_seconds` | order-status fill polling cadence and timeout (ADR 0017) | tuning |
 
 Fixed, by design: the regime truth table (§1b) and indicator orientations (§1a) — spec, not magic.

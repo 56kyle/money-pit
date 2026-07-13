@@ -58,7 +58,7 @@ that class of drift is exactly what broke 2→3 and 5→6.
 - **factor set:** `growth` | `value` | `momentum` | `quality` | `low_vol` (five factors; pin this everywhere — Agent 2 and the snapshot must use the same five, not `volatility`)
 - **validation status:** `MATCHED` | `UNMATCHED`
 - **execution phase** (journal entry lifecycle, §7a): `PLANNED` | `PREFLIGHT_OK` | `PREFLIGHT_FAILED` | `SUBMITTED` | `FILLED` | `PARTIALLY_FILLED` | `REJECTED` | `FAILED` | `COMPENSATING` | `COMPENSATED` | `COMPENSATION_FAILED` | `SKIPPED`
-- **execution outcome** (`ExecutionOutcome`, journal-only, **nullable** per ADR 0003 — `None` = incomplete/crashed run): `EXECUTED_CLEAN` | `PARTIAL_COMPENSATED` | `COMPENSATION_FAILED` | `EXECUTION_FAILED`
+- **execution outcome** (`ExecutionOutcome`, journal-only, **nullable** per ADR 0003 — `None` = incomplete/crashed run): `EXECUTED_CLEAN` | `EXECUTED_INCOMPLETE` (submitted but not cleanly filled — open at poll timeout or terminal partial; independent-order path, ADR 0017) | `PARTIAL_COMPENSATED` | `COMPENSATION_FAILED` | `EXECUTION_FAILED`
 - **terminal state** (`TerminalState`, the run's pre-execution routing marker — 4 members, distinct from `ExecutionOutcome`; the execute path leaves `terminal_state = None`, per ADR 0006): `NO_ACTION` | `ANALYSIS_HALT` | `VALIDATION_ERROR` | `ORCHESTRATION_ERROR`
 
 ---
@@ -509,8 +509,8 @@ step's `tool_sequence` from `action_steps_validation.json` is what actually exec
 One change: `failed_steps` is populated from steps whose `status == "UNMATCHED"` (PARTIAL removed).
 The execution sub-agent's `sub_agent_outcome` maps from the §7a execution outcome (`map_execution_outcome`,
 → see ADR 0006): `EXECUTED_CLEAN`/`PARTIAL_COMPENSATED` → `success`;
-`COMPENSATION_FAILED`/`EXECUTION_FAILED`/**`None` (incomplete or crashed journal, per ADR 0003)** →
-`failure` (with `COMPENSATION_FAILED` additionally triggering the urgent escalation in §7a).
+`EXECUTED_INCOMPLETE`/`COMPENSATION_FAILED`/`EXECUTION_FAILED`/**`None` (incomplete or crashed journal, per ADR 0003)** →
+`failure` (with `EXECUTED_INCOMPLETE` additionally triggering the execution-incomplete notification of §7a/ADR 0017 — distinct from the urgent `COMPENSATION_FAILED` escalation).
 `sub_agent_outcome` is typed `Literal["success", "failure"] | None`, not a loose `str`.
 
 ---
@@ -564,16 +564,21 @@ down-migrations.
 }
 ```
 
-**Pre-Phase-7 journal semantics (→ see ADR 0003).** The example entry above shows the eventual
-Phase-7 filled shape. At the current submission-level wave, the injected order placer (`OrderPlacer`,
-`Callable[[ExecutionParameters], str]`) returns only a broker order id — a successful call
-proves _"submitted,"_ not _"filled."_ So entries stay `phase=SUBMITTED` (never `FILLED`, which would
-be unearned) and `filled_qty`/`filled_avg_price`/`realized_notional` stay `null` as explicit
-not-yet-real markers; `EXECUTED_CLEAN` is redefined as **"all independent legs submitted without
-exception."** An empty plan (zero action steps) is caught upstream by `NO_ACTION`, so execution never
-derives an outcome from zero real steps. A non-null `group_id` fails closed by raising
-`AtomicGroupNotSupportedError` **before** any `place_stock_order` call (the marked terminus of the
-atomic-group stub) — so step 3 below is the deferred Phase-7 design, not the current path.
+**Independent-path fill observation (→ see ADR 0017).** For the **independent-order** path the node
+now **observes** each submitted order's real fill: after journaling the incremental `SUBMITTED` entry it
+polls the injected fill observer (`FillObserver`, backed by alpaca-py `get_order_by_client_id` — the
+reads-via-SDK boundary of ADR 0008) until a terminal status or `execution_fill_poll_timeout_seconds`,
+and journals the true `phase` (`FILLED` / `PARTIALLY_FILLED` / `REJECTED`, or `SUBMITTED` when the order
+is still open or unobserved at timeout) with the real `filled_qty`/`filled_avg_price`/`realized_notional`.
+The poll loop fails closed — a 404 (order not yet indexed) or transient read error is retryable in-flight
+and a fill is never fabricated. `EXECUTED_CLEAN` reverts to its filled meaning — **"all independent legs
+filled"** — and a leg still open at timeout or a terminal partial yields the new `EXECUTED_INCOMPLETE`
+outcome (precedence: incomplete > failed(rejected) > clean), which routes to `failure` **and** notifies
+the owner (§7a / ADR 0017). An empty plan (zero action steps) is caught upstream by `NO_ACTION`, so
+execution never derives an outcome from zero real steps. A non-null `group_id` still fails closed by
+raising `AtomicGroupNotSupportedError` **before** any `place_stock_order` call — atomic-group compensation
+and the `PARTIAL_COMPENSATED`/`COMPENSATION_FAILED` outcomes remain the deferred stub, so step 3 below is
+still the deferred Phase-7 design, not the current path.
 
 **Execution algorithm.**
 

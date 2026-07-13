@@ -1,14 +1,13 @@
 """Tests for money_pit.mcp.manifest — the live introspection path and the pinned-schema build-time gate.
 
+pinned_manifest loads the pinned default schema with no seam and propagates the loader's typed
+AlpacaOrderSchemaError (missing / malformed / not-pinned) directly, with no wrap; that
+absent/malformed/unpinned-stub precedence is pinned at the loader in test_order_schema.py.
 live_manifest takes an injectable `list_tools` seam over the live Alpaca MCP server. Passing a stub
 callable directly (never spawning a server) is the sanctioned boundary: it lets us pin the mapping and
-the fail-closed ManifestUnavailableError offline. pinned_manifest takes an injectable schema_path seam;
-feeding it an explicit unpinned-stub schema pins the build-time fail-closed guard independently of the
-committed file's state. Assertions target the error TYPE, never message text.
+its fail-closed ManifestUnavailableError contract offline. Assertions target the error TYPE, never
+message text.
 """
-
-import json
-from pathlib import Path
 
 import pytest
 from mcp.types import Tool
@@ -17,7 +16,6 @@ from money_pit.config import AlpacaCredentials
 from money_pit.mcp.manifest import ManifestUnavailableError
 from money_pit.mcp.manifest import live_manifest
 from money_pit.mcp.manifest import pinned_manifest
-from money_pit.mcp.order_schema import ALPACA_ORDER_SCHEMA_STUB_SENTINEL
 
 
 @pytest.fixture
@@ -25,30 +23,11 @@ def credentials() -> AlpacaCredentials:
     return AlpacaCredentials(api_key="the-key", secret_key="the-secret", paper=True)
 
 
-@pytest.fixture
-def unpinned_stub_schema_path(tmp_path: Path, stub_free_order_schema_path: Path) -> Path:
-    schema: dict[str, object] = json.loads(stub_free_order_schema_path.read_text(encoding="utf-8"))
-    schema[ALPACA_ORDER_SCHEMA_STUB_SENTINEL] = True
-    path: Path = tmp_path / "alpaca_order_schema.json"
-    _ = path.write_text(json.dumps(schema), encoding="utf-8")
-    return path
-
-
-def test_pinned_manifest_with_pinned_schema(stub_free_order_schema_path: Path) -> None:
-    result = pinned_manifest(stub_free_order_schema_path)
+def test_pinned_manifest_with_pinned_schema() -> None:
+    result = pinned_manifest()
 
     assert result
     assert all(isinstance(schema, dict) for schema in result.values())
-
-
-def test_pinned_manifest_with_unpinned_stub_fails_closed(unpinned_stub_schema_path: Path) -> None:
-    with pytest.raises(ManifestUnavailableError):
-        _ = pinned_manifest(unpinned_stub_schema_path)
-
-
-def test_pinned_manifest_with_missing_schema_fails_closed(tmp_path: Path) -> None:
-    with pytest.raises(ManifestUnavailableError):
-        _ = pinned_manifest(tmp_path / "not_yet_pinned.json")
 
 
 @pytest.fixture

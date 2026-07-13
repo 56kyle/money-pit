@@ -230,10 +230,8 @@ def analysis_working_dir(tmp_path: Path, analysis_working_dir__macro_answers: li
     return tmp_path
 
 
-def _run_node(
-    config: Config, container: AnalysisJudgment, working_dir: Path, order_schema_path: Path | None = None
-) -> dict[str, object]:
-    node = make_analysis_node(config, _stub_agent(container), order_schema_path=order_schema_path)
+def _run_node(config: Config, container: AnalysisJudgment, working_dir: Path) -> dict[str, object]:
+    node = make_analysis_node(config, _stub_agent(container))
     return node({"slug": _SLUG, "working_dir": str(working_dir)})
 
 
@@ -288,7 +286,7 @@ def test__extract_macro_indicators_with_absent_indicator_leaves_none(indicator: 
 
 
 def test_make_analysis_node_with_disposition_sizes_supported_larger(
-    config: Config, analysis_working_dir: Path, stub_free_order_schema_path: Path
+    config: Config, analysis_working_dir: Path
 ) -> None:
     container = AnalysisJudgment(
         theses=[
@@ -299,7 +297,7 @@ def test_make_analysis_node_with_disposition_sizes_supported_larger(
         macro_read=[],
         halt=None,
     )
-    _ = _run_node(config, container, analysis_working_dir, stub_free_order_schema_path)
+    _ = _run_node(config, container, analysis_working_dir)
     steps = {step.instrument: step for step in _read_action_steps(analysis_working_dir)}
     supported_notional = steps["NVDA"].execution_parameters.notional
     unverified_notional = steps["AMD"].execution_parameters.notional
@@ -310,7 +308,7 @@ def test_make_analysis_node_with_disposition_sizes_supported_larger(
 
 @pytest.mark.parametrize("analysis_working_dir__macro_answers", [_GROWTH_ACCELERATING_ANSWERS], indirect=True)
 def test_make_analysis_node_with_contradictory_macro_read_ignores_it_for_regime(
-    config: Config, analysis_working_dir: Path, stub_free_order_schema_path: Path
+    config: Config, analysis_working_dir: Path
 ) -> None:
     container = AnalysisJudgment(
         theses=[_thesis("NVDA", Step1Disposition.SUPPORTED)],
@@ -325,7 +323,7 @@ def test_make_analysis_node_with_contradictory_macro_read_ignores_it_for_regime(
     initial_answers = InitialAnswers(slug=_SLUG, sources=[], answers=_GROWTH_ACCELERATING_ANSWERS)
     expected_regime = classify_regime(_extract_macro_indicators(initial_answers.answers), config)
 
-    _ = _run_node(config, container, analysis_working_dir, stub_free_order_schema_path)
+    _ = _run_node(config, container, analysis_working_dir)
     steps = _read_action_steps(analysis_working_dir)
     assert steps[0].regime_tag == expected_regime
 
@@ -359,7 +357,7 @@ def test_make_analysis_node_with_empty_theses_sets_no_action(config: Config, ana
 
 
 def test_make_analysis_node_with_dropped_claim_renders_it_in_analysis_md(
-    config: Config, analysis_working_dir: Path, stub_free_order_schema_path: Path
+    config: Config, analysis_working_dir: Path
 ) -> None:
     dropped = DroppedClaim(claim_id="c-dropped", reason="Contradicted by the fresh earnings print.")
     container = AnalysisJudgment(
@@ -368,7 +366,7 @@ def test_make_analysis_node_with_dropped_claim_renders_it_in_analysis_md(
         macro_read=[],
         halt=None,
     )
-    _ = _run_node(config, container, analysis_working_dir, stub_free_order_schema_path)
+    _ = _run_node(config, container, analysis_working_dir)
     rendered = (analysis_working_dir / "analysis.md").read_text(encoding="utf-8")
     assert dropped.claim_id in rendered
     assert dropped.reason in rendered
@@ -388,9 +386,7 @@ def test__compute_headrooms_with_cash_min_exceeding_available_cash_floors_at_zer
     assert result.cash == 0.0
 
 
-def test__materialize_action_steps_with_sized_theses_assigns_ordered_step_ids(
-    stub_free_order_schema_path: Path,
-) -> None:
+def test__materialize_action_steps_with_sized_theses_assigns_ordered_step_ids() -> None:
     config = _config()
     portfolio = _portfolio(total_account_value=100000.0, available_cash=100000.0)
     container = AnalysisJudgment(
@@ -402,15 +398,11 @@ def test__materialize_action_steps_with_sized_theses_assigns_ordered_step_ids(
         macro_read=[],
         halt=None,
     )
-    steps = _materialize_action_steps(
-        container, config, portfolio, RegimeTag.GROWTH_ACCELERATING, _SLUG, stub_free_order_schema_path
-    )
+    steps = _materialize_action_steps(container, config, portfolio, RegimeTag.GROWTH_ACCELERATING, _SLUG)
     assert [step.step_id for step in steps] == ["A001", "A002"]
 
 
-def test__materialize_action_steps_with_ev_below_gate_yields_no_action_steps(
-    stub_free_order_schema_path: Path,
-) -> None:
+def test__materialize_action_steps_with_ev_below_gate_yields_no_action_steps() -> None:
     config = _config(ev_gate=1.0)
     portfolio = _portfolio(total_account_value=100000.0, available_cash=100000.0)
     container = AnalysisJudgment(
@@ -422,9 +414,7 @@ def test__materialize_action_steps_with_ev_below_gate_yields_no_action_steps(
         macro_read=[],
         halt=None,
     )
-    steps = _materialize_action_steps(
-        container, config, portfolio, RegimeTag.GROWTH_ACCELERATING, _SLUG, stub_free_order_schema_path
-    )
+    steps = _materialize_action_steps(container, config, portfolio, RegimeTag.GROWTH_ACCELERATING, _SLUG)
     assert steps == []
 
 

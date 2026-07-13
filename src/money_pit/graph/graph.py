@@ -1,7 +1,5 @@
 """Module containing the StateGraph assembly (add_node / add_edge / add_conditional_edges) for the money_pit package."""
 
-from pathlib import Path
-
 from langgraph.graph import END  # pyright: ignore[reportMissingTypeStubs]
 from langgraph.graph import START  # pyright: ignore[reportMissingTypeStubs]
 from langgraph.graph import StateGraph  # pyright: ignore[reportMissingTypeStubs]
@@ -62,7 +60,6 @@ def build_graph(
     place_order: OrderPlacer,
     send_email: EmailSender,
     manifest: ToolManifest | None = None,
-    order_schema_path: Path | None = None,
 ) -> CompiledStateGraph[PipelineState]:
     """Assemble and compile the full money-pit LangGraph pipeline."""
     builder: StateGraph[PipelineState] = StateGraph(state_schema=PipelineState)
@@ -77,7 +74,7 @@ def build_graph(
     )
     builder.add_node(
         "analysis",
-        make_analysis_node(config=config, thesis_agent=thesis_agent, order_schema_path=order_schema_path),
+        make_analysis_node(config=config, thesis_agent=thesis_agent),
     )
     builder.add_node("validator", make_validator_node(manifest=manifest))
     builder.add_node("determination", make_determination_node())

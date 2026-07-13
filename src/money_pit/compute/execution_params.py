@@ -1,12 +1,10 @@
 """Module containing the ActionType-plus-judgment to execution_parameters mapping with literal Alpaca MCP field names for the money_pit package."""
 
 import math
-from pathlib import Path
 from typing import Literal
 
 import jsonschema
 
-from money_pit.mcp.order_schema import ALPACA_ORDER_SCHEMA_PATH
 from money_pit.mcp.order_schema import load_order_schema
 from money_pit.schemas.action_steps import ExecutionParameters
 from money_pit.schemas.enums import ActionType
@@ -33,8 +31,6 @@ def build_execution_params(
     symbol: str,
     action_type: ActionType,
     dollar_amount: float,
-    *,
-    schema_path: Path = ALPACA_ORDER_SCHEMA_PATH,
 ) -> ExecutionParameters:
     """Build an ExecutionParameters instance and validate its emitted payload against the pinned schema.
 
@@ -48,7 +44,7 @@ def build_execution_params(
             f"Notional order requires a finite dollar amount of at least the minimum notional "
             f"({_MIN_NOTIONAL_DOLLARS:.{_NOTIONAL_DECIMAL_PLACES}f}), got {dollar_amount!r}."
         )
-    schema: dict[str, object] = load_order_schema(schema_path)
+    schema: dict[str, object] = load_order_schema()
     side: Literal["buy", "sell"] = _SIDE_BUY if action_type in _BUY_SIDES else _SIDE_SELL
     notional: str = f"{dollar_amount:.{_NOTIONAL_DECIMAL_PLACES}f}"
     params: ExecutionParameters = ExecutionParameters(

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from money_pit.mcp.order_schema import ALPACA_ORDER_SCHEMA_PATH
 from money_pit.mcp.order_schema import ALPACA_ORDER_SCHEMA_STUB_SENTINEL
 from money_pit.mcp.order_schema import AlpacaOrderSchemaMalformedError
 from money_pit.mcp.order_schema import AlpacaOrderSchemaMissingError
@@ -19,8 +20,8 @@ from money_pit.mcp.order_schema import load_order_schema
 
 
 @pytest.fixture
-def falsy_sentinel_schema_path(tmp_path: Path, stub_free_order_schema_path: Path) -> Path:
-    schema: dict[str, object] = json.loads(stub_free_order_schema_path.read_text(encoding="utf-8"))
+def falsy_sentinel_schema_path(tmp_path: Path) -> Path:
+    schema: dict[str, object] = json.loads(ALPACA_ORDER_SCHEMA_PATH.read_text(encoding="utf-8"))
     schema[ALPACA_ORDER_SCHEMA_STUB_SENTINEL] = False
     path: Path = tmp_path / "alpaca_order_schema.json"
     _ = path.write_text(json.dumps(schema), encoding="utf-8")
@@ -28,8 +29,8 @@ def falsy_sentinel_schema_path(tmp_path: Path, stub_free_order_schema_path: Path
 
 
 @pytest.fixture
-def unpinned_stub_schema_path(tmp_path: Path, stub_free_order_schema_path: Path) -> Path:
-    schema: dict[str, object] = json.loads(stub_free_order_schema_path.read_text(encoding="utf-8"))
+def unpinned_stub_schema_path(tmp_path: Path) -> Path:
+    schema: dict[str, object] = json.loads(ALPACA_ORDER_SCHEMA_PATH.read_text(encoding="utf-8"))
     schema[ALPACA_ORDER_SCHEMA_STUB_SENTINEL] = True
     path: Path = tmp_path / "alpaca_order_schema.json"
     _ = path.write_text(json.dumps(schema), encoding="utf-8")
@@ -41,8 +42,8 @@ def test_load_order_schema_with_unpinned_stub(unpinned_stub_schema_path: Path) -
         _ = load_order_schema(unpinned_stub_schema_path)
 
 
-def test_load_order_schema_with_pinned_schema(stub_free_order_schema_path: Path) -> None:
-    result = load_order_schema(stub_free_order_schema_path)
+def test_load_order_schema_with_pinned_schema() -> None:
+    result = load_order_schema(ALPACA_ORDER_SCHEMA_PATH)
 
     assert isinstance(result, dict)
 

@@ -164,7 +164,8 @@ def make_validator_node(
     """Return a LangGraph node that validates each action step against schema and tool constraints.
 
     With the default `manifest=None`, `pinned_manifest()` is resolved eagerly at
-    construction and can therefore raise `ManifestUnavailableError` at graph-build time.
+    construction and can therefore raise the loader's typed `AlpacaOrderSchemaError`
+    (missing / malformed / not-pinned) at graph-build time.
     """
     resolved_manifest: ToolManifest = manifest if manifest is not None else pinned_manifest()
 

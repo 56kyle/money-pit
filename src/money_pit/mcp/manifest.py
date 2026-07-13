@@ -11,7 +11,6 @@ connection or introspection failure, so an operator who opts in never trades aga
 
 from collections.abc import Callable
 from collections.abc import Mapping
-from pathlib import Path
 
 from mcp.types import Tool
 
@@ -19,8 +18,6 @@ from money_pit.compute.tool_map import ACTION_TYPE_TO_TOOL
 from money_pit.config import AlpacaCredentials
 from money_pit.contracts import ToolManifest
 from money_pit.mcp.clients import list_write_tools
-from money_pit.mcp.order_schema import ALPACA_ORDER_SCHEMA_PATH
-from money_pit.mcp.order_schema import AlpacaOrderSchemaError
 from money_pit.mcp.order_schema import load_order_schema
 
 
@@ -28,17 +25,13 @@ class ManifestUnavailableError(Exception):
     """Raised when the tool manifest cannot be produced — A5 fails closed rather than assuming a tool exists."""
 
 
-def pinned_manifest(
-    schema_path: Path = ALPACA_ORDER_SCHEMA_PATH,
-) -> Mapping[str, dict[str, object]]:
+def pinned_manifest() -> Mapping[str, dict[str, object]]:
     """Return the static pinned manifest mapping each write tool to the pinned Alpaca order schema.
 
-    Fails closed with `ManifestUnavailableError` if the pinned schema cannot be loaded.
+    Propagates the loader's typed `AlpacaOrderSchemaError` (missing / malformed / not-pinned)
+    if the pinned schema cannot be loaded — failing closed rather than assuming a tool exists.
     """
-    try:
-        schema: dict[str, object] = load_order_schema(schema_path)
-    except AlpacaOrderSchemaError as err:
-        raise ManifestUnavailableError(f"Pinned tool manifest unavailable: {err}") from err
+    schema: dict[str, object] = load_order_schema()
     return dict.fromkeys(set(ACTION_TYPE_TO_TOOL.values()), schema)
 
 

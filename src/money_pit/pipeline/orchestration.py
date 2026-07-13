@@ -91,8 +91,6 @@ class PipelineOverrides:
     place_order: OrderPlacer | None = field(default=None)
     send_email: EmailSender | None = field(default=None)
     manifest: ToolManifest | None = field(default=None)
-    order_schema_path: Path | None = field(default=None)
-    """Sentinel-free order schema for the analysis node's execution-param emission; None uses the default committed path (which fails closed while the stub is unpinned)."""
 
 
 class _DirectDeterministicTools:
@@ -351,8 +349,6 @@ def production_deps(config: Config) -> PipelineOverrides:
     """Return production PipelineOverrides wiring the real capital-critical deps and live tool manifest.
 
     Alpaca credentials are resolved eagerly here so composition fails closed before any run begins.
-    order_schema_path is left as the default committed path, which is valid only after the operator
-    has run the pin-order-schema command.
     """
     credentials = resolve_alpaca_credentials(config)
     return PipelineOverrides(
@@ -436,7 +432,6 @@ def run_pipeline(
         place_order=capital_deps.place_order,
         send_email=capital_deps.send_email,
         manifest=ov.manifest,
-        order_schema_path=ov.order_schema_path,
     )
 
     initial_state: PipelineState = {

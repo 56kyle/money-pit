@@ -7,8 +7,6 @@ real ActionStep / ExecutionParameters values and real dicts throughout. Assertio
 exception TYPES and ValidationStatus enum values, never gap-message text.
 """
 
-from pathlib import Path
-
 import pytest
 from pytest import FixtureRequest
 
@@ -118,29 +116,22 @@ def action_step(
 
 
 @pytest.fixture
-def stub_free_order_schema(stub_free_order_schema_path: Path) -> dict[str, object]:
-    return load_order_schema(stub_free_order_schema_path)
+def pinned_order_schema() -> dict[str, object]:
+    return load_order_schema()
 
 
 @pytest.fixture
-def matched_manifest(stub_free_order_schema: dict[str, object]) -> dict[str, dict[str, object]]:
-    return {"place_stock_order": stub_free_order_schema}
+def matched_manifest(pinned_order_schema: dict[str, object]) -> dict[str, dict[str, object]]:
+    return {"place_stock_order": pinned_order_schema}
 
 
-def test_pinned_manifest_with_available_schema(stub_free_order_schema_path: Path) -> None:
-    result = mcp_manifest.pinned_manifest(schema_path=stub_free_order_schema_path)
+def test_pinned_manifest_with_available_schema() -> None:
+    result = mcp_manifest.pinned_manifest()
 
     assert "place_stock_order" in result
     assert isinstance(result["place_stock_order"], dict)
     for tool in set(ACTION_TYPE_TO_TOOL.values()):
         assert tool in result
-
-
-def test_pinned_manifest_with_unavailable_schema(tmp_path: Path) -> None:
-    missing_schema: Path = tmp_path / "not_yet_pinned.json"
-
-    with pytest.raises(mcp_manifest.ManifestUnavailableError):
-        _ = mcp_manifest.pinned_manifest(schema_path=missing_schema)
 
 
 def test__validate_step_with_matching_step(

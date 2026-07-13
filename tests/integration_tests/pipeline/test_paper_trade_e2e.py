@@ -1,6 +1,5 @@
 """End-to-end integration test: paper-trade run with stub agents completes all expected nodes."""
 
-import json
 import shutil
 from pathlib import Path
 from typing import TypeVar
@@ -11,8 +10,6 @@ from pydantic import TypeAdapter
 
 from money_pit.graph.state import PipelineState
 from money_pit.mcp.manifest import pinned_manifest
-from money_pit.mcp.order_schema import ALPACA_ORDER_SCHEMA_STUB_SENTINEL
-from money_pit.mcp.order_schema import AlpacaOrderSchemaNotPinnedError
 from money_pit.pipeline.orchestration import PipelineOverrides
 from money_pit.pipeline.orchestration import phase4_overrides
 from money_pit.pipeline.orchestration import run_pipeline
@@ -69,23 +66,13 @@ _EXECUTE_PATH_MARKDOWN_FILES: list[str] = [
 ]
 
 
-@pytest.fixture
-def unpinned_stub_order_schema_path(tmp_path: Path, stub_free_order_schema_path: Path) -> Path:
-    schema: dict[str, object] = json.loads(stub_free_order_schema_path.read_text(encoding="utf-8"))
-    schema[ALPACA_ORDER_SCHEMA_STUB_SENTINEL] = True
-    path: Path = tmp_path / "alpaca_order_schema.json"
-    _ = path.write_text(json.dumps(schema), encoding="utf-8")
-    return path
-
-
 @pytest.fixture(scope="module")
 def execute_run(
-    tmp_path_factory: pytest.TempPathFactory, pipeline_signals_dir: Path, stub_free_order_schema_path: Path
+    tmp_path_factory: pytest.TempPathFactory, pipeline_signals_dir: Path
 ) -> tuple[Path, PipelineState]:
     run_dir = tmp_path_factory.mktemp("execute_determination")
     overrides = phase4_overrides()
-    overrides.order_schema_path = stub_free_order_schema_path
-    overrides.manifest = pinned_manifest(stub_free_order_schema_path)
+    overrides.manifest = pinned_manifest()
     final_state = run_pipeline(signals_dir=pipeline_signals_dir, run_dir=run_dir, overrides=overrides)
     return run_dir, final_state
 
@@ -165,13 +152,13 @@ def test_paper_trade_execute_path_renders_markdown(
 
 @pytest.fixture(scope="module")
 def no_action_run(
-    tmp_path_factory: pytest.TempPathFactory, pipeline_signals_dir: Path, stub_free_order_schema_path: Path
+    tmp_path_factory: pytest.TempPathFactory, pipeline_signals_dir: Path
 ) -> tuple[Path, PipelineState]:
     signals_dir = tmp_path_factory.mktemp("no_action_signals_in")
     _ = shutil.copy2(pipeline_signals_dir / "no_action_signal.json", signals_dir / "no_action_signal.json")
     run_dir = tmp_path_factory.mktemp("no_action_run")
     overrides = phase4_overrides()
-    overrides.manifest = pinned_manifest(stub_free_order_schema_path)
+    overrides.manifest = pinned_manifest()
     final_state = run_pipeline(signals_dir=signals_dir, run_dir=run_dir, overrides=overrides)
     return run_dir, final_state
 
@@ -230,13 +217,12 @@ def post_processor_empty_run(
     tmp_path: Path,
     pipeline_signals_dir: Path,
     post_processor_empty_email: _RecordingEmail,
-    stub_free_order_schema_path: Path,
 ) -> tuple[Path, PipelineState]:
     run_dir = tmp_path / "run"
     overrides: PipelineOverrides = phase4_overrides()
     overrides.thesis_agent = _empty_thesis_agent
     overrides.send_email = post_processor_empty_email
-    overrides.manifest = pinned_manifest(stub_free_order_schema_path)
+    overrides.manifest = pinned_manifest()
     final_state = run_pipeline(signals_dir=pipeline_signals_dir, run_dir=run_dir, overrides=overrides)
     return run_dir, final_state
 
@@ -266,13 +252,11 @@ def test_paper_trade_post_processor_empty_writes_no_determination(
 def validation_error_run(
     tmp_path_factory: pytest.TempPathFactory,
     pipeline_signals_dir: Path,
-    stub_free_order_schema_path: Path,
 ) -> tuple[Path, PipelineState, _RecordingEmail]:
     run_dir = tmp_path_factory.mktemp("validation_error_determination")
     email = _RecordingEmail()
     overrides: PipelineOverrides = phase4_overrides()
     overrides.manifest = {}
-    overrides.order_schema_path = stub_free_order_schema_path
     overrides.send_email = email
     final_state = run_pipeline(signals_dir=pipeline_signals_dir, run_dir=run_dir, overrides=overrides)
     return run_dir, final_state, email
@@ -326,22 +310,3 @@ def test_paper_trade_fully_default_schema_builds_and_proceeds(tmp_path: Path, pi
     assert final_state.get("terminal_state") is None
     report = _assert_file_valid(run_dir, "determination.json", DeterminationReport)
     assert report.determination == Determination.PROCEED
-
-
-def test_paper_trade_unpinned_order_schema_fails_closed_at_analysis(
-    tmp_path: Path, pipeline_signals_dir: Path, stub_free_order_schema_path: Path, unpinned_stub_order_schema_path: Path
-) -> None:
-    """With a pinned manifest but an explicitly unpinned order_schema_path, the analysis node fails closed.
-
-    The graph builds (pinned manifest injected), then the analysis post-processor emits execution
-    params against the injected unpinned-stub schema; load_order_schema raises NotPinned and it
-    propagates uncaught out of run_pipeline. This pins the re-enforced gate independently of the
-    committed file's state: a real unpinned production run cannot silently proceed to materialize orders.
-    """
-    run_dir = tmp_path / "run"
-    overrides = phase4_overrides()
-    overrides.manifest = pinned_manifest(stub_free_order_schema_path)
-    overrides.order_schema_path = unpinned_stub_order_schema_path
-
-    with pytest.raises(AlpacaOrderSchemaNotPinnedError):
-        _ = run_pipeline(signals_dir=pipeline_signals_dir, run_dir=run_dir, overrides=overrides)

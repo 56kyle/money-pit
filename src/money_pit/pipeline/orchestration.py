@@ -16,6 +16,8 @@ from money_pit.agents.corroboration import corroborate
 from money_pit.agents.research_tools import DeterministicResearchTools
 from money_pit.agents.research_tools import OpenEndedResearchTools
 from money_pit.agents.thesis_judgment import make_thesis_judgment_agent
+from money_pit.compute.fills import build_fill_observation
+from money_pit.alpaca_orders import make_alpaca_fill_observer
 from money_pit.alpaca_portfolio import make_alpaca_portfolio_fetcher
 from money_pit.config import DEFAULT_OWNER_RECIPIENT
 from money_pit.config import Config
@@ -27,6 +29,7 @@ from money_pit.contracts import AnswerSynthesisAgent
 from money_pit.contracts import ClaimQuestionsAgent
 from money_pit.contracts import CorroborationAgent
 from money_pit.contracts import EmailSender
+from money_pit.contracts import FillObserver
 from money_pit.contracts import OrderPlacer
 from money_pit.contracts import PortfolioFetcher
 from money_pit.contracts import ThesisAgent
@@ -52,6 +55,7 @@ from money_pit.schemas.fetch_result import FetchError
 from money_pit.schemas.fetch_result import FetchResult
 from money_pit.schemas.fetch_result import FetchValue
 from money_pit.schemas.fetch_result import NoData
+from money_pit.schemas.fills import FillObservation
 from money_pit.schemas.portfolio import PortfolioSnapshot
 from money_pit.schemas.provenance import SourceRef
 from money_pit.schemas.question_draft import DraftQuestion
@@ -89,6 +93,7 @@ class PipelineOverrides:
     deterministic_tools: DeterministicResearchTools | None = field(default=None)
     open_ended_tools: OpenEndedResearchTools | None = field(default=None)
     place_order: OrderPlacer | None = field(default=None)
+    observe_fill: FillObserver | None = field(default=None)
     send_email: EmailSender | None = field(default=None)
     manifest: ToolManifest | None = field(default=None)
 
@@ -327,6 +332,12 @@ def _phase4_place_order(params: ExecutionParameters) -> str:
     return f"PAPER-{params.client_order_id}"
 
 
+def _phase4_observe_fill(client_order_id: str) -> FillObservation:
+    """Return a synthetic FILLED observation so the deterministic-spine execute path reaches EXECUTED_CLEAN."""
+    _ = client_order_id
+    return build_fill_observation("filled", 1.0, 1.0)
+
+
 def _phase4_send_email(_subject: str, _body: str) -> None:
     """No-op email stub — real sender wired in Phase 7."""
 
@@ -341,6 +352,7 @@ def phase4_overrides() -> PipelineOverrides:
         fetch_portfolio=_phase4_fetch_portfolio,
         deterministic_tools=_Phase4DeterministicTools(),
         place_order=_phase4_place_order,
+        observe_fill=_phase4_observe_fill,
         send_email=_phase4_send_email,
     )
 
@@ -354,6 +366,7 @@ def production_deps(config: Config) -> PipelineOverrides:
     return PipelineOverrides(
         fetch_portfolio=make_alpaca_portfolio_fetcher(credentials),
         place_order=make_alpaca_write_deps(credentials),
+        observe_fill=make_alpaca_fill_observer(credentials),
         send_email=make_gmail_email_sender(config),
         manifest=live_manifest(credentials),
     )
@@ -365,6 +378,7 @@ class _CapitalCriticalDeps:
 
     fetch_portfolio: PortfolioFetcher
     place_order: OrderPlacer
+    observe_fill: FillObserver
     send_email: EmailSender
 
 
@@ -372,16 +386,20 @@ def _require_capital_critical_deps(overrides: PipelineOverrides) -> _CapitalCrit
     """Return the capital-critical dependencies, raising MissingPipelineDependencyError if any is None."""
     fetch_portfolio = overrides.fetch_portfolio
     place_order = overrides.place_order
+    observe_fill = overrides.observe_fill
     send_email = overrides.send_email
     if fetch_portfolio is None:
         raise MissingPipelineDependencyError(_MISSING_DEP_MESSAGE.format(name="fetch_portfolio"))
     if place_order is None:
         raise MissingPipelineDependencyError(_MISSING_DEP_MESSAGE.format(name="place_order"))
+    if observe_fill is None:
+        raise MissingPipelineDependencyError(_MISSING_DEP_MESSAGE.format(name="observe_fill"))
     if send_email is None:
         raise MissingPipelineDependencyError(_MISSING_DEP_MESSAGE.format(name="send_email"))
     return _CapitalCriticalDeps(
         fetch_portfolio=fetch_portfolio,
         place_order=place_order,
+        observe_fill=observe_fill,
         send_email=send_email,
     )
 
@@ -430,6 +448,7 @@ def run_pipeline(
         config=config,
         thesis_agent=thesis,
         place_order=capital_deps.place_order,
+        observe_fill=capital_deps.observe_fill,
         send_email=capital_deps.send_email,
         manifest=ov.manifest,
     )

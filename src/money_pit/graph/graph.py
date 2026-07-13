@@ -11,6 +11,7 @@ from money_pit.contracts import AnswerSynthesisAgent
 from money_pit.contracts import ClaimQuestionsAgent
 from money_pit.contracts import CorroborationAgent
 from money_pit.contracts import EmailSender
+from money_pit.contracts import FillObserver
 from money_pit.contracts import OrderPlacer
 from money_pit.contracts import PortfolioFetcher
 from money_pit.contracts import ThesisAgent
@@ -58,6 +59,7 @@ def build_graph(
     config: Config,
     thesis_agent: ThesisAgent,
     place_order: OrderPlacer,
+    observe_fill: FillObserver,
     send_email: EmailSender,
     manifest: ToolManifest | None = None,
 ) -> CompiledStateGraph[PipelineState]:
@@ -78,7 +80,15 @@ def build_graph(
     )
     builder.add_node("validator", make_validator_node(manifest=manifest))
     builder.add_node("determination", make_determination_node())
-    builder.add_node("execution", make_execution_node(place_order=place_order))
+    builder.add_node(
+        "execution",
+        make_execution_node(
+            place_order=place_order,
+            observe_fill=observe_fill,
+            poll_interval=config.execution_fill_poll_interval_seconds,
+            poll_timeout=config.execution_fill_poll_timeout_seconds,
+        ),
+    )
     builder.add_node("notification", make_notification_node(send_email=send_email))
     builder.add_node("finalizer", make_finalizer_node())
 

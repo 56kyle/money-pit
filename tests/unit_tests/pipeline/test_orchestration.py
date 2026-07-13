@@ -54,6 +54,7 @@ def test_production_deps_wires_all_capital_critical_deps(config: Config, offline
 
     assert overrides.fetch_portfolio is not None
     assert overrides.place_order is not None
+    assert overrides.observe_fill is not None
     assert overrides.send_email is not None
     assert overrides.manifest is not None
 

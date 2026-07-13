@@ -18,6 +18,8 @@ from money_pit.schemas.analysis_draft import AnalysisJudgment
 from money_pit.schemas.answers import InitialAnswers
 from money_pit.schemas.determination import DeterminationReport
 from money_pit.schemas.enums import Determination
+from money_pit.schemas.enums import ExecutionOutcome
+from money_pit.schemas.enums import ExecutionPhase
 from money_pit.schemas.enums import TerminalState
 from money_pit.schemas.journal import ExecutionJournal
 from money_pit.schemas.portfolio import PortfolioSnapshot
@@ -138,6 +140,33 @@ def test_paper_trade_execute_path_action_steps_all_succeed(
     run_dir, _ = execute_run
     action_steps = _action_steps_adapter.validate_json((run_dir / "action_steps.json").read_text(encoding="utf-8"))
     assert all(s.step_failed is None for s in action_steps)
+
+
+def test_paper_trade_execute_path_journal_entries_filled(
+    execute_run: tuple[Path, PipelineState],
+) -> None:
+    run_dir, _ = execute_run
+    journal = _assert_file_valid(run_dir, "execution_journal.json", ExecutionJournal)
+    assert all(entry.phase == ExecutionPhase.FILLED for entry in journal.entries)
+
+
+def test_paper_trade_execute_path_journal_entries_populate_fills(
+    execute_run: tuple[Path, PipelineState],
+) -> None:
+    run_dir, _ = execute_run
+    journal = _assert_file_valid(run_dir, "execution_journal.json", ExecutionJournal)
+    assert all(
+        (entry.filled_qty, entry.filled_avg_price, entry.realized_notional) == (1.0, 1.0, 1.0)
+        for entry in journal.entries
+    )
+
+
+def test_paper_trade_execute_path_journal_outcome_clean(
+    execute_run: tuple[Path, PipelineState],
+) -> None:
+    run_dir, _ = execute_run
+    journal = _assert_file_valid(run_dir, "execution_journal.json", ExecutionJournal)
+    assert journal.outcome == ExecutionOutcome.EXECUTED_CLEAN
 
 
 @pytest.mark.parametrize("md_filename", _EXECUTE_PATH_MARKDOWN_FILES)

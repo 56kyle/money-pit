@@ -61,6 +61,8 @@ class Config(BaseSettings):
     sector_cap: float = 0.25
     cash_min: float = 0.05
     overlap_limit: float = 0.30
+    execution_fill_poll_interval_seconds: float = 1.0
+    execution_fill_poll_timeout_seconds: float = 30.0
     threshold_yield_curve: float = 0.0
     threshold_credit_spreads: float = 3.0
     threshold_pmi: float = 50.0

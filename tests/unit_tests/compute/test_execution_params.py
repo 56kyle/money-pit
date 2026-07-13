@@ -1,4 +1,10 @@
-"""Tests for build_execution_params — positive path and schema-source fail-closed contract."""
+"""Tests for build_execution_params — positive path against the REAL pinned schema and schema-source fail-closed contract.
+
+The happy-path tests validate the emitted payload against the real committed Alpaca order
+schema (via stub_free_order_schema_path), so they enforce the true contract: qty/notional as
+strings under the schema-literal keys, additionalProperties:false, required [symbol, side].
+Small hand-written schemas survive only for the dedicated negative cases.
+"""
 
 import json
 from pathlib import Path
@@ -7,9 +13,12 @@ import jsonschema
 import pytest
 from pytest import FixtureRequest
 
+from money_pit.compute.execution_params import InvalidExecutionAmountError
 from money_pit.compute.execution_params import build_execution_params
+from money_pit.mcp.order_schema import ALPACA_ORDER_SCHEMA_PATH
 from money_pit.mcp.order_schema import AlpacaOrderSchemaMalformedError
 from money_pit.mcp.order_schema import AlpacaOrderSchemaMissingError
+from money_pit.mcp.order_schema import load_order_schema
 from money_pit.schemas.enums import ActionType
 
 
@@ -23,7 +32,7 @@ from money_pit.schemas.enums import ActionType
     ],
 )
 def test_build_execution_params_side(
-    action_type: ActionType, expected_side: str, order_schema__path: Path
+    action_type: ActionType, expected_side: str, stub_free_order_schema_path: Path
 ) -> None:
     result = build_execution_params(
         step_id="A001",
@@ -31,34 +40,35 @@ def test_build_execution_params_side(
         symbol="NVDA",
         action_type=action_type,
         dollar_amount=1500.0,
-        schema_path=order_schema__path,
+        schema_path=stub_free_order_schema_path,
     )
 
     assert result.side == expected_side
 
 
-def test_build_execution_params_passes_through_symbol_and_notional(order_schema__path: Path) -> None:
+def test_build_execution_params_passes_through_symbol_and_notional(stub_free_order_schema_path: Path) -> None:
     result = build_execution_params(
         step_id="A001",
         slug="2026-01-01_00-00-00",
         symbol="MSFT",
         action_type=ActionType.BUY,
         dollar_amount=750.0,
-        schema_path=order_schema__path,
+        schema_path=stub_free_order_schema_path,
     )
 
     assert result.symbol == "MSFT"
-    assert result.notional == pytest.approx(750.0)
+    assert result.notional == "750.00"
+    assert result.qty is None
 
 
-def test_build_execution_params_client_order_id(order_schema__path: Path) -> None:
+def test_build_execution_params_client_order_id(stub_free_order_schema_path: Path) -> None:
     result = build_execution_params(
         step_id="A001",
         slug="2026-01-01_00-00-00",
         symbol="NVDA",
         action_type=ActionType.BUY,
         dollar_amount=1500.0,
-        schema_path=order_schema__path,
+        schema_path=stub_free_order_schema_path,
     )
 
     assert result.client_order_id == "2026-01-01_00-00-00:A001"
@@ -69,7 +79,7 @@ def test_build_execution_params_client_order_id(order_schema__path: Path) -> Non
     [("type", "market"), ("time_in_force", "day")],
 )
 def test_build_execution_params_order_constants(
-    attribute: str, expected: str, order_schema__path: Path
+    attribute: str, expected: str, stub_free_order_schema_path: Path
 ) -> None:
     result = build_execution_params(
         step_id="A001",
@@ -77,10 +87,95 @@ def test_build_execution_params_order_constants(
         symbol="NVDA",
         action_type=ActionType.BUY,
         dollar_amount=1500.0,
-        schema_path=order_schema__path,
+        schema_path=stub_free_order_schema_path,
     )
 
     assert getattr(result, attribute) == expected
+
+
+def test_build_execution_params_with_schema_satisfying_emission(
+    stub_free_order_schema_path: Path,
+) -> None:
+    result = build_execution_params(
+        step_id="A001",
+        slug="2026-01-01_00-00-00",
+        symbol="NVDA",
+        action_type=ActionType.BUY,
+        dollar_amount=1500.0,
+        schema_path=stub_free_order_schema_path,
+    )
+
+    assert result.symbol == "NVDA"
+    assert result.side == "buy"
+
+
+def test_build_execution_params_emitted_payload_validates_against_real_schema(
+    stub_free_order_schema_path: Path,
+) -> None:
+    result = build_execution_params(
+        step_id="A001",
+        slug="2026-01-01_00-00-00",
+        symbol="MSFT",
+        action_type=ActionType.BUY,
+        dollar_amount=750.0,
+        schema_path=stub_free_order_schema_path,
+    )
+    payload = result.to_order_payload()
+
+    jsonschema.validate(instance=payload, schema=load_order_schema(ALPACA_ORDER_SCHEMA_PATH))
+    assert payload["notional"] == "750.00"
+    assert isinstance(payload["notional"], str)
+    assert "quantity" not in payload
+    assert "qty" not in payload
+
+
+def test_build_execution_params_with_minimum_notional(
+    stub_free_order_schema_path: Path,
+) -> None:
+    result = build_execution_params(
+        step_id="A001",
+        slug="2026-01-01_00-00-00",
+        symbol="MSFT",
+        action_type=ActionType.BUY,
+        dollar_amount=0.01,
+        schema_path=stub_free_order_schema_path,
+    )
+    payload = result.to_order_payload()
+
+    jsonschema.validate(instance=payload, schema=load_order_schema(ALPACA_ORDER_SCHEMA_PATH))
+    assert result.notional == "0.01"
+
+
+@pytest.mark.parametrize(
+    "dollar_amount",
+    [float("nan"), float("inf"), float("-inf"), 0.0, -100.0, 0.004],
+)
+def test_build_execution_params_with_invalid_amount(
+    dollar_amount: float, stub_free_order_schema_path: Path
+) -> None:
+    with pytest.raises(InvalidExecutionAmountError):
+        _ = build_execution_params(
+            step_id="A001",
+            slug="2026-01-01_00-00-00",
+            symbol="NVDA",
+            action_type=ActionType.BUY,
+            dollar_amount=dollar_amount,
+            schema_path=stub_free_order_schema_path,
+        )
+
+
+def test_build_execution_params_with_invalid_amount_precedes_schema_load(tmp_path: Path) -> None:
+    missing_schema: Path = tmp_path / "not_yet_pinned.json"
+
+    with pytest.raises(InvalidExecutionAmountError):
+        _ = build_execution_params(
+            step_id="A001",
+            slug="2026-01-01_00-00-00",
+            symbol="NVDA",
+            action_type=ActionType.BUY,
+            dollar_amount=-100.0,
+            schema_path=missing_schema,
+        )
 
 
 @pytest.fixture
@@ -95,10 +190,11 @@ def order_schema(request: FixtureRequest, order_schema__required: list[str]) -> 
         "param",
         {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "symbol": {"type": "string"},
-                "notional": {"type": "number"},
-                "quantity": {"type": "number"},
+                "notional": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                "qty": {"anyOf": [{"type": "string"}, {"type": "null"}]},
                 "side": {"type": "string", "enum": ["buy", "sell"]},
                 "type": {
                     "type": "string",
@@ -108,6 +204,7 @@ def order_schema(request: FixtureRequest, order_schema__required: list[str]) -> 
                     "type": "string",
                     "enum": ["day", "gtc", "ioc", "fok"],
                 },
+                "limit_price": {"anyOf": [{"type": "string"}, {"type": "null"}]},
                 "client_order_id": {"type": "string"},
             },
             "required": order_schema__required,
@@ -176,22 +273,6 @@ def test_build_execution_params_with_unparseable_schema(
             dollar_amount=1500.0,
             schema_path=unparseable_schema_path,
         )
-
-
-def test_build_execution_params_with_schema_satisfying_emission(
-    order_schema__path: Path,
-) -> None:
-    result = build_execution_params(
-        step_id="A001",
-        slug="2026-01-01_00-00-00",
-        symbol="NVDA",
-        action_type=ActionType.BUY,
-        dollar_amount=1500.0,
-        schema_path=order_schema__path,
-    )
-
-    assert result.symbol == "NVDA"
-    assert result.side == "buy"
 
 
 @pytest.mark.parametrize(

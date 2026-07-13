@@ -15,7 +15,7 @@ def _execution_parameters(side: object) -> ExecutionParameters:
     return ExecutionParameters(
         symbol="AAPL",
         notional=None,
-        quantity=1.0,
+        qty="1",
         side=side,  # pyright: ignore[reportArgumentType]
         type="market",
         time_in_force="day",
@@ -33,3 +33,39 @@ def test_execution_parameters_with_valid_side(side: str) -> None:
 def test_execution_parameters_with_invalid_side_raises() -> None:
     with pytest.raises(ValidationError):
         _execution_parameters("notaside")
+
+
+def test_execution_parameters_to_order_payload_emits_stored_strings_under_schema_keys() -> None:
+    params = ExecutionParameters(
+        symbol="NVDA",
+        notional="1500.00",
+        qty=None,
+        side="buy",
+        type="market",
+        time_in_force="day",
+        client_order_id="2026-01-01_00-00-00:A001",
+    )
+
+    payload = params.to_order_payload()
+
+    assert payload["notional"] == "1500.00"
+    assert "qty" not in payload
+    assert "quantity" not in payload
+
+
+def test_execution_parameters_to_order_payload_with_qty_emits_qty_key_omitting_notional() -> None:
+    params = ExecutionParameters(
+        symbol="NVDA",
+        notional=None,
+        qty="10",
+        side="buy",
+        type="market",
+        time_in_force="day",
+        client_order_id="2026-01-01_00-00-00:A001",
+    )
+
+    payload = params.to_order_payload()
+
+    assert payload["qty"] == "10"
+    assert "notional" not in payload
+    assert "quantity" not in payload

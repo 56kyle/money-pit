@@ -11,11 +11,9 @@ from pytest import FixtureRequest
 
 from money_pit.config import AlpacaCredentials
 from money_pit.mcp.clients import _extract_order_id
-from money_pit.mcp.clients import _order_arguments
 from money_pit.mcp.clients import _result_text
 from money_pit.mcp.clients import _write_env
 from money_pit.pipeline.execution import OrderSubmissionError
-from money_pit.schemas.action_steps import ExecutionParameters
 
 
 @dataclass
@@ -46,18 +44,6 @@ def credentials(request: FixtureRequest, credentials__paper: bool) -> AlpacaCred
     )
 
 
-def _execution_parameters(*, notional: float | None, quantity: float | None) -> ExecutionParameters:
-    return ExecutionParameters(
-        symbol="NVDA",
-        notional=notional,
-        quantity=quantity,
-        side="buy",
-        type="market",
-        time_in_force="day",
-        client_order_id="2026-01-01_00-00-00:A001",
-    )
-
-
 def test__write_env_with_toolset_and_keys(credentials: AlpacaCredentials) -> None:
     env = _write_env(credentials)
 
@@ -71,24 +57,6 @@ def test__write_env_with_toolset_and_keys(credentials: AlpacaCredentials) -> Non
 )
 def test__write_env_with_paper_flag(credentials: AlpacaCredentials, expected: str) -> None:
     assert _write_env(credentials)["ALPACA_PAPER_TRADE"] == expected
-
-
-def test__order_arguments_with_quantity_remapped_to_qty() -> None:
-    params = _execution_parameters(notional=None, quantity=10.0)
-
-    arguments = _order_arguments(params)
-
-    assert arguments["qty"] == 10.0
-    assert "quantity" not in arguments
-
-
-def test__order_arguments_with_notional_only_keeps_notional() -> None:
-    params = _execution_parameters(notional=1500.0, quantity=None)
-
-    arguments = _order_arguments(params)
-
-    assert arguments["notional"] == 1500.0
-    assert "qty" not in arguments
 
 
 def test__extract_order_id_with_rejection() -> None:

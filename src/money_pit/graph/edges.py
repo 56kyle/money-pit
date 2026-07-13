@@ -1,8 +1,9 @@
-"""Module containing the conditional edge functions (signal_gate, terminal_state_router, determination_router, post_notification_router) for the money_pit package."""
+"""Module containing the conditional edge functions (signal_gate, terminal_state_router, determination_router, execution_outcome_router, post_notification_router) for the money_pit package."""
 
 from typing import Literal
 
 from money_pit.graph.state import PipelineState
+from money_pit.schemas.enums import ExecutionOutcome
 from money_pit.schemas.enums import TerminalState
 
 
@@ -42,8 +43,15 @@ def determination_router(state: PipelineState) -> Literal["execute", "notify", "
     return EXECUTE
 
 
+def execution_outcome_router(state: PipelineState) -> Literal["notify", "finalize"]:
+    """Route after execution: an incomplete execution (open/partial legs) notifies the owner before finalizing; clean and cleanly-failed runs finalize directly."""
+    if state.get("execution_outcome") is ExecutionOutcome.EXECUTED_INCOMPLETE:
+        return NOTIFY
+    return FINALIZE
+
+
 def post_notification_router(state: PipelineState) -> Literal["terminate", "finalize"]:
-    """Route after notification: ANALYSIS_HALT ends the run, VALIDATION_ERROR rejoins the finalizer."""
-    if state.get("terminal_state") is TerminalState.VALIDATION_ERROR:
-        return FINALIZE
-    return TERMINATE
+    """Route after notification: ANALYSIS_HALT ends the run; VALIDATION_ERROR and execution-incomplete (terminal_state None) rejoin the finalizer."""
+    if state.get("terminal_state") is TerminalState.ANALYSIS_HALT:
+        return TERMINATE
+    return FINALIZE

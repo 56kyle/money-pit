@@ -198,12 +198,12 @@ def make_execution_node(
                 entries[-1] = _apply_fill(entry, obs)
                 _write_journal(working_dir, slug, entries, outcome=None)
 
-        _write_journal(
-            working_dir, slug, entries, outcome=derive_execution_outcome([e.phase for e in entries])
-        )
+        outcome: ExecutionOutcome = derive_execution_outcome([e.phase for e in entries])
+        _write_journal(working_dir, slug, entries, outcome=outcome)
 
         result: PipelineState = {
             "completed_steps": with_completed_step(state, "execution"),
+            "execution_outcome": outcome,
         }
         return result
 

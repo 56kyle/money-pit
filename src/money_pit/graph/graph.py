@@ -24,6 +24,7 @@ from money_pit.graph.edges import PROCEED
 from money_pit.graph.edges import TERMINATE
 from money_pit.graph.edges import VALIDATE
 from money_pit.graph.edges import determination_router
+from money_pit.graph.edges import execution_outcome_router
 from money_pit.graph.edges import post_notification_router
 from money_pit.graph.edges import signal_gate
 from money_pit.graph.edges import terminal_state_router
@@ -109,7 +110,11 @@ def build_graph(
         determination_router,
         {EXECUTE: "execution", NOTIFY: "notification", FINALIZE: "finalizer"},
     )
-    builder.add_edge("execution", "finalizer")
+    builder.add_conditional_edges(
+        "execution",
+        execution_outcome_router,
+        {NOTIFY: "notification", FINALIZE: "finalizer"},
+    )
     builder.add_conditional_edges(
         "notification",
         post_notification_router,

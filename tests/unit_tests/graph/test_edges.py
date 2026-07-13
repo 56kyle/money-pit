@@ -1,6 +1,8 @@
-"""Tests for money_pit.graph.edges — the four conditional routers (wave S5 / ADR 0006)."""
+"""Tests for money_pit.graph.edges — the conditional routers (wave S5 / ADR 0006, wave D fill-observability)."""
 
 from typing import TYPE_CHECKING
+
+import pytest
 
 from money_pit.graph.edges import EXECUTE
 from money_pit.graph.edges import FINALIZE
@@ -10,9 +12,11 @@ from money_pit.graph.edges import PROCEED
 from money_pit.graph.edges import TERMINATE
 from money_pit.graph.edges import VALIDATE
 from money_pit.graph.edges import determination_router
+from money_pit.graph.edges import execution_outcome_router
 from money_pit.graph.edges import post_notification_router
 from money_pit.graph.edges import signal_gate
 from money_pit.graph.edges import terminal_state_router
+from money_pit.schemas.enums import ExecutionOutcome
 from money_pit.schemas.enums import TerminalState
 
 
@@ -70,6 +74,35 @@ def test_determination_router_with_orchestration_error() -> None:
     assert determination_router(state) == FINALIZE
 
 
+def test_execution_outcome_router_with_executed_incomplete() -> None:
+    state: PipelineState = {"execution_outcome": ExecutionOutcome.EXECUTED_INCOMPLETE}
+    assert execution_outcome_router(state) == NOTIFY
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        ExecutionOutcome.EXECUTED_CLEAN,
+        ExecutionOutcome.EXECUTION_FAILED,
+        ExecutionOutcome.PARTIAL_COMPENSATED,
+        ExecutionOutcome.COMPENSATION_FAILED,
+    ],
+)
+def test_execution_outcome_router_with_non_incomplete_outcome(outcome: ExecutionOutcome) -> None:
+    state: PipelineState = {"execution_outcome": outcome}
+    assert execution_outcome_router(state) == FINALIZE
+
+
+def test_execution_outcome_router_with_none() -> None:
+    state: PipelineState = {"execution_outcome": None}
+    assert execution_outcome_router(state) == FINALIZE
+
+
+def test_execution_outcome_router_with_absent_key() -> None:
+    state: PipelineState = {}
+    assert execution_outcome_router(state) == FINALIZE
+
+
 def test_post_notification_router_with_validation_error() -> None:
     state: PipelineState = {"terminal_state": TerminalState.VALIDATION_ERROR}
     assert post_notification_router(state) == FINALIZE
@@ -78,3 +111,13 @@ def test_post_notification_router_with_validation_error() -> None:
 def test_post_notification_router_with_analysis_halt() -> None:
     state: PipelineState = {"terminal_state": TerminalState.ANALYSIS_HALT}
     assert post_notification_router(state) == TERMINATE
+
+
+def test_post_notification_router_with_none_terminal_state() -> None:
+    state: PipelineState = {"terminal_state": None}
+    assert post_notification_router(state) == FINALIZE
+
+
+def test_post_notification_router_with_absent_key() -> None:
+    state: PipelineState = {}
+    assert post_notification_router(state) == FINALIZE

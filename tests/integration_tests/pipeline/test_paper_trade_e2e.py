@@ -8,8 +8,10 @@ import pytest
 from pydantic import BaseModel
 from pydantic import TypeAdapter
 
+from money_pit.compute.fills import build_fill_observation
 from money_pit.graph.state import PipelineState
 from money_pit.mcp.manifest import pinned_manifest
+from money_pit.schemas.fills import FillObservation
 from money_pit.pipeline.orchestration import PipelineOverrides
 from money_pit.pipeline.orchestration import phase4_overrides
 from money_pit.pipeline.orchestration import run_pipeline
@@ -320,6 +322,69 @@ def test_paper_trade_validation_error_sends_email(
 ) -> None:
     _, _, email = validation_error_run
     assert email.calls
+
+
+def _incomplete_observer(client_order_id: str) -> FillObservation:
+    """Return a terminal-but-non-clean fill (done_for_day, partial) so execution reaches EXECUTED_INCOMPLETE.
+
+    done_for_day is a terminal status, so _poll_fill returns on the first observation with no
+    sleep — the run stays fast despite the default 30s poll timeout. A positive filled_qty with a
+    non-filled/non-rejected status maps to PARTIALLY_FILLED, which derives EXECUTED_INCOMPLETE.
+    """
+    _ = client_order_id
+    return build_fill_observation("done_for_day", 3.0, 100.0)
+
+
+@pytest.fixture(scope="module")
+def execute_incomplete_run(
+    tmp_path_factory: pytest.TempPathFactory, pipeline_signals_dir: Path
+) -> tuple[Path, PipelineState, _RecordingEmail]:
+    run_dir = tmp_path_factory.mktemp("execute_incomplete_determination")
+    email = _RecordingEmail()
+    overrides = phase4_overrides()
+    overrides.observe_fill = _incomplete_observer
+    overrides.send_email = email
+    overrides.manifest = pinned_manifest()
+    final_state = run_pipeline(signals_dir=pipeline_signals_dir, run_dir=run_dir, overrides=overrides)
+    return run_dir, final_state, email
+
+
+def test_paper_trade_execute_incomplete_completes(
+    execute_incomplete_run: tuple[Path, PipelineState, _RecordingEmail],
+) -> None:
+    _, final_state, _ = execute_incomplete_run
+    assert "finalizer" in (final_state.get("completed_steps") or [])
+
+
+def test_paper_trade_execute_incomplete_journal_outcome_incomplete(
+    execute_incomplete_run: tuple[Path, PipelineState, _RecordingEmail],
+) -> None:
+    run_dir, _, _ = execute_incomplete_run
+    journal = _assert_file_valid(run_dir, "execution_journal.json", ExecutionJournal)
+    assert journal.outcome == ExecutionOutcome.EXECUTED_INCOMPLETE
+
+
+def test_paper_trade_execute_incomplete_sends_notification(
+    execute_incomplete_run: tuple[Path, PipelineState, _RecordingEmail],
+) -> None:
+    _, _, email = execute_incomplete_run
+    assert any("Execution Incomplete" in subject for subject, _ in email.calls)
+
+
+def test_paper_trade_execute_incomplete_determination_outcome_failure(
+    execute_incomplete_run: tuple[Path, PipelineState, _RecordingEmail],
+) -> None:
+    run_dir, _, _ = execute_incomplete_run
+    report = _assert_file_valid(run_dir, "determination.json", DeterminationReport)
+    assert report.sub_agent_outcome == "failure"
+
+
+def test_paper_trade_execute_clean_sends_no_notification(
+    execute_run: tuple[Path, PipelineState],
+) -> None:
+    """Contrast: the clean execute path finalizes directly and never routes through notification."""
+    _, final_state = execute_run
+    assert "notification" not in (final_state.get("completed_steps") or [])
 
 
 def test_paper_trade_fully_default_schema_builds_and_proceeds(tmp_path: Path, pipeline_signals_dir: Path) -> None:

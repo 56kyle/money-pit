@@ -220,8 +220,11 @@ The system's core, split into a judgment agent and a deterministic compute node.
   extraction (25% sector cap, cash, overlap), Step 5 `EV = Σ(Pᵢ/100 × Rᵢ)` and the ≥ +3.0% gate,
   Step 7 fractional-Kelly sizing (`design_decisions.md §2`: `w = kelly_fraction × h_unverified × h_uncertain × f_kelly`, clamped to `max_position_weight`, then to §3 headroom), direction →
   `action_type` mapping, probability-sum validation, and emission of `execution_parameters` with
-  **manifest-correct field names**. This node is where the `ticker→symbol` / `notional` / `side`
-  translation lives — never inside the validator. A4 also writes `analysis.md`, the full
+  **manifest-correct field names**. This node is where the `ticker→symbol` / `dollar_amount→notional` /
+  `action_type→side` translation lives — never inside the validator. Per the pinned schema (ADR 0014)
+  it emits `notional` as a cents-formatted **string** (`f"{dollar_amount:.2f}"`) with `qty = null` on
+  the notional path, and fails closed with `InvalidExecutionAmountError` (ADR 0015) on any non-finite or
+  sub-cent amount before the payload is validated. A4 also writes `analysis.md`, the full
   human-readable reasoning including every drop.
 
 ### 6.6 A5 — Validation node (deterministic, no LLM)
@@ -229,13 +232,15 @@ The system's core, split into a judgment agent and a deterministic compute node.
 - **Responsibility:** for each action step, confirm a literal, complete MCP tool sequence exists that
   would execute it exactly as written. Static analysis only; never executes a tool.
 - **Mechanism:** validates against a **static, pinned tool manifest** of the closed Alpaca write-tool
-  set — `{"place_order": <the pinned alpaca_order_schema>}`, assembled by `pinned_manifest()` from
+  set — `{"place_stock_order": <the pinned alpaca_order_schema>}`, assembled by `pinned_manifest()` from
   `mcp.order_schema.load_order_schema()` and injected at node construction (→ see ADR 0004). It checks
   existence (the router's tool name is a key in the manifest), schema acceptance, and behavioral match
   via a fixed `action_type → tool` config. This is **contract-level** existence (the selected tool
   appears in the pinned write-tool set), **not** runtime availability — live introspection of the
   registered MCP servers is the Phase-7 replacement, which swaps only the injected default. An
-  unavailable manifest fails closed via a typed `ManifestUnavailableError`; the earlier injected LLM
+  unavailable manifest fails closed via a typed error — `ManifestUnavailableError` on the
+  live-introspection path, or the loader's `AlpacaOrderSchemaError` (missing / malformed / not-pinned)
+  on the pinned default (ADR 0016); the earlier injected LLM
   `behavioral_match` predicate (which defaulted to always-`True`) has been **removed**, so A5 can no
   longer be silently green on a check it does not run. The schema-acceptance check is a
   **`jsonschema.validate()`** call — an MCP tool's `inputSchema` _is_ JSON Schema, so "are the action's
@@ -282,7 +287,7 @@ satisfy neither the write nor the outcome (→ see ADR 0006).
     steps sharing a `group_id` (pairs trade, hedge, funded roll), where a partial fill leaves
     unintended exposure. At **N = 1** every step is independent (`group_id` always null); the atomic
     path is a marked stub — a non-null `group_id` fails closed by raising `AtomicGroupNotSupportedError`
-    **before** any `place_order` call, rather than executing one leg of an all-or-nothing group
+    **before** any `place_stock_order` call, rather than executing one leg of an all-or-nothing group
     (→ see ADR 0003).
   - **Journal + idempotency.** Every order carries a deterministic `client_order_id = {slug}:{step_id}`
     so retries never double-execute, and the sub-agent writes `execution_journal.json` **incrementally**
@@ -293,9 +298,10 @@ satisfy neither the write nor the outcome (→ see ADR 0006).
   failure, compute compensations from **realized fills** and unwind the filled legs; if a compensation
   itself fails, escalate urgently (`COMPENSATION_FAILED`) — the one state with un-neutralized exposure.
 - **Output:** an `ExecutionOutcome` (`EXECUTED_CLEAN` | `PARTIAL_COMPENSATED` | `COMPENSATION_FAILED` |
-  `EXECUTION_FAILED`) written to the journal and mapped into `determination.json`. Pre-Phase-7, the
-  injected `place_order` returns only a broker order id — a successful call proves _"submitted,"_ not
-  _"filled"_ — so `EXECUTED_CLEAN` is redefined as **"all independent legs submitted without
+  `EXECUTION_FAILED`) written to the journal and mapped into `determination.json`. At the current
+  submission-level wave, the injected order placer (`OrderPlacer`) returns only a broker order id — a
+  successful call proves _"submitted,"_ not _"filled"_ — so `EXECUTED_CLEAN` is redefined as **"all
+  independent legs submitted without
   exception"** (entries stay `phase=SUBMITTED`; `filled_*` stay `None`). The journal `outcome` is
   **nullable**: `None` is the truthful value during incremental writes and the value a mid-run crash
   leaves behind; a terminal member is written only at clean completion (→ see ADR 0003).
@@ -537,7 +543,9 @@ which field, which tool), never as a generic failure.
 Externalized configuration (not in prompts or code constants): the YouTube channel ID; the owner
 recipient `56kyleoliver@gmail.com`; Alpaca credentials plus the two `ALPACA_TOOLSETS` values that scope
 the read instance (market-data) and the write instance (trading) — the scoping that enforces the
-read/write safety boundary; data-source API keys; the schedule; the sub-agent timeout window (owned by
+read/write safety boundary; the **required** `alpaca_paper` flag (`MONEY_PIT__ALPACA_PAPER`) that
+explicitly routes paper vs. live capital (ADR 0013) — no default, so an unset value fails closed rather
+than silently choosing an account; data-source API keys; the schedule; the sub-agent timeout window (owned by
 the LangGraph node definition, not by any agent); the **regime decision table** and
 **conviction-band thresholds**; and the `action_type → tool` mapping consumed by A5. The
 working-directory root (`data/daily_show/`) is the only persistent on-disk state.
@@ -546,14 +554,16 @@ working-directory root (`data/daily_show/`) is the only persistent on-disk state
 
 ## 15. Open decisions & risks
 
-1. **Alpaca order tool schema (partially resolved).** The `execution_parameters` field names must
+1. **Alpaca order tool schema — RESOLVED.** The `execution_parameters` field names must
    match the official Alpaca MCP order tool's input schema, or A5 marks every step `UNMATCHED`. The
-   schema is now pinned to a **committed artifact** (`mcp/alpaca_order_schema.json`) read through a
+   schema is pinned to a **committed artifact** (`mcp/alpaca_order_schema.json`) read through a
    single shared loader (`mcp.order_schema.load_order_schema`, raising the typed
    `AlpacaOrderSchemaMissingError`), the one source for both the post-processor's field emission and
-   A5's manifest. The committed file is still a **stub**: pinning the real OpenAPI-generated schema
-   from the live Alpaca MCP is the remaining Phase-7 step, gated so the default production path fails
-   closed until it lands (→ see ADR 0004 for the static manifest, ADR 0007 for the fail-closed stub gate).
+   A5's manifest. The real `place_stock_order` schema has been pinned from the live Alpaca MCP server
+   (`money-pit pin-order-schema`); the stub sentinel is gone and the fail-closed gate is green. The
+   payload was reconciled to it — string `notional`/`qty`, cents-formatted notional (ADR 0014) — and
+   the transitional `quantity→qty` shim deleted (→ see ADR 0004 for the static manifest, ADR 0007 for
+   the now-satisfied fail-closed stub gate, ADR 0014 for the payload reconciliation).
 2. **Regime decision table — RESOLVED.** Five-indicator (yield curve, credit spreads, PMI, earnings
    revisions, inflation) ordered truth table in `design_decisions.md §1`. Missing indicator →
    `UNCERTAIN`. v0 defers `RECOVERY` tag (no trailing state in v0); early-cycle → `GROWTH_ACCELERATING`.

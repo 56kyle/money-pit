@@ -73,7 +73,7 @@ Architecture phase is complete. All six agent prompts, `docs/design_decisions.md
   finalizer with the 4-member `TerminalState`. The narrative docs (`architecture.md`,
   `pipeline_contracts.md`, `package_structure.md`) now describe the as-built design and cross-link these ADRs.
 
-**Phase 7 (MCP Layer and Email Server) — COMPLETE (code); live schema pin remains a deployment gate.**
+**Phase 7 (MCP Layer and Email Server) — COMPLETE; order schema pinned from the live server (ADR 0014).**
 
 - Integration-time reality corrected the spec (ADR 0008): the real `alpaca-mcp-server` has **no
   `place_order`** (equities use `place_stock_order`), toolset names differ (`account`/`trading`/
@@ -98,8 +98,9 @@ Architecture phase is complete. All six agent prompts, `docs/design_decisions.md
 - Tests: offline unit suite (mock-free; new `CredentialResolutionError`/`ManifestUnavailableError`/
   `EmailSendError` fail-closed `pytest.raises`); opt-in `@pytest.mark.live` paper tier
   (`tests/acceptance_tests/paper_trade/`, deselected by default). Every Phase-7 source file at 100%.
-- `mcp/alpaca_order_schema.json` — still the committed **stub**; the real live-pin (run
-  `pin-order-schema`) remains the discrete deployment checkpoint that flips the ADR-0007 gate green.
+- `mcp/alpaca_order_schema.json` — **now pinned** from the live server (`pin-order-schema` run; stub
+  sentinel removed), flipping the ADR-0007 gate green; the payload was reconciled to the real schema
+  (string `notional`/`qty`, cents-formatted notional — ADR 0014) and guarded against invalid amounts (ADR 0015).
 
 ---
 
@@ -158,7 +159,7 @@ Pure functions, no I/O, no LLM. Key design decisions resolved:
 
 ### Tool map (`tool_map.py`)
 
-`ACTION_TYPE_TO_TOOL` and `COMPENSATING_ACTION`. All Alpaca order operations use `place_order`; primary vs. compensating is distinguished by `side` (buy/sell), not by tool name. Callers needing the compensating tool use `ACTION_TYPE_TO_TOOL[COMPENSATING_ACTION[action_type]]`.
+`ACTION_TYPE_TO_TOOL` and `COMPENSATING_ACTION`. All Alpaca order operations use `place_stock_order` (ADR 0008 — there is no `place_order` tool); primary vs. compensating is distinguished by `side` (buy/sell), not by tool name. Callers needing the compensating tool use `ACTION_TYPE_TO_TOOL[COMPENSATING_ACTION[action_type]]`.
 
 ### Confidence (`confidence.py`)
 
@@ -166,12 +167,13 @@ Pure functions, no I/O, no LLM. Key design decisions resolved:
 
 ### Execution params (`execution_params.py`)
 
-Intentionally CI-red until the real `mcp/alpaca_order_schema.json` is pinned from the live Alpaca MCP
-server. Loading moved to the shared `mcp/order_schema.load_order_schema` (`compute/execution_params.py`
+Loading is via the shared `mcp/order_schema.load_order_schema` (`compute/execution_params.py`
 and `pipeline/validator.py` share the one `ALPACA_ORDER_SCHEMA_PATH`), raising the typed
 `AlpacaOrderSchemaMissingError` (not a bare `FileNotFoundError`) when absent, `AlpacaOrderSchemaMalformedError`
-when unparseable. Because a committed stub keeps the spine green, the "CI-red until pinned" intent is
-re-enforced by a gate that fails the default production path while the stub sentinel is present (see item F / Watch Items).
+when unparseable, and `AlpacaOrderSchemaNotPinnedError` while a stub sentinel is present. The real
+`place_stock_order` schema has since been pinned from the live server (sentinel removed), so the gate is
+green; the emitted payload was reconciled to it — string `notional`/`qty`, cents-formatted notional, plus
+an `InvalidExecutionAmountError` guard rejecting non-finite/sub-cent amounts before schema load (ADRs 0014, 0015).
 
 ---
 
@@ -248,7 +250,7 @@ Write only after the spine is green.
 
 ---
 
-## Phase 7: MCP Layer and Email Server — COMPLETE (code); pin is a deployment gate
+## Phase 7: MCP Layer and Email Server — COMPLETE; schema pinned
 
 **As-built (ADR 0008, ADR 0009); see the Current-State block above for the full summary.** The spec's
 `place_order` / `market-data` assumptions were corrected to the real `alpaca-mcp-server` taxonomy at
@@ -260,10 +262,10 @@ integration time.
    (`alpaca_portfolio.py`); `edgar_search` implemented via `edgartools` in `_DirectOpenEndedTools`.
 2. **`mcp/manifest.py`** — `live_manifest(credentials)` introspects the connected server (fails closed
    via `ManifestUnavailableError`); `pinned_manifest()` stays the static default (ADR 0004).
-3. **`mcp/alpaca_order_schema.json`** — **discrete deployment checkpoint**: run `money-pit
-   pin-order-schema` (introspects `place_stock_order`) to replace the committed stub; the default path
-   fails closed until the sentinel is gone (ADR 0007), so pinning flips the gate green. The pin also
-   reconciles the deferred `quantity→qty` rename and the float→string param typing.
+3. **`mcp/alpaca_order_schema.json`** — **pinned**: `money-pit pin-order-schema` (introspects
+   `place_stock_order`) was run against the live server, replacing the stub and removing the sentinel,
+   so the ADR-0007 gate is green. The pin's deferred reconciliations landed (ADR 0014): the
+   `quantity→qty` rename and float→string param typing, with the `mcp/clients._order_arguments` shim deleted.
 4. **`src/email_server/server.py`** — FastMCP `send_email(to, subject, body)`, no `money_pit` import
    (ADR 0009). The pipeline's own `EmailSender` is direct smtplib (`money_pit/email_sender.py`).
 
@@ -283,14 +285,14 @@ Prior-journal reconciliation: reads `execution_journal.json`, checks for in-flig
 | compute/ complete ✓ | All property tests green; every reachable regime tag covered; 96 tests passing                                             |
 | gates complete ✓    | Three `graph/edges.py` gate tests pass on hand-built JSON                                                                  |
 | spine green         | End-to-end paper-trade run with stub agents; all working-dir files schema-valid; zero LLM calls                            |
-| schema pinned       | real `mcp/alpaca_order_schema.json` pinned from live Alpaca MCP (stub sentinel removed); the fail-closed gate flips green and `execution_params` validates against it |
+| schema pinned ✓     | real `mcp/alpaca_order_schema.json` pinned from live Alpaca MCP (stub sentinel removed); the fail-closed gate flipped green and `execution_params` validates against it |
 | full pipeline       | End-to-end with real agents on paper-trading account; `determination.json` written; email or execution triggered correctly |
 
 ---
 
 ## Watch Items
 
-- **`src/money_pit/mcp/alpaca_order_schema.json`**: the real schema cannot be synthesized; it must be pinned from the live Alpaca MCP server (run `money-pit pin-order-schema`, ADR 0008). A committed **stub** keeps the spine green, but the default production load path is gated to **fail closed** while the stub sentinel is present (in-band sentinel + `AlpacaOrderSchemaNotPinnedError`, ADR 0007). The gate's failure-mode test is red-until-pinned by design — flipping green is the signal the manual live-pin prerequisite is satisfied. Treat as a deployment gate, not a code-complete milestone. **The pin also forces two deferred `ExecutionParameters` reconciliations** (ADR 0008): rename `quantity → qty` (currently remapped by a marked transitional shim in `mcp/clients.py._order_arguments`) and float → string param typing — both must land when the real `place_stock_order` schema is pinned, or a real order is rejected at the boundary.
+- **`src/money_pit/mcp/alpaca_order_schema.json`**: **pinned** from the live Alpaca MCP server (`money-pit pin-order-schema`, ADR 0008); the stub sentinel is removed, so the ADR-0007 fail-closed gate is green and `test_load_order_schema_default_path_is_pinned` asserts it stays pinned. The two deferred `ExecutionParameters` reconciliations the pin forced have landed (ADR 0014): the `quantity → qty` rename (the transitional `mcp/clients._order_arguments` shim is deleted; the write client submits `to_order_payload()` directly) and float → string param typing, with the `InvalidExecutionAmountError` amount guard added (ADR 0015). The per-test stub opt-in scaffolding (`stub_free_order_schema_path` fixture and the `order_schema_path`/`schema_path` injection seams) has been **retired** — ADR 0007's terminus reached — leaving only `load_order_schema(path=)`; ADR 0016 records the related `pinned_manifest` error-propagation simplification that fell out of it. **Remaining follow-up:** a live-tier schema-drift guard comparing the pinned artifact to the live `inputSchema`.
 - **Write-client boundary discipline** (ADR 0008): Alpaca has no key-level read/write split, so the "only execution places orders" guarantee now rests on **client separation** (alpaca-py reads, MCP writes) and constructing `AlpacaWriteDeps` only on the execution path — no type prevents a future caller from breaching it. Snapshot reads must stay on alpaca-py, never a `trading`-scoped MCP instance.
 - **N=1 stub inertness** (`test_n1_stubs.py`): turns red when a second source or the first interdependent thesis activates a dormant aggregation path.
 - **`terminal_state_router`**: routes `None`→"validate", `NO_ACTION`→"no_action", else→"notify"; the 4-member `TerminalState` (ADR 0006) is authoritative — confirm against `pipeline_contracts.md` §0/§6a when touching it.
@@ -313,7 +315,7 @@ tests/
 │   │   ├── test_regime.py               # property tests
 │   │   ├── test_sizing.py               # property tests
 │   │   ├── test_n1_stubs.py             # stub inertness
-│   │   └── test_execution_params.py     # CI-red until schema pinned
+│   │   └── test_execution_params.py     # notional formatting, payload validates, amount-guard rejections
 │   └── graph/
 │       └── test_edges.py                # three gates, hand-built JSON
 ├── integration_tests/

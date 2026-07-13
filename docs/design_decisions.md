@@ -22,7 +22,12 @@ execution-journal semantics of #9/#12 (nullable `outcome`, submission-level `EXE
 fail-closed) in **ADR 0004**; A4's Step-1 disposition threading and macro-read-as-narrative in
 **ADR 0005**; and the go/no-go determination + finalizer with the 4-member `TerminalState` in
 **ADR 0006**; and the re-enforcement of the #1 order-schema gate to fail closed while the committed
-stub is unpinned (in-band sentinel + `AlpacaOrderSchemaNotPinnedError`) in **ADR 0007**. The narrative
+stub is unpinned (in-band sentinel + `AlpacaOrderSchemaNotPinnedError`) in **ADR 0007**. Later waves
+carried this further: the MCP client transport and the `place_stock_order` retargeting (no `place_order`
+tool) in **ADR 0008**; the typed fetch result in **ADR 0011**; the explicit required `alpaca_paper`
+capital-routing flag in **ADR 0013**; and — once the real schema was pinned from the live server — the
+order-payload reconciliation to it (string `notional`/`qty`, cents-formatted notional, shim deleted) in
+**ADR 0014**, plus the non-finite/below-minimum notional guard in **ADR 0015**. The narrative
 docs (`architecture.md`, `pipeline_contracts.md`) describe the as-built design; these ADRs hold the "why."
 
 ---
@@ -154,9 +159,11 @@ snapshot.
 ## 4. Sell / trim translation (§15 #5) — **RESOLVED**
 
 `SELL` (full exit) closes the position by **quantity** (snapshot `quantity`) to avoid fractional dust.
-`TRIM` uses **notional** (dollars to remove) if the official Alpaca order tool accepts notional sells,
-else converts to quantity via the snapshot price. Entries are Kelly-sized (§2);
-`compute/execution_params.py` emits whichever field the official order schema literally defines (§7).
+`TRIM` uses **notional** (dollars to remove). The pinned `place_stock_order` schema accepts both
+`notional` and `qty` (each string-or-null, mutually exclusive); the current post-processor emits the
+**notional** path only (`qty = None`), so the "convert to quantity via snapshot price" branch is not yet
+built. Entries are Kelly-sized (§2); `compute/execution_params.py` emits the literal `notional` string
+the pinned schema defines (§7, ADR 0014).
 
 ## 5. Atomic groups at N=1 (§15 #9) — **STUB**
 
@@ -166,7 +173,7 @@ pre-flight/compensation branch (§7a of contracts) is wired but exercised only o
 populated. Define grouping criteria when the first interdependent thesis appears or N>1 makes them likely.
 
 The stub has a **marked terminus** (→ see ADR 0003): a non-null `group_id` fails closed by raising
-`AtomicGroupNotSupportedError` **before** any `place_order` call, rather than executing one leg of an
+`AtomicGroupNotSupportedError` **before** any `place_stock_order` call, rather than executing one leg of an
 all-or-nothing group. The same ADR makes the execution journal honest at this wave — `outcome` is
 **nullable** (`None` = incomplete/crashed) and `EXECUTED_CLEAN` means "all independent legs submitted"
 (not filled) pre-Phase-7.
@@ -176,18 +183,20 @@ all-or-nothing group. The same ADR makes the execution journal honest at this wa
 `max` tier across a corroborated claim, with corroboration raising A4 Step-1 confidence. Inert until N>1
 — same horizon as the corroboration stub.
 
-## 7. Alpaca order schema (§15 #1) — **deployment prerequisite**
+## 7. Alpaca order schema (§15 #1) — **RESOLVED (pinned)**
 
-The shared-loader / co-located-path shape has **landed**: `mcp/alpaca_order_schema.json` is the pinned
+The shared-loader / co-located-path shape landed: `mcp/alpaca_order_schema.json` is the pinned
 artifact and `mcp/order_schema.py` is the single loader (`load_order_schema`, exposing
 `ALPACA_ORDER_SCHEMA_PATH`), so the post-processor's `compute/execution_params.py` emission and
 `pipeline/validator.py`'s `jsonschema` check share one literal source. A5 validates against a **static,
-pinned manifest** (`pinned_manifest()` = `{"place_order": <that schema>}`) rather than live
-introspection (→ see ADR 0004); introspecting the registered MCP servers is the Phase-7 swap of the
-injected default. The committed schema is still a **stub** — pinning the real OpenAPI-generated schema
-from the live Alpaca MCP is the remaining prerequisite, gated so the default production path fails
-closed until it lands via an in-band stub sentinel + `AlpacaOrderSchemaNotPinnedError` (→ see ADR 0007;
-§7 of contracts).
+pinned manifest** (`pinned_manifest()` = `{"place_stock_order": <that schema>}`) rather than live
+introspection (→ see ADR 0004); introspecting the registered MCP servers is the deferred
+live-introspection swap of the injected default. The real `place_stock_order` schema has now been
+**pinned from the live Alpaca MCP server** (`money-pit pin-order-schema`): the stub sentinel is gone,
+the fail-closed gate (ADR 0007) is satisfied, and the emitted payload was reconciled to the real schema
+— string `notional`/`qty`, cents-formatted notional, the `quantity→qty` shim deleted (→ see ADR 0014;
+§5/§7 of contracts). The one remaining follow-up is drift detection between the pinned artifact and the
+live schema — a deferred live-tier test, since the artifact was pinned from live.
 
 ## 8. Step ID origin — **post-processor assigns, not A4**
 

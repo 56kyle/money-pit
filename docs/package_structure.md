@@ -1,6 +1,6 @@
 ﻿# Context
 
-The `docs/architecture.md` and `docs/pipeline_contracts.md` docs are complete but no Python package structure exists beyond a handful of stub modules (`log.py`, `config.py`, `constants.py`, `trade.py`, `__main__.py`). The goal is to lay out the full `src/money_pit/` directory tree — module names, one-line responsibilities, grouping rationale — before any implementation begins, so the build order and import graph are intentional from day one.
+The `docs/architecture.md` and `docs/pipeline_contracts.md` docs are complete but no Python package structure exists beyond a handful of stub modules (`log.py`, `config.py`, `constants.py`, `__main__.py`). The goal is to lay out the full `src/money_pit/` directory tree — module names, one-line responsibilities, grouping rationale — before any implementation begins, so the build order and import graph are intentional from day one. (The tree below is now built out through Phase 7; the earlier `trade.py` stub was removed.)
 
 ---
 
@@ -16,6 +16,10 @@ src/money_pit/
 ├── contracts.py             # Cross-layer DI TypeAliases (cycle-free leaf, imports only schemas): ToolManifest, ThesisAgent, PortfolioFetcher, OrderPlacer, EmailSender, CorroborationAgent, ClaimQuestionsAgent, AnswerSynthesisAgent
 ├── alpaca_portfolio.py     # alpaca-py-backed PortfolioFetcher (reads snapshot via TradingClient, not MCP — ADR 0008); yfinance best-effort sector, v0-deferred factor_tags/overlaps; NonEquityPositionError
 ├── email_sender.py         # Gmail smtplib EmailSender for the pipeline (direct, not over MCP — ADR 0009); typed EmailSendError
+├── prompt_loader.py        # Loads the packaged agent prompts from prompts/ (ADR 0012)
+│
+├── prompts/                # Packaged agent system prompts (agent_1..agent_N.md), loaded at import via prompt_loader (ADR 0012)
+│   └── __init__.py
 │
 ├── schemas/                 # All Pydantic data contracts — single import source of truth
 │   ├── __init__.py
@@ -28,6 +32,7 @@ src/money_pit/
 │   ├── question_draft.py    # DraftQuestion (A2 LLM output — claim-specific questions only)
 │   ├── answers.py           # Answer, InitialAnswers
 │   ├── answer_draft.py      # AnswerDraft (A3 LLM output — open-ended question answers)
+│   ├── fetch_result.py      # Typed deterministic-retrieval result (A3 known-param fetch — ADR 0011)
 │   ├── macro.py             # MacroIndicators (five-indicator snapshot consumed by compute/regime.py; isolated to keep regime's import surface narrow)
     ├── analysis_draft.py    # AnalysisJudgment (LLM draft from A4 — input to post-processor)
 │   ├── action_steps.py      # ActionStep, ExecutionParameters, ActionSteps (post-processor output / A5 input)
@@ -61,7 +66,8 @@ src/money_pit/
 │   ├── corroboration.py     # Aggregator's thin LLM pass: label agree/disagree on pre-clustered claim groups
 │   ├── claim_questions.py   # A2 LLM core: claim-specific thesis-validation + invalidation questions only
 │   ├── answer_synthesis.py  # A3 LLM core: open-ended Brave/EDGAR lookups + answer synthesis
-│   └── thesis_judgment.py   # A4 LLM core: claim disposition, thesis narratives, scenarios → AnalysisJudgment
+│   ├── thesis_judgment.py   # A4 LLM core: claim disposition, thesis narratives, scenarios → AnalysisJudgment
+│   └── research_tools.py    # DeterministicResearchTools / OpenEndedResearchTools Protocols (A3 tool injection; converges with mcp.clients ResearchDeps)
 │
 ├── adapters/                # Source adapters — one module per source type; all emit SignalSet
 │   ├── __init__.py
@@ -83,10 +89,11 @@ src/money_pit/
 │
 └── mcp/                     # MCP client configuration; runs inside the pipeline process
     ├── __init__.py
+    ├── constants.py         # PLACE_STOCK_ORDER_TOOL and related MCP tool-name constants (ADR 0008); imported by compute/tool_map.py and mcp/manifest.py
     ├── clients.py           # AlpacaWriteDeps + make_alpaca_write_deps: connect-per-call OrderPlacer over a trading-scoped stdio alpaca-mcp-server (place_stock_order) + list_write_tools introspection (ADR 0008). AlpacaReadDeps/ResearchDeps dropped — no consumer; reads use alpaca_portfolio.py, edgar_search uses edgartools
     ├── order_schema.py       # Shared loader: ALPACA_ORDER_SCHEMA_PATH + load_order_schema (fail-closed AlpacaOrderSchemaMissingError/MalformedError/NotPinnedError); single literal source for compute/execution_params.py and pipeline/validator.py
     ├── manifest.py          # pinned_manifest(): static {<place_stock_order>: <pinned schema>} for A5 (ADR 0004); live_manifest(credentials): opt-in live introspection of the connected server (ADR 0008), fail-closed ManifestUnavailableError
-    └── alpaca_order_schema.json  # Pinned Alpaca MCP order tool inputSchema snapshot (still a stub; pin via `money-pit pin-order-schema`); read via mcp/order_schema.py by compute/execution_params.py and pipeline/validator.py → tool manifest consumed by A5
+    └── alpaca_order_schema.json  # Pinned place_stock_order inputSchema snapshot (pinned from the live server via `money-pit pin-order-schema`, sentinel-free — ADR 0014); read via mcp/order_schema.py by compute/execution_params.py and pipeline/validator.py → tool manifest consumed by A5
 
 src/email_server/            # Deployable MCP server (separate process; single-sources SMTP defaults + EmailSendError from money_pit per ADR 0010)
 ├── __init__.py
@@ -129,7 +136,7 @@ Each LLM boundary has two schema files: a `*_draft.py` (the model's raw output, 
 
 2. **`adapters/video_llm.py` is one of the four LLM cores but lives outside `agents/`** — correct given its encapsulation inside adapter execution, but worth noting in CLAUDE.md so "enumerate all LLM touch-points" searches check `adapters/` as well.
 
-3. **`compute/execution_params.py` depends on the Alpaca MCP order tool's OpenAPI schema** (an external artifact). The snapshot lives at `mcp/alpaca_order_schema.json`, read through the shared `mcp/order_schema.py` loader by both `compute/execution_params.py` and `pipeline/validator.py`. A **stub** schema is committed so the spine runs, but the default production path is gated to fail closed until the real schema is pinned from the live Alpaca MCP server at integration time (ADR 0004 + the re-enforced schema gate).
+3. **`compute/execution_params.py` depends on the Alpaca MCP order tool's OpenAPI schema** (an external artifact). The snapshot lives at `mcp/alpaca_order_schema.json`, read through the shared `mcp/order_schema.py` loader by both `compute/execution_params.py` and `pipeline/validator.py`. The real `place_stock_order` schema has been pinned from the live Alpaca MCP server (`money-pit pin-order-schema`), so the sentinel is gone and the fail-closed gate is green; the emitted payload was reconciled to it — string `notional`/`qty` (ADR 0004, ADR 0007, ADR 0014).
 
 ---
 

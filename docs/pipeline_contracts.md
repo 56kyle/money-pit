@@ -297,10 +297,12 @@ those names: no `step_id`, `one_sentence_thesis` instead of `description`, `tick
 
 **5c. No execution parameters — the literal-match three-way contract.** Agent 5 matches each step's
 execution parameters against the MCP tool input schema by **literal field name**, with no semantic
-mapping allowed. Agent 4 supplies only `ticker`, `action` (`BUY`), and `dollar_amount`. The Alpaca
-order tool expects (e.g.) `symbol`, `notional`, `side`, `type`, `time_in_force`. `ticker`≠`symbol`,
-`dollar_amount`≠`notional`, `action:"BUY"`≠`side:"buy"`, and `type`/`time_in_force` are absent ⇒
-every step `UNMATCHED (schema mismatch)` ⇒ Agent 6 HALTs and emails. These three must be identical:
+mapping allowed. Agent 4 supplies only `ticker`, `action` (`BUY`), and `dollar_amount`. The pinned Alpaca
+order tool schema expects `symbol`, `notional`/`qty` (each **string-or-null**, mutually exclusive),
+`side`, `type`, `time_in_force`, `client_order_id` — with only `symbol`/`side` required and
+`additionalProperties: false`. `ticker`≠`symbol`, `dollar_amount`≠`notional`, `action:"BUY"`≠`side:"buy"`,
+and `type`/`time_in_force` are absent ⇒ every step `UNMATCHED (schema mismatch)` ⇒ Agent 6 HALTs and
+emails. These three must be identical:
 
 > **`execution_parameters` keys (Agent 4) == Agent 5's literal check == the Alpaca MCP tool input schema (manifest)**
 
@@ -327,10 +329,11 @@ block (thesis, scenarios, sizing — Agent 5 ignores these but they feed the ema
     // --- atomicity (§7a): null = independent; shared non-null id = one all-or-nothing group ---
     "group_id": null,                      // e.g. "G1" for both legs of a pairs trade / hedge
 
-    // --- execution: keys MUST match the Alpaca MCP tool input schema literally ---
+    // --- execution: keys MUST match the pinned Alpaca MCP tool input schema literally ---
     "execution_parameters": {
       "symbol": "NVDA",
-      "notional": 1500.00,                 // BUY/ADD: capital to deploy; SELL/TRIM: amount to remove
+      "notional": "1500.00",               // string, cents-formatted; BUY/ADD: capital to deploy; SELL/TRIM: amount to remove
+      "qty": null,                         // string share count | null; mutually exclusive with notional (notional-only path emits null)
       "side": "buy",                       // buy | sell  (derive from action_type)
       "type": "market",
       "time_in_force": "day",
@@ -353,8 +356,19 @@ block (thesis, scenarios, sizing — Agent 5 ignores these but they feed the ema
 `group_id` is set by Agent 4 / the post-processor: it is `null` for the common standalone step, and a
 shared non-null id for the rare set of interdependent legs (pairs trade, hedged entry, funded roll)
 that must execute all-or-nothing. `client_order_id` is emitted deterministically by the post-processor
-as `{slug}:{step_id}` so re-submission after a crash/retry never double-executes; it must be a real
-field in the Alpaca order schema (confirm) so Agent 5 validates it like any other execution parameter.
+as `{slug}:{step_id}` so re-submission after a crash/retry never double-executes; it is a real
+field in the pinned Alpaca order schema, so Agent 5 validates it like any other execution parameter.
+
+**Pinned-schema typing (ADR 0014) and the amount guard (ADR 0015).** The real `place_stock_order`
+schema types `notional` and `qty` as **string-or-null**, not numbers, so the post-processor emits
+`notional` as a fixed 2-decimal (cents) string — `f"{dollar_amount:.2f}"`, e.g. `"1500.00"` — via the
+named `_NOTIONAL_DECIMAL_PLACES` constant, and the notional-only path leaves `qty = null`. The
+`execution_parameters` object above is the full `ExecutionParameters` model as it lands in
+`action_steps.json` (so `qty: null` is present); the payload actually submitted to the tool
+(`to_order_payload()`) omits any None-valued optional, so a notional order sends no `qty` key at all.
+Before schema load, `build_execution_params` fails closed with `InvalidExecutionAmountError` on any
+non-finite (`NaN`/`inf`) or below-minimum (sub-cent) `dollar_amount` — an invalid capital amount never
+reaches the order boundary.
 
 **Recommended structure — split judgment from arithmetic.** Steps 3, 5, 7 of Agent 4 are pure
 arithmetic the prompt fully specifies (sector headroom to 25%, `EV = ΣP×R`, base = equity ÷ 20 ×
@@ -401,11 +415,11 @@ a `status` field name. PARTIAL is dropped (Agent 5 never produced it; partial se
       "tool_sequence": [
         // non-empty on MATCHED; null on UNMATCHED
         {
-          "tool_name": "place_order",
+          "tool_name": "place_stock_order",
           "server": "alpaca",
           "input_parameters": {
             "symbol": "NVDA",
-            "notional": 1500.0,
+            "notional": "1500.00",
             "side": "buy",
             "type": "market",
             "time_in_force": "day"
@@ -536,7 +550,7 @@ down-migrations.
       "group_id": null,
       "client_order_id": "2026-06-18_14-30-00:A001",
       "phase": "FILLED", // execution-phase enum (§0)
-      "intended": { "symbol": "NVDA", "side": "buy", "notional": 1500.0 },
+      "intended": { "symbol": "NVDA", "side": "buy", "notional": "1500.00" },
       "broker_order_id": "…",
       "status": "filled",
       "filled_qty": 8.13,
@@ -551,14 +565,14 @@ down-migrations.
 ```
 
 **Pre-Phase-7 journal semantics (→ see ADR 0003).** The example entry above shows the eventual
-Phase-7 filled shape. Until the real Alpaca write integration lands, the injected
-`place_order: Callable[[ExecutionParameters], str]` returns only a broker order id — a successful call
+Phase-7 filled shape. At the current submission-level wave, the injected order placer (`OrderPlacer`,
+`Callable[[ExecutionParameters], str]`) returns only a broker order id — a successful call
 proves _"submitted,"_ not _"filled."_ So entries stay `phase=SUBMITTED` (never `FILLED`, which would
 be unearned) and `filled_qty`/`filled_avg_price`/`realized_notional` stay `null` as explicit
 not-yet-real markers; `EXECUTED_CLEAN` is redefined as **"all independent legs submitted without
 exception."** An empty plan (zero action steps) is caught upstream by `NO_ACTION`, so execution never
 derives an outcome from zero real steps. A non-null `group_id` fails closed by raising
-`AtomicGroupNotSupportedError` **before** any `place_order` call (the marked terminus of the
+`AtomicGroupNotSupportedError` **before** any `place_stock_order` call (the marked terminus of the
 atomic-group stub) — so step 3 below is the deferred Phase-7 design, not the current path.
 
 **Execution algorithm.**

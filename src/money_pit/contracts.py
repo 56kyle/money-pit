@@ -13,6 +13,7 @@ from money_pit.schemas.aggregation_draft import ClaimRelations
 from money_pit.schemas.analysis_draft import AnalysisJudgment
 from money_pit.schemas.answer_draft import AnswerDraft
 from money_pit.schemas.answers import InitialAnswers
+from money_pit.schemas.fills import FillObservation
 from money_pit.schemas.portfolio import PortfolioSnapshot
 from money_pit.schemas.provenance import SourceRef
 from money_pit.schemas.question_draft import DraftQuestion
@@ -28,4 +29,5 @@ AnswerSynthesisAgent: TypeAlias = Callable[[list[Question], list[SourceRef]], li
 ThesisAgent: TypeAlias = Callable[[AggregatedSignals, PortfolioSnapshot, InitialAnswers], AnalysisJudgment]
 PortfolioFetcher: TypeAlias = Callable[[str], PortfolioSnapshot]
 OrderPlacer: TypeAlias = Callable[[ExecutionParameters], str]
+FillObserver: TypeAlias = Callable[[str], FillObservation]
 EmailSender: TypeAlias = Callable[[str, str], None]

@@ -72,6 +72,7 @@ from money_pit.schemas.enums import ValidationStatus
             ExecutionOutcome,
             {
                 "EXECUTED_CLEAN",
+                "EXECUTED_INCOMPLETE",
                 "PARTIAL_COMPENSATED",
                 "COMPENSATION_FAILED",
                 "EXECUTION_FAILED",

@@ -1,6 +1,7 @@
 """Module containing constants used throughout the money_pit package."""
 
 import datetime
+import re
 from pathlib import Path
 
 from platformdirs import user_config_path
@@ -35,6 +36,15 @@ def user_log_folder() -> Path:
 def default_config_path() -> Path:
     """Return the default per-user config file path, creating its parent folder on each call."""
     return user_config_folder() / _CONFIG_FILENAME
+
+
+def source_id_to_dirname(source_id: str) -> str:
+    """Return a filesystem-safe directory name for a logical source id.
+
+    The logical source id keeps its colon on `SourceRef.source_id`; only the on-disk directory
+    name is sanitized so ids like `yt:dQw4w9WgXcQ` do not raise on colon-hostile filesystems.
+    """
+    return re.sub(r"[^\w.\-]", "_", source_id)
 
 ANTHROPIC_MODEL_PREFIX: str = "anthropic:"
 

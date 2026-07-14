@@ -10,11 +10,12 @@ You return a structured result with exactly two fields:
   labels, tickers, headline banners, lower-thirds, on-screen figures/percentages, table cells, and any
   other legible text. One string per distinct on-screen element. Preserve the text as written (including
   tickers like `NVDA` and numbers like `+3.2%`).
-- `cited_sources`: a list of **data-source attributions** shown on screen — e.g. a chart footer reading
-  `Source: Bloomberg`, `Data: FRED`, `via FactSet`, a watermark crediting a data provider, or a citation
-  line under a table. Put **only** attribution/credit strings here; put everything else in
-  `on_screen_text`. If an attribution also appears as visible text, it belongs in `cited_sources` (it may
-  be omitted from `on_screen_text` to avoid duplication).
+- `cited_sources`: a list of **data-source/provider names** credited on screen — return the bare provider
+  name, not the surrounding label. From a chart footer reading `Source: Bloomberg` return `Bloomberg`;
+  from `Data: FRED` return `FRED`; from `via FactSet` return `FactSet`; a watermark crediting a data
+  provider or a citation line under a table yields that provider's name. Put **only** these attribution
+  names here; put everything else in `on_screen_text`. If an attribution also appears as visible text, it
+  belongs in `cited_sources` (it may be omitted from `on_screen_text` to avoid duplication).
 
 ## Rules
 

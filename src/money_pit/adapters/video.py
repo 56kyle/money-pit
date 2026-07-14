@@ -10,6 +10,7 @@ from money_pit.adapters.video_llm import VideoPayload
 from money_pit.compute.signal_flags import has_actionable_content
 from money_pit.compute.signal_flags import normalize_ticker
 from money_pit.compute.signal_flags import requires_validation as is_validation_required
+from money_pit.constants import source_id_to_dirname
 from money_pit.schemas.enums import ClaimCategory
 from money_pit.schemas.enums import SignalTier
 from money_pit.schemas.signal_draft import ClaimDraft
@@ -40,7 +41,7 @@ class VideoAdapter(SourceAdapter[VideoPayload]):
     def process(self, payload: VideoPayload) -> SignalSet:
         """Persist the payload, call the LLM agent, and post-process the draft into a SignalSet."""
         source_id: str = payload.source_ref.source_id
-        payload_dir: Path = self._cache_dir / source_id
+        payload_dir: Path = self._cache_dir / source_id_to_dirname(source_id)
         payload_dir.mkdir(parents=True, exist_ok=True)
         payload_path: Path = payload_dir / _PAYLOAD_FILENAME
         _ = payload_path.write_text(payload.model_dump_json(indent=2), encoding="utf-8")

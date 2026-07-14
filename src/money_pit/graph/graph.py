@@ -18,6 +18,7 @@ from money_pit.contracts import ThesisAgent
 from money_pit.contracts import ToolManifest
 from money_pit.graph.edges import EXECUTE
 from money_pit.graph.edges import FINALIZE
+from money_pit.graph.edges import HALT
 from money_pit.graph.edges import NO_ACTION
 from money_pit.graph.edges import NOTIFY
 from money_pit.graph.edges import PROCEED
@@ -26,6 +27,7 @@ from money_pit.graph.edges import VALIDATE
 from money_pit.graph.edges import determination_router
 from money_pit.graph.edges import execution_outcome_router
 from money_pit.graph.edges import post_notification_router
+from money_pit.graph.edges import recovery_router
 from money_pit.graph.edges import signal_gate
 from money_pit.graph.edges import terminal_state_router
 from money_pit.graph.state import PipelineState
@@ -36,6 +38,7 @@ from money_pit.pipeline.determination import make_finalizer_node
 from money_pit.pipeline.execution import make_execution_node
 from money_pit.pipeline.notification import make_notification_node
 from money_pit.pipeline.questions import make_questions_node
+from money_pit.pipeline.recovery import make_recovery_node
 from money_pit.pipeline.retrieval import make_retrieval_node
 from money_pit.pipeline.snapshot import make_snapshot_node
 from money_pit.pipeline.validator import make_validator_node
@@ -67,6 +70,7 @@ def build_graph(
     """Assemble and compile the full money-pit LangGraph pipeline."""
     builder: StateGraph[PipelineState] = StateGraph(state_schema=PipelineState)
 
+    builder.add_node("recovery", make_recovery_node(observe_fill=observe_fill, send_email=send_email))
     builder.add_node("snapshot", make_snapshot_node(fetch_portfolio=fetch_portfolio))
     builder.add_node("aggregator", make_aggregator_node(corroboration_agent=corroboration_agent))
     builder.add_node("no_action_terminal", _no_action_terminal)
@@ -93,7 +97,8 @@ def build_graph(
     builder.add_node("notification", make_notification_node(send_email=send_email))
     builder.add_node("finalizer", make_finalizer_node())
 
-    builder.add_edge(START, "snapshot")
+    builder.add_edge(START, "recovery")
+    builder.add_conditional_edges("recovery", recovery_router, {PROCEED: "snapshot", HALT: END})
     builder.add_edge("snapshot", "aggregator")
     builder.add_conditional_edges("aggregator", signal_gate, {PROCEED: "questions", NO_ACTION: "no_action_terminal"})
     builder.add_edge("no_action_terminal", END)

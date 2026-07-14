@@ -8,9 +8,14 @@ from money_pit.alpaca_orders import FillObservationError
 from money_pit.alpaca_orders import OrderNotYetVisibleError
 from money_pit.compute.fills import build_fill_observation
 from money_pit.constants import EXECUTION_JOURNAL_FILENAME
+from money_pit.constants import RECOVERY_JSON_FILENAME
+from money_pit.graph.state import PipelineState
 from money_pit.pipeline.recovery import _NOT_FOUND_STATUS
 from money_pit.pipeline.recovery import _UNOBSERVABLE_STATUS
+from money_pit.pipeline.recovery import _build_halt_email
+from money_pit.pipeline.recovery import _build_notice_email
 from money_pit.pipeline.recovery import _find_prior_journal
+from money_pit.pipeline.recovery import make_recovery_node
 from money_pit.pipeline.recovery import reconcile_prior_run
 from money_pit.schemas.enums import ExecutionOutcome
 from money_pit.schemas.enums import ExecutionPhase
@@ -18,6 +23,8 @@ from money_pit.schemas.enums import RecoveryDecision
 from money_pit.schemas.fills import FillObservation
 from money_pit.schemas.journal import ExecutionJournal
 from money_pit.schemas.journal import ExecutionJournalEntry
+from money_pit.schemas.recovery import PriorRunReconciliation
+from money_pit.schemas.recovery import ReconciledOrder
 
 
 CURRENT_SLUG = "2026-07-13"
@@ -255,3 +262,155 @@ def test__find_prior_journal(
         assert result is None
     else:
         assert result == tmp_path / expected_prior_slug / EXECUTION_JOURNAL_FILENAME
+
+
+class _CapturingEmail:
+    """A real EmailSender that records every (subject, body) call so a test can assert on it."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def __call__(self, subject: str, body: str) -> None:
+        self.calls.append((subject, body))
+
+
+def _make_state(working_dir: Path, slug: str) -> PipelineState:
+    working_dir.mkdir(parents=True, exist_ok=True)
+    return {"slug": slug, "working_dir": str(working_dir), "completed_steps": []}
+
+
+def _read_recovery_record(working_dir: Path) -> PriorRunReconciliation:
+    return PriorRunReconciliation.model_validate_json(
+        (working_dir / RECOVERY_JSON_FILENAME).read_text(encoding="utf-8")
+    )
+
+
+def test_make_recovery_node_with_no_prior_run(tmp_path: Path) -> None:
+    working_dir = tmp_path / CURRENT_SLUG
+    state = _make_state(working_dir, CURRENT_SLUG)
+    email = _CapturingEmail()
+    node = make_recovery_node(_ScriptedObserver({}), email)
+
+    result = node(state)
+
+    assert result["recovery_decision"] is RecoveryDecision.PROCEED
+    assert email.calls == []
+    assert "recovery" in (result.get("completed_steps") or [])
+    record = _read_recovery_record(working_dir)
+    assert record.decision is RecoveryDecision.PROCEED
+
+
+def test_make_recovery_node_with_prior_open_leg_now_settled(tmp_path: Path) -> None:
+    entry = _make_entry(PRIOR_SLUG, "s1", ExecutionPhase.SUBMITTED)
+    _write_journal(tmp_path, PRIOR_SLUG, ExecutionOutcome.EXECUTED_INCOMPLETE, [entry])
+    working_dir = tmp_path / CURRENT_SLUG
+    state = _make_state(working_dir, CURRENT_SLUG)
+    email = _CapturingEmail()
+    observer = _ScriptedObserver({entry.client_order_id: build_fill_observation("filled", 8.0, 100.0)})
+    node = make_recovery_node(observer, email)
+
+    result = node(state)
+
+    assert result["recovery_decision"] is RecoveryDecision.PROCEED_WITH_NOTICE
+    assert len(email.calls) == 1
+    subject, body = email.calls[0]
+    assert "Prior Run Reconciled" in subject
+    assert entry.client_order_id in body
+    record = _read_recovery_record(working_dir)
+    assert record.decision is RecoveryDecision.PROCEED_WITH_NOTICE
+
+
+def test_make_recovery_node_with_prior_open_leg_still_open(tmp_path: Path) -> None:
+    entry = _make_entry(PRIOR_SLUG, "s1", ExecutionPhase.SUBMITTED)
+    _write_journal(tmp_path, PRIOR_SLUG, ExecutionOutcome.EXECUTED_INCOMPLETE, [entry])
+    working_dir = tmp_path / CURRENT_SLUG
+    state = _make_state(working_dir, CURRENT_SLUG)
+    email = _CapturingEmail()
+    observer = _ScriptedObserver({entry.client_order_id: build_fill_observation("accepted", None, None)})
+    node = make_recovery_node(observer, email)
+
+    result = node(state)
+
+    assert result["recovery_decision"] is RecoveryDecision.HALT
+    assert len(email.calls) == 1
+    subject, body = email.calls[0]
+    assert "Recovery Halt" in subject
+    assert entry.client_order_id in body
+    record = _read_recovery_record(working_dir)
+    assert record.decision is RecoveryDecision.HALT
+
+
+def _make_reconciliation(
+    decision: RecoveryDecision,
+    prior_outcome: ExecutionOutcome | None,
+    open_orders: list[ReconciledOrder],
+    settled_orders: list[ReconciledOrder],
+) -> PriorRunReconciliation:
+    return PriorRunReconciliation(
+        decision=decision,
+        prior_slug=PRIOR_SLUG,
+        prior_outcome=prior_outcome,
+        open_orders=open_orders,
+        settled_orders=settled_orders,
+    )
+
+
+def _make_reconciled_order(step_id: str, observed_status: str, phase: ExecutionPhase) -> ReconciledOrder:
+    return ReconciledOrder(
+        step_id=step_id,
+        client_order_id=f"{PRIOR_SLUG}:{step_id}",
+        observed_status=observed_status,
+        phase=phase,
+    )
+
+
+def test__build_halt_email() -> None:
+    orders = [
+        _make_reconciled_order("s1", "accepted", ExecutionPhase.SUBMITTED),
+        _make_reconciled_order("s2", "partially_filled", ExecutionPhase.PARTIALLY_FILLED),
+    ]
+    recon = _make_reconciliation(RecoveryDecision.HALT, ExecutionOutcome.EXECUTED_INCOMPLETE, orders, [])
+
+    subject, body = _build_halt_email(CURRENT_SLUG, recon)
+
+    assert subject == f"money-pit: Recovery Halt - {CURRENT_SLUG}"
+    for order in orders:
+        assert order.step_id in body
+        assert order.client_order_id in body
+        assert order.observed_status in body
+
+
+def test__build_halt_email_with_unrecorded_prior_outcome() -> None:
+    orders = [_make_reconciled_order("s1", "accepted", ExecutionPhase.SUBMITTED)]
+    recon = _make_reconciliation(RecoveryDecision.HALT, None, orders, [])
+
+    _, body = _build_halt_email(CURRENT_SLUG, recon)
+
+    assert "Prior outcome: none (unrecorded)" in body
+    assert "Prior outcome: None" not in body
+
+
+def test__build_notice_email() -> None:
+    orders = [
+        _make_reconciled_order("s1", "filled", ExecutionPhase.FILLED),
+        _make_reconciled_order("s2", _NOT_FOUND_STATUS, ExecutionPhase.SUBMITTED),
+    ]
+    recon = _make_reconciliation(RecoveryDecision.PROCEED_WITH_NOTICE, ExecutionOutcome.EXECUTED_INCOMPLETE, [], orders)
+
+    subject, body = _build_notice_email(CURRENT_SLUG, recon)
+
+    assert subject == f"money-pit: Prior Run Reconciled - {CURRENT_SLUG}"
+    for order in orders:
+        assert order.step_id in body
+        assert order.client_order_id in body
+        assert order.observed_status in body
+
+
+def test__build_notice_email_with_unrecorded_prior_outcome() -> None:
+    orders = [_make_reconciled_order("s1", "filled", ExecutionPhase.FILLED)]
+    recon = _make_reconciliation(RecoveryDecision.PROCEED_WITH_NOTICE, None, [], orders)
+
+    _, body = _build_notice_email(CURRENT_SLUG, recon)
+
+    assert "Prior outcome: none (unrecorded)" in body
+    assert "Prior outcome: None" not in body

@@ -6,6 +6,7 @@ import pytest
 
 from money_pit.graph.edges import EXECUTE
 from money_pit.graph.edges import FINALIZE
+from money_pit.graph.edges import HALT
 from money_pit.graph.edges import NO_ACTION
 from money_pit.graph.edges import NOTIFY
 from money_pit.graph.edges import PROCEED
@@ -14,14 +15,41 @@ from money_pit.graph.edges import VALIDATE
 from money_pit.graph.edges import determination_router
 from money_pit.graph.edges import execution_outcome_router
 from money_pit.graph.edges import post_notification_router
+from money_pit.graph.edges import recovery_router
 from money_pit.graph.edges import signal_gate
 from money_pit.graph.edges import terminal_state_router
 from money_pit.schemas.enums import ExecutionOutcome
+from money_pit.schemas.enums import RecoveryDecision
 from money_pit.schemas.enums import TerminalState
 
 
 if TYPE_CHECKING:
     from money_pit.graph.state import PipelineState
+
+
+def test_recovery_router_with_halt() -> None:
+    state: PipelineState = {"recovery_decision": RecoveryDecision.HALT}
+    assert recovery_router(state) == HALT
+
+
+def test_recovery_router_with_proceed() -> None:
+    state: PipelineState = {"recovery_decision": RecoveryDecision.PROCEED}
+    assert recovery_router(state) == PROCEED
+
+
+def test_recovery_router_with_proceed_with_notice() -> None:
+    state: PipelineState = {"recovery_decision": RecoveryDecision.PROCEED_WITH_NOTICE}
+    assert recovery_router(state) == PROCEED
+
+
+def test_recovery_router_with_none() -> None:
+    state: PipelineState = {"recovery_decision": None}
+    assert recovery_router(state) == PROCEED
+
+
+def test_recovery_router_with_absent_key() -> None:
+    state: PipelineState = {}
+    assert recovery_router(state) == PROCEED
 
 
 def test_signal_gate_with_actionable_content() -> None:

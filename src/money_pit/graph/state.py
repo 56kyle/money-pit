@@ -7,6 +7,7 @@ from typing import TypedDict
 
 from money_pit.schemas.enums import Determination
 from money_pit.schemas.enums import ExecutionOutcome
+from money_pit.schemas.enums import RecoveryDecision
 from money_pit.schemas.enums import TerminalState
 from money_pit.schemas.validation_results import ValidationStep
 
@@ -17,6 +18,7 @@ class PipelineState(TypedDict, total=False):
     slug: str
     working_dir: str
     completed_steps: list[str]
+    recovery_decision: RecoveryDecision | None
     terminal_state: TerminalState | None
     execution_outcome: ExecutionOutcome | None
     run_has_actionable_content: bool

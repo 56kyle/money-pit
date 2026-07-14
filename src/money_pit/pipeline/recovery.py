@@ -16,7 +16,14 @@ from money_pit.alpaca_orders import FillObservationError
 from money_pit.alpaca_orders import OrderNotYetVisibleError
 from money_pit.compute.fills import is_terminal_status
 from money_pit.constants import EXECUTION_JOURNAL_FILENAME
+from money_pit.constants import RECOVERY_JSON_FILENAME
+from money_pit.contracts import EmailSender
 from money_pit.contracts import FillObserver
+from money_pit.graph.state import PipelineNode
+from money_pit.graph.state import PipelineState
+from money_pit.graph.state import require_slug
+from money_pit.graph.state import require_working_dir
+from money_pit.graph.state import with_completed_step
 from money_pit.schemas.enums import ExecutionOutcome
 from money_pit.schemas.enums import ExecutionPhase
 from money_pit.schemas.enums import RecoveryDecision
@@ -146,3 +153,81 @@ def reconcile_prior_run(
         open_orders=open_orders,
         settled_orders=settled_orders,
     )
+
+
+def _format_orders(orders: list[ReconciledOrder]) -> list[str]:
+    """Render each reconciled leg as an aligned step_id | client_order_id | observed_status line."""
+    return [f"  {order.step_id} | {order.client_order_id} | {order.observed_status}" for order in orders]
+
+
+def _prior_outcome_label(prior_outcome: ExecutionOutcome | None) -> str:
+    """Render a prior run's outcome, naming the unrecorded (crashed mid-run) case explicitly."""
+    return prior_outcome.value if prior_outcome is not None else "none (unrecorded)"
+
+
+def _build_halt_email(slug: str, recon: PriorRunReconciliation) -> tuple[str, str]:
+    """Build the (subject, body) for a new run halted because a prior leg is still open at the broker."""
+    subject: str = f"money-pit: Recovery Halt - {slug}"
+    lines: list[str] = [
+        f"Slug: {slug}",
+        f"Prior run: {recon.prior_slug}",
+        f"Prior outcome: {_prior_outcome_label(recon.prior_outcome)}",
+        "",
+        "A prior run has orders STILL OPEN at the broker. This run was halted before",
+        "planning to avoid doubling the exposure the open legs already carry.",
+        "",
+        f"Open orders ({len(recon.open_orders)}):",
+        *_format_orders(recon.open_orders),
+    ]
+    return subject, "\n".join(lines)
+
+
+def _build_notice_email(slug: str, recon: PriorRunReconciliation) -> tuple[str, str]:
+    """Build the (subject, body) for a run proceeding after a prior abnormal run has since settled."""
+    subject: str = f"money-pit: Prior Run Reconciled - {slug}"
+    lines: list[str] = [
+        f"Slug: {slug}",
+        f"Prior run: {recon.prior_slug}",
+        f"Prior outcome: {_prior_outcome_label(recon.prior_outcome)}",
+        "",
+        "A prior abnormal run has since settled at the broker. This run proceeds.",
+        "",
+        f"Settled orders ({len(recon.settled_orders)}):",
+        *_format_orders(recon.settled_orders),
+    ]
+    return subject, "\n".join(lines)
+
+
+def _write_recovery_record(working_dir: Path, recon: PriorRunReconciliation) -> None:
+    """Write the recovery reconciliation verdict to the run's recovery.json artifact."""
+    _ = (working_dir / RECOVERY_JSON_FILENAME).write_text(recon.model_dump_json(indent=2), encoding="utf-8")
+
+
+def make_recovery_node(observe_fill: FillObserver, send_email: EmailSender) -> PipelineNode:
+    """Return the LangGraph entry node that reconciles the most recent prior run before this run plans.
+
+    A prior leg still open at the broker halts this run and emails the owner; an abnormal prior
+    run that has since settled emails a reconciliation notice and proceeds; anything else proceeds
+    silently. The verdict is always written to recovery.json. These emails are recovery's own
+    concern and are sent directly, not routed through the notification node.
+    """
+
+    def recovery_node(state: PipelineState) -> PipelineState:
+        working_dir: Path = require_working_dir(state)
+        slug: str = require_slug(state)
+        daily_show_root: Path = working_dir.parent
+
+        recon: PriorRunReconciliation = reconcile_prior_run(daily_show_root, slug, observe_fill)
+        _write_recovery_record(working_dir, recon)
+
+        if recon.decision is RecoveryDecision.HALT:
+            send_email(*_build_halt_email(slug, recon))
+        elif recon.decision is RecoveryDecision.PROCEED_WITH_NOTICE:
+            send_email(*_build_notice_email(slug, recon))
+
+        return {
+            "recovery_decision": recon.decision,
+            "completed_steps": with_completed_step(state, "recovery"),
+        }
+
+    return recovery_node

@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from pydantic import TypeAdapter
 
 from money_pit.compute.fills import build_fill_observation
+from money_pit.constants import EXECUTION_JOURNAL_FILENAME
 from money_pit.graph.state import PipelineState
 from money_pit.mcp.manifest import pinned_manifest
 from money_pit.schemas.fills import FillObservation
@@ -22,9 +23,12 @@ from money_pit.schemas.determination import DeterminationReport
 from money_pit.schemas.enums import Determination
 from money_pit.schemas.enums import ExecutionOutcome
 from money_pit.schemas.enums import ExecutionPhase
+from money_pit.schemas.enums import RecoveryDecision
 from money_pit.schemas.enums import TerminalState
 from money_pit.schemas.journal import ExecutionJournal
+from money_pit.schemas.journal import ExecutionJournalEntry
 from money_pit.schemas.portfolio import PortfolioSnapshot
+from money_pit.schemas.recovery import PriorRunReconciliation
 from money_pit.schemas.questions import InitialQuestions
 from money_pit.schemas.signals import AggregatedSignals
 from money_pit.schemas.validation_results import ActionStepsValidation
@@ -33,6 +37,7 @@ from money_pit.schemas.validation_results import ActionStepsValidation
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
 _EXECUTE_PATH_STEPS: list[str] = [
+    "recovery",
     "snapshot",
     "aggregator",
     "questions",
@@ -54,6 +59,7 @@ def _assert_file_valid(run_dir: Path, filename: str, model_class: type[ModelT]) 
 
 
 _EXECUTE_PATH_JSON_FILES: list[tuple[str, type[BaseModel]]] = [
+    ("recovery.json", PriorRunReconciliation),
     ("portfolio_snapshot.json", PortfolioSnapshot),
     ("aggregated_signals.json", AggregatedSignals),
     ("initial_questions.json", InitialQuestions),
@@ -402,5 +408,137 @@ def test_paper_trade_fully_default_schema_builds_and_proceeds(tmp_path: Path, pi
     )
 
     assert final_state.get("terminal_state") is None
+    report = _assert_file_valid(run_dir, "determination.json", DeterminationReport)
+    assert report.determination == Determination.PROCEED
+
+
+_RECOVERY_PRIOR_SLUG: str = "2000-01-01"
+_RECOVERY_PRIOR_CLIENT_ORDER_ID: str = f"{_RECOVERY_PRIOR_SLUG}:s1"
+
+
+class _RecoveryScenarioObserver:
+    """A real FillObserver shared by recovery re-observation and the current run's execution.
+
+    The prior run's leg is scripted by its exact client_order_id; every other order (the current
+    run's own legs) observes filled. client_order_ids are `{slug}:{step_id}`, so the far-past
+    prior slug keeps the prior leg distinguishable from the current run's date-slugged orders.
+    """
+
+    def __init__(self, prior_observation: FillObservation) -> None:
+        self._prior_observation = prior_observation
+        self.calls: list[str] = []
+
+    def __call__(self, client_order_id: str) -> FillObservation:
+        self.calls.append(client_order_id)
+        if client_order_id == _RECOVERY_PRIOR_CLIENT_ORDER_ID:
+            return self._prior_observation
+        return build_fill_observation("filled", 1.0, 1.0)
+
+
+def _write_prior_journal(daily_show_root: Path, phase: ExecutionPhase) -> None:
+    """Author a prior EXECUTED_INCOMPLETE run journal with one potentially-open leg under daily_show_root."""
+    run_dir = daily_show_root / _RECOVERY_PRIOR_SLUG
+    run_dir.mkdir(parents=True, exist_ok=True)
+    entry = ExecutionJournalEntry(
+        step_id="s1",
+        group_id=None,
+        client_order_id=_RECOVERY_PRIOR_CLIENT_ORDER_ID,
+        phase=phase,
+        intended={},
+        broker_order_id="broker-s1",
+        status=None,
+        filled_qty=None,
+        filled_avg_price=None,
+        realized_notional=None,
+        compensation_of=None,
+        error=None,
+        timestamp="2000-01-01T00:00:00Z",
+    )
+    journal = ExecutionJournal(slug=_RECOVERY_PRIOR_SLUG, outcome=ExecutionOutcome.EXECUTED_INCOMPLETE, entries=[entry])
+    (run_dir / EXECUTION_JOURNAL_FILENAME).write_text(journal.model_dump_json(), encoding="utf-8")
+
+
+@pytest.fixture
+def recovery_halt_run(
+    tmp_path: Path, pipeline_signals_dir: Path
+) -> tuple[Path, PipelineState, _RecordingEmail]:
+    daily_show_root = tmp_path
+    _write_prior_journal(daily_show_root, ExecutionPhase.SUBMITTED)
+    run_dir = daily_show_root / "current_run"
+    email = _RecordingEmail()
+    overrides = phase4_overrides()
+    overrides.observe_fill = _RecoveryScenarioObserver(build_fill_observation("accepted", None, None))
+    overrides.send_email = email
+    overrides.manifest = pinned_manifest()
+    final_state = run_pipeline(signals_dir=pipeline_signals_dir, run_dir=run_dir, overrides=overrides)
+    return run_dir, final_state, email
+
+
+def test_paper_trade_recovery_halt_writes_halt_decision(
+    recovery_halt_run: tuple[Path, PipelineState, _RecordingEmail],
+) -> None:
+    run_dir, _, _ = recovery_halt_run
+    record = _assert_file_valid(run_dir, "recovery.json", PriorRunReconciliation)
+    assert record.decision is RecoveryDecision.HALT
+
+
+def test_paper_trade_recovery_halt_state_decision(
+    recovery_halt_run: tuple[Path, PipelineState, _RecordingEmail],
+) -> None:
+    _, final_state, _ = recovery_halt_run
+    assert final_state.get("recovery_decision") is RecoveryDecision.HALT
+
+
+def test_paper_trade_recovery_halt_sends_halt_email(
+    recovery_halt_run: tuple[Path, PipelineState, _RecordingEmail],
+) -> None:
+    _, _, email = recovery_halt_run
+    assert any("Recovery Halt" in subject for subject, _ in email.calls)
+
+
+@pytest.mark.parametrize("artifact", ["portfolio_snapshot.json", "action_steps.json", "determination.json"])
+def test_paper_trade_recovery_halt_writes_no_planning_artifacts(
+    recovery_halt_run: tuple[Path, PipelineState, _RecordingEmail], artifact: str
+) -> None:
+    run_dir, _, _ = recovery_halt_run
+    assert not (run_dir / artifact).exists()
+
+
+@pytest.fixture
+def recovery_notice_run(
+    tmp_path: Path, pipeline_signals_dir: Path
+) -> tuple[Path, PipelineState, _RecordingEmail]:
+    daily_show_root = tmp_path
+    _write_prior_journal(daily_show_root, ExecutionPhase.SUBMITTED)
+    run_dir = daily_show_root / "current_run"
+    email = _RecordingEmail()
+    overrides = phase4_overrides()
+    overrides.observe_fill = _RecoveryScenarioObserver(build_fill_observation("filled", 8.0, 100.0))
+    overrides.send_email = email
+    overrides.manifest = pinned_manifest()
+    final_state = run_pipeline(signals_dir=pipeline_signals_dir, run_dir=run_dir, overrides=overrides)
+    return run_dir, final_state, email
+
+
+def test_paper_trade_recovery_notice_writes_notice_decision(
+    recovery_notice_run: tuple[Path, PipelineState, _RecordingEmail],
+) -> None:
+    run_dir, _, _ = recovery_notice_run
+    record = _assert_file_valid(run_dir, "recovery.json", PriorRunReconciliation)
+    assert record.decision is RecoveryDecision.PROCEED_WITH_NOTICE
+
+
+def test_paper_trade_recovery_notice_sends_notice_email(
+    recovery_notice_run: tuple[Path, PipelineState, _RecordingEmail],
+) -> None:
+    _, _, email = recovery_notice_run
+    assert any("Prior Run Reconciled" in subject for subject, _ in email.calls)
+
+
+def test_paper_trade_recovery_notice_proceeds_to_execution(
+    recovery_notice_run: tuple[Path, PipelineState, _RecordingEmail],
+) -> None:
+    run_dir, final_state, _ = recovery_notice_run
+    assert "finalizer" in (final_state.get("completed_steps") or [])
     report = _assert_file_valid(run_dir, "determination.json", DeterminationReport)
     assert report.determination == Determination.PROCEED

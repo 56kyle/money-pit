@@ -1,9 +1,10 @@
-"""Module containing the conditional edge functions (signal_gate, terminal_state_router, determination_router, execution_outcome_router, post_notification_router) for the money_pit package."""
+"""Module containing the conditional edge functions (recovery_router, signal_gate, terminal_state_router, determination_router, execution_outcome_router, post_notification_router) for the money_pit package."""
 
 from typing import Literal
 
 from money_pit.graph.state import PipelineState
 from money_pit.schemas.enums import ExecutionOutcome
+from money_pit.schemas.enums import RecoveryDecision
 from money_pit.schemas.enums import TerminalState
 
 
@@ -14,6 +15,14 @@ EXECUTE: Literal["execute"] = "execute"
 NOTIFY: Literal["notify"] = "notify"
 FINALIZE: Literal["finalize"] = "finalize"
 TERMINATE: Literal["terminate"] = "terminate"
+HALT: Literal["halt"] = "halt"
+
+
+def recovery_router(state: PipelineState) -> Literal["proceed", "halt"]:
+    """Route the entry fork: a still-open prior order halts the new run before planning; otherwise proceed."""
+    if state.get("recovery_decision") is RecoveryDecision.HALT:
+        return HALT
+    return PROCEED
 
 
 def signal_gate(state: PipelineState) -> Literal["proceed", "no_action"]:

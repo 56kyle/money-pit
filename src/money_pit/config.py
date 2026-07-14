@@ -69,6 +69,8 @@ class Config(BaseSettings):
     threshold_earnings_revisions: float = 0.0
     threshold_inflation: float = 2.5
     llm_model: str = _DEFAULT_LLM_MODEL
+    scene_detect_threshold: float = 27.0
+    keyframe_max_frames: int = 40
     fred_api_key: SecretStr | None = None
     brave_api_key: SecretStr | None = None
 

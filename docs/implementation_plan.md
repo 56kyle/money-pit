@@ -337,28 +337,29 @@ thesis; a second source); building them speculatively would be designing against
 
 ## Phase 9: Video multimodal ingestion (`adapters/video.py` Step 2)
 
-The real front-end. Today `adapters/video.py` persists a deterministic fetch and hands a transcript to
-the A1 classifier, but the heavy multimodal Step 2 is deferred: `adapters/video_llm.py` still carries
-`has_word_timestamps` / `on_screen_text` as unwired fields. Until this lands, the pipeline runs on
-hand-authored/stub transcripts and cannot process a real YouTube episode end-to-end.
+**COMPLETE (code) — ADRs 0019–0022; live tier pending an owner run.** The real front-end now exists as a
+new orchestration-owned `src/money_pit/ingestion/` subpackage that turns a YouTube URL into a real
+`VideoPayload` the (already-built) `VideoAdapter` consumes:
 
-Scope (see `architecture.md` §6.1 per-adapter ingestion, §6.2 source adapters, and the §8a
-build-vs-integrate table — integrate libraries, don't hand-roll):
+- **Fetch + caption-first cascade** (`fetch.py`, `captions.py`): yt-dlp download; prefer uploader → auto
+  captions → **faster-whisper** transcription only when captions are absent (ADR 0019, deviating from the
+  spec's WhisperX — CTranslate2, no torch promotion). `TranscriptSource` + `has_word_timestamps` recorded
+  honestly.
+- **Keyframes + on-screen extraction** (`keyframes.py`, `on_screen.py`): PySceneDetect scene-change
+  keyframes (capped by `keyframe_max_frames`) → **Claude multimodal VLM** via `pydantic_ai.BinaryContent`
+  for on-screen text + chart-footer attribution (ADR 0020 — no native OCR). Feeds `on_screen_text` and,
+  through the A1 prompt, per-claim `cited_sources`.
+- **Fusion + caching + CLI** (`fuse.py`, `pipeline.py`, `__main__.py`): `ingest_video` wires the stages
+  with per-stage artifact caching (ADR 0021, extending ADR 0002); `money-pit run <url>` / `ingest <url>`
+  produce `signals/{source_id}.json` and drive `run_pipeline`. Packaged as a `video` optional extra with
+  lazy heavy imports (ADR 0022). Every stage is an injected seam tested offline with fakes + cached
+  fixtures; the `agent_1` prompt now admits on-screen attribution.
 
-- **Fetch + caption-first cascade:** yt-dlp fetch; prefer the platform captions when present, fall back to
-  transcription only when absent (a design decision to pin — caption trust vs. always-transcribe).
-- **WhisperX forced alignment:** word-level timestamps for narration↔frame fusion (populates
-  `has_word_timestamps`).
-- **Keyframes + on-screen extraction:** PySceneDetect scene-change keyframes → OCR/VLM (Tesseract/PaddleOCR
-  + a VLM) for on-screen text and chart-footer source attribution (populates `on_screen_text` and feeds
-  `cited_sources`).
-- **Fusion → A1:** timestamp-fused transcript + on-screen text into the `video_llm` A1 classifier, which
-  emits a `SignalSetDraft` with the now-real multimodal fields; the wrapping node's deterministic layer
-  (ticker normalization, ISO dates, schema validation) is already built.
-
-Design decisions to resolve first (not yet ADR'd): the caption-vs-transcription cascade policy, and the
-keyframe-sampling + OCR/VLM fusion approach. This is the largest remaining chunk and warrants a
-design-questioner pass before implementation.
+Remaining: run the opt-in `live_video` tier (`MONEY_PIT_LIVE=1 -m live_video`, needs the `video` extra +
+GPU + Claude creds) against the pinned URL to validate the real download→transcribe→keyframe→VLM path
+end-to-end. Deferred within Phase 9 scope: word-level narration↔frame *fusion* using the whisper word
+timestamps (captions carry only segment timing; on-screen extraction keys off keyframe locators
+independently, so this is a refinement, not a blocker).
 
 ## Phase 10: Scheduler / autonomous trigger
 
@@ -412,7 +413,7 @@ Build **only** when the gating input exists; each fails closed today and must no
 | schema pinned ✓     | real `mcp/alpaca_order_schema.json` pinned from live Alpaca MCP (stub sentinel removed); the fail-closed gate flipped green and `execution_params` validates against it |
 | recovery gate ✓     | Recovery is the graph entry node (ADR 0018); a still-open prior order halts the run to END before any snapshot/planning, an abnormal-but-settled prior run emits a notice and proceeds, else silent proceed; `recovery.json` written every run |
 | full pipeline       | End-to-end with real agents on paper-trading account; `determination.json` written; email or execution triggered correctly |
-| video ingestion     | A real YouTube episode processed end-to-end (yt-dlp + captions/WhisperX + keyframes/OCR) into a `SignalSet` with real `has_word_timestamps` / `on_screen_text` (Phase 9)                                     |
+| video ingestion ✓ (code) | `ingestion/` subpackage turns a YouTube URL into a real `VideoPayload` → `SignalSet` (yt-dlp + captions/faster-whisper + PySceneDetect + Claude VLM); all stages green offline (ADRs 0019–0022). Live end-to-end validation (`-m live_video`, needs the `video` extra + GPU) pending an owner run |
 | scheduler           | An unattended scheduled trigger runs the pipeline on cadence without manual invocation (Phase 10, §15 #13 resolved)         |
 
 ---

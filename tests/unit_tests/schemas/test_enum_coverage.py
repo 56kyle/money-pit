@@ -13,6 +13,7 @@ from money_pit.schemas.enums import ExecutionOutcome
 from money_pit.schemas.enums import ExecutionPhase
 from money_pit.schemas.enums import FactorTag
 from money_pit.schemas.enums import QuestionCategory
+from money_pit.schemas.enums import RecoveryDecision
 from money_pit.schemas.enums import RegimeTag
 from money_pit.schemas.enums import SignalTier
 from money_pit.schemas.enums import SourceType
@@ -100,6 +101,7 @@ from money_pit.schemas.enums import ValidationStatus
             },
         ),
         (Determination, {"PROCEED", "HALT"}),
+        (RecoveryDecision, {"PROCEED", "PROCEED_WITH_NOTICE", "HALT"}),
     ],
 )
 def test_enum_has_all_contract_values(enum_cls: type, expected_values: set[str]) -> None:

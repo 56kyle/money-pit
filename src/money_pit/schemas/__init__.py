@@ -26,6 +26,7 @@ from money_pit.schemas.enums import ExecutionOutcome
 from money_pit.schemas.enums import ExecutionPhase
 from money_pit.schemas.enums import FactorTag
 from money_pit.schemas.enums import QuestionCategory
+from money_pit.schemas.enums import RecoveryDecision
 from money_pit.schemas.enums import RegimeTag
 from money_pit.schemas.enums import SignalTier
 from money_pit.schemas.enums import SourceType
@@ -43,6 +44,8 @@ from money_pit.schemas.question_draft import DraftQuestion
 from money_pit.schemas.questions import InitialQuestions
 from money_pit.schemas.questions import Question
 from money_pit.schemas.questions import SignalSummary
+from money_pit.schemas.recovery import PriorRunReconciliation
+from money_pit.schemas.recovery import ReconciledOrder
 from money_pit.schemas.signal_draft import ClaimDraft
 from money_pit.schemas.signal_draft import SignalSetDraft
 from money_pit.schemas.signals import AggregatedSignals
@@ -91,8 +94,11 @@ __all__ = [
     "MacroIndicators",
     "PortfolioSnapshot",
     "Position",
+    "PriorRunReconciliation",
     "Question",
     "QuestionCategory",
+    "ReconciledOrder",
+    "RecoveryDecision",
     "RegimeTag",
     "Scenario",
     "ScenarioTable",

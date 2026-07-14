@@ -101,6 +101,12 @@ class ExecutionOutcome(str, Enum):
     EXECUTION_FAILED = "EXECUTION_FAILED"
 
 
+class RecoveryDecision(str, Enum):
+    PROCEED = "PROCEED"
+    PROCEED_WITH_NOTICE = "PROCEED_WITH_NOTICE"
+    HALT = "HALT"
+
+
 class RegimeTag(str, Enum):
     UNCERTAIN = "UNCERTAIN"
     LATE_CYCLE_STRESS = "LATE_CYCLE_STRESS"

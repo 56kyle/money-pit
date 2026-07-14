@@ -27,8 +27,11 @@ carried this further: the MCP client transport and the `place_stock_order` retar
 tool) in **ADR 0008**; the typed fetch result in **ADR 0011**; the explicit required `alpaca_paper`
 capital-routing flag in **ADR 0013**; and — once the real schema was pinned from the live server — the
 order-payload reconciliation to it (string `notional`/`qty`, cents-formatted notional, shim deleted) in
-**ADR 0014**, plus the non-finite/below-minimum notional guard in **ADR 0015**. The narrative
-docs (`architecture.md`, `pipeline_contracts.md`) describe the as-built design; these ADRs hold the "why."
+**ADR 0014**, plus the non-finite/below-minimum notional guard in **ADR 0015**; and the recovery
+semantics of #12 — recovery as the graph entry node that halts on a still-open prior order
+(double-exposure), emits a notice on an abnormal-but-settled prior run, and proceeds otherwise, with no
+auto-unwind — in **ADR 0018** (§15 #12 resolved). The narrative docs (`architecture.md`,
+`pipeline_contracts.md`) describe the as-built design; these ADRs hold the "why."
 
 ---
 

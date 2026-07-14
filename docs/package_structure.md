@@ -24,7 +24,7 @@ src/money_pit/
 │
 ├── schemas/                 # All Pydantic data contracts — single import source of truth
 │   ├── __init__.py
-│   ├── enums.py             # Every canonical enum: SignalTier, ClaimCategory, ActionType, ExecutionPhase, TerminalState, â€¦
+│   ├── enums.py             # Every canonical enum: SignalTier, ClaimCategory, ActionType, ExecutionPhase, TerminalState, RecoveryDecision (ADR 0018), â€¦
 │   ├── provenance.py        # SourceRef, SourceType
 │   ├── signal_draft.py      # SignalSetDraft (raw A1 LLM output — before ticker norm, date parsing, validation)
 │   ├── signals.py           # Claim, SignalSet, CorroborationEntry, AggregatedSignals (contracts)
@@ -40,19 +40,20 @@ src/money_pit/
 │   ├── validation_results.py  # ValidationStep, ActionStepsValidation, ValidationStatus
 │   ├── determination.py     # Determination
 │   ├── journal.py           # ExecutionJournalEntry, ExecutionJournal
+│   ├── recovery.py          # PriorRunReconciliation, ReconciledOrder — recovery reconciliation result written to recovery.json (ADR 0018)
 │   ├── fills.py             # FillObservation — typed order-fill observation (raw status, mapped phase, filled_qty/avg_price/realized_notional) — ADR 0017
 │   └── portfolio.py         # Position, PortfolioSnapshot
 │
 ├── graph/                   # LangGraph wiring only — zero business logic
 │   ├── __init__.py
-│   ├── state.py             # PipelineState TypedDict (10 control keys: slug, working_dir, completed_steps, terminal_state, run_has_actionable_content, validation_steps, determination, failed_steps, sub_agent_spawned, determination_reason) + require_working_dir/require_slug/with_completed_step accessors + PipelineNode Protocol
+│   ├── state.py             # PipelineState TypedDict (control keys: slug, working_dir, completed_steps, terminal_state, run_has_actionable_content, validation_steps, determination, failed_steps, sub_agent_spawned, determination_reason, recovery_decision (ADR 0018)) + require_working_dir/require_slug/with_completed_step accessors + PipelineNode Protocol
 │   ├── graph.py             # StateGraph assembly: add_node / add_edge / add_conditional_edges
-│   └── edges.py             # Conditional edge functions: signal_gate, terminal_state_router, determination_router (3-branch: execute/notify/finalize), post_notification_router (terminate/finalize)
+│   └── edges.py             # Conditional edge functions: recovery_router (proceed/HALT → END; ADR 0018), signal_gate, terminal_state_router, determination_router (3-branch: execute/notify/finalize), post_notification_router (terminate/finalize)
 │
 ├── pipeline/                # One module per LangGraph node; owns file I/O for its stage
 │   ├── __init__.py
 │   ├── orchestration.py     # Scheduler trigger, working-dir creation, slug assignment
-│   ├── recovery.py          # Prior-journal recovery: reads execution_journal.json, reconciles before planning
+│   ├── recovery.py          # Graph entry node: reconcile_prior_run + make_recovery_node — re-observes the prior run's potentially-open legs via the fill observer; HALTs+emails on a still-open order (double-exposure), notice+proceeds on an abnormal-but-settled prior run, else proceeds; writes recovery.json; no auto-unwind (ADR 0018)
 │   ├── snapshot.py          # Calls Alpaca read MCP, writes portfolio_snapshot.json
 │   ├── aggregator.py        # Merges SignalSets, re-IDs claims, computes run-level has_actionable_content
 │   ├── questions.py         # A2 node: template emission, ID assignment, routing-table data_sources, file writes

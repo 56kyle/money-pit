@@ -95,9 +95,12 @@ it decouples stages so any one can be re-run in isolation against a frozen worki
 
 ```mermaid
 flowchart TD
-    SCH([Scheduler]) --> VID[Video source adapter<br/>multimodal · Pydantic AI]
-    SCH -.future.-> SRC[Other source adapters<br/>newsletter / RSS / PDF]
-    SCH --> SNAP[Snapshot builder<br/>Alpaca read]
+    SCH([Scheduler]) --> REC[Recovery node<br/>reconcile prior run]
+    REC --> RR{recovery_router}
+    RR -- halt --> DONE
+    RR -- proceed --> VID[Video source adapter<br/>multimodal · Pydantic AI]
+    RR -.future.-> SRC[Other source adapters<br/>newsletter / RSS / PDF]
+    RR -- proceed --> SNAP[Snapshot builder<br/>Alpaca read]
     VID --> AGG[Aggregator node<br/>merge · corroborate]
     SRC -.-> AGG
     AGG --> G1{has_actionable_content?}
@@ -134,6 +137,9 @@ notification, and the parse-failure path rejoin to write `determination.json/.md
 (→ see ADR 0006). The front of the pipeline is a set of **source adapters** (the video
 adapter today; newsletter/RSS/PDF adapters are additive) feeding an **aggregator** that merges them
 into one source-agnostic signal set — so everything from A2 onward is unaware of where signal came from.
+**Recovery is the graph entry gate:** it runs before snapshot/planning and, via `recovery_router`, halts
+the run to `END` before anything is planned if the prior run left an order still open at the broker
+(double-exposure risk), otherwise proceeds into the normal snapshot path (→ see ADR 0018).
 
 ---
 
@@ -146,6 +152,14 @@ only in the source-adapter classifiers, the aggregator's thin corroboration pass
 ### 6.1 Ingestion (nodes)
 
 - **Scheduler** — triggers a run, creates the working directory, seeds graph state with the slug.
+- **Recovery node (graph entry)** — reconciles the most recent prior run's `execution_journal.json`
+  before any snapshot or planning: re-observes each potentially-open leg (journal phase `SUBMITTED` /
+  `PARTIALLY_FILLED`) at its current broker status via the injected fill observer. Any leg still open →
+  **HALT** the new run + email "money-pit: Recovery Halt" (double-exposure risk; `recovery_router` routes
+  recovery → END, nothing is planned). An abnormal-but-now-settled prior run (`EXECUTED_INCOMPLETE` or
+  crashed `outcome=None`) → email "money-pit: Prior Run Reconciled" and proceed; otherwise proceed
+  silently. Writes a `recovery.json` audit artifact every run. **No auto-unwind** — a stray order is
+  handed to a human, never auto-cancelled (that policy is deferred with the atomic-group work) (→ see ADR 0018).
 - **Snapshot builder node** — calls the Alpaca **read** tools and writes `portfolio_snapshot.json`
   (`PortfolioSnapshot`). Computes the aggregate factor profile from per-position `factor_tags`
   deterministically. This snapshot is the single source of truth for portfolio state for the run.
@@ -342,6 +356,7 @@ working-directory artifacts and their producers/consumers:
 | `validation_status.json`           | A5                  | orchestration                             |
 | `determination.json/.md`           | A6                  | orchestration / audit                     |
 | `execution_journal.json`           | execution sub-agent | orchestration (next-run recovery) / audit |
+| `recovery.json`                    | recovery node       | orchestration / audit                     |
 
 Two-model pattern at LLM boundaries: each agent's typed output is a **draft / judgment** model
 (`SignalSetDraft`, `ClaimRelations`, `list[DraftQuestion]`, `AnswerDraft`, `AnalysisJudgment`), and a
@@ -599,9 +614,12 @@ working-directory root (`data/daily_show/`) is the only persistent on-disk state
 11. **Compensation cost bound (policy).** A compensation is a real market action with real cost; decide
     whether there is a tolerance beyond which the system should _not_ auto-unwind and should instead
     escalate to a human immediately (a very wide spread at unwind time, say).
-12. **Recovery semantics (design).** On a prior `COMPENSATION_FAILED` or crashed run, define exactly
-    how next-run reconciliation reads the journal + live positions and decides what, if anything, to
-    finish or unwind — versus simply re-planning from current state.
+12. **Recovery semantics (design) — RESOLVED.** Recovery is the graph entry node: it re-observes the
+    prior run's potentially-open legs and **halts** the new run on any still-open order (double-exposure),
+    emits a **notice + proceeds** on an abnormal-but-settled prior run, and proceeds silently otherwise.
+    The fresh snapshot already handles every *filled* leg, so recovery only closes the open-order gap;
+    there is **no auto-unwind** (deferred with §15 #11 / the atomic-group work), and the
+    `COMPENSATION_FAILED` reconciliation branch stays a fail-closed stub (→ see ADR 0018).
 13. **Run trigger / cadence (orchestration).** With multiple sources, what starts a run — still the
     video ("new episode" anchors cadence, other sources gathered at run time), a fixed schedule
     (pull whatever each source has), or any-source arrival? Lean: video stays the anchor at first.

@@ -115,6 +115,21 @@ Architecture phase is complete. All six agent prompts, `docs/design_decisions.md
   remains the deferred `AtomicGroupNotSupportedError` stub.
 - This **unblocks Phase 8 recovery**: its input — real observed fills in the journal — now exists.
 
+**Phase 8 (recovery) — COMPLETE (ADR 0018).**
+
+- Recovery reconciles the prior run's open orders as the **graph entry node** (runs before
+  snapshot/planning). It re-observes the most recent prior run's potentially-open legs via the fill
+  observer and **halts** the new run on any still-open order (double-exposure → email "Recovery Halt",
+  `recovery_router` routes → END, nothing planned), emits a **notice** and proceeds on an
+  abnormal-but-settled prior run (`EXECUTED_INCOMPLETE` / crashed `outcome=None` → email "Prior Run
+  Reconciled"), else proceeds silently; a `recovery.json` audit artifact is written every run.
+- Builds on the ADR 0017 observed fills; the fresh snapshot handles every filled leg, so recovery only
+  closes the open-order gap. **No auto-unwind**, and the `COMPENSATION_FAILED` reconciliation branch stays
+  deferred with the atomic-group work.
+- New: `schemas/recovery.py` (`PriorRunReconciliation`, `ReconciledOrder`), `RecoveryDecision` enum,
+  `reconcile_prior_run` + `make_recovery_node`, `recovery_router` + `HALT` literal, `recovery_decision`
+  state key, `RECOVERY_JSON_FILENAME` constant. Resolves architecture §15 #12.
+
 ---
 
 ## Phase 1: `schemas/` — COMPLETE
@@ -284,14 +299,27 @@ integration time.
 
 ---
 
-## Phase 8: `pipeline/recovery.py`
+## Phase 8: `pipeline/recovery.py` — COMPLETE (ADR 0018)
 
-Prior-journal reconciliation: reads `execution_journal.json`, checks for in-flight orders (partial fills, compensation needed), reconciles before planning a new run.
+Recovery reconciles the prior run's open orders as the **graph entry node**, before snapshot/planning.
+It locates the most recent prior run's `execution_journal.json`, re-observes each potentially-open leg
+(journal phase `SUBMITTED` / `PARTIALLY_FILLED`) at its current broker status via the injected fill
+observer, and decides: any leg still open → **halt** the new run (double-exposure risk) + email
+"money-pit: Recovery Halt - {slug}" (`recovery_router` routes recovery → END, nothing planned); an
+abnormal-but-now-settled prior run (`EXECUTED_INCOMPLETE` or crashed `outcome=None`) → **notice + proceed**
+(email "money-pit: Prior Run Reconciled - {slug}"); otherwise proceed silently. A `recovery.json` audit
+artifact is written every run. The fresh snapshot already handles every *filled* leg, so recovery only
+closes the open-order gap.
 
-Recovery now builds on the **real observed fills** journaled by the independent-order path (ADR 0017) —
-`EXECUTED_INCOMPLETE` runs (open-at-timeout / terminal partial) are the primary reconciliation input. The
+Recovery builds on the **real observed fills** journaled by the independent-order path (ADR 0017) — the
+fill observer re-queries any potentially-open leg's current status. There is **no auto-unwind** (a stray
+order is handed to a human; that policy is deferred with §15 #11 / the atomic-group work), and the
 `COMPENSATION_FAILED` reconciliation branch stays a fail-closed stub, aligned with the deferred
 atomic-group path.
+
+New: `schemas/recovery.py` (`PriorRunReconciliation`, `ReconciledOrder`), the `RecoveryDecision` enum,
+`reconcile_prior_run` + `make_recovery_node` in `pipeline/recovery.py`, `recovery_router` + the `HALT`
+literal in `graph/edges.py`, the `recovery_decision` state key, and the `RECOVERY_JSON_FILENAME` constant.
 
 ---
 
@@ -304,6 +332,7 @@ atomic-group path.
 | gates complete ✓    | Three `graph/edges.py` gate tests pass on hand-built JSON                                                                  |
 | spine green         | End-to-end paper-trade run with stub agents; all working-dir files schema-valid; zero LLM calls                            |
 | schema pinned ✓     | real `mcp/alpaca_order_schema.json` pinned from live Alpaca MCP (stub sentinel removed); the fail-closed gate flipped green and `execution_params` validates against it |
+| recovery gate ✓     | Recovery is the graph entry node (ADR 0018); a still-open prior order halts the run to END before any snapshot/planning, an abnormal-but-settled prior run emits a notice and proceeds, else silent proceed; `recovery.json` written every run |
 | full pipeline       | End-to-end with real agents on paper-trading account; `determination.json` written; email or execution triggered correctly |
 
 ---

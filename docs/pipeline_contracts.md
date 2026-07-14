@@ -599,10 +599,26 @@ still the deferred Phase-7 design, not the current path.
    email subject, distinct from the validation-error mail), and the run outcome is `COMPENSATION_FAILED`.
 4. Write the final journal `outcome`; record it into `determination.json` per the mapping above.
 
-**Recovery on the next run.** At run start, if a prior `execution_journal.json` shows an incomplete or
-`COMPENSATION_FAILED` run, reconcile against current broker positions (the fresh snapshot) before
-planning. Because submission is idempotent and the journal is truthful, the system knows exactly what
-happened and re-plans from reality — it never blind-replays.
+**Recovery on the next run (→ see ADR 0018).** Recovery is the graph **entry node**, running before
+snapshot/planning. It locates the most recent prior run's `execution_journal.json` and **re-observes**
+each potentially-open leg (journal phase `SUBMITTED` / `PARTIALLY_FILLED`) at its *current* broker status
+via the fill observer (terminal now → settled; a broker 404 → settled; a transport error → fail-closed as
+open). It then decides, writing a `recovery.json` audit artifact either way:
+
+- any leg still open at the broker → **halt** the new run and email "money-pit: Recovery Halt - {slug}".
+  An open order is not yet a position, so the fresh snapshot misses it; planning alongside it risks
+  **double exposure**. The graph routes recovery → END; nothing is planned or executed, and a human
+  reconciles. The behavior is self-healing — once the order settles (fills or expires), the next run
+  re-observes it as terminal and proceeds.
+- all settled but the prior run was abnormal (`EXECUTED_INCOMPLETE` or crashed `outcome=None`) → **notice
+  + proceed**: email "money-pit: Prior Run Reconciled - {slug}" and continue to planning.
+- otherwise → **proceed** silently.
+
+The fresh snapshot already handles every *filled* leg correctly (A4 sizes from current positions), so
+recovery only closes the open-order gap. Because submission is idempotent and the journal is truthful, the
+system re-plans from reality — it never blind-replays. **No auto-unwind:** recovery never cancels or
+compensates a stray order (that policy belongs with the deferred §15 #11 / atomic-group work), and the
+`COMPENSATION_FAILED` reconciliation branch stays a fail-closed stub — no compensation exists to produce it.
 
 **What this adds elsewhere:** `ActionStep.group_id` + `client_order_id` (§5); `StepValidation. compensation_sequence` + the compensation-capability check (§6); the `execution_journal.json` artifact
 and the execution/outcome enums (§0). Agent 5 stays deterministic config-driven code — verifying the
@@ -769,8 +785,11 @@ code verifies existence and literal schema acceptance.
   `money-pit portfolio` snapshot (§8), and reading `validation_status.json` to advance the graph.
   Also routes Agent 4's three terminal states (§6a): real steps → Agent 5/6; clean empty `[]` →
   `NO_ACTION` (no email); halt object → `ANALYSIS_HALT` notification (distinct from the validation-
-  error email). On run start, runs §7a recovery: reconcile a prior incomplete `execution_journal.json`
-  against the fresh snapshot before planning.
+  error email). The **recovery node is the graph entry gate** (§7a, ADR 0018): before any snapshot or
+  planning it re-observes the most recent prior run's potentially-open legs and **halts** the run (email
+  "Recovery Halt", routes → END) on any still-open order to avoid double exposure, emits a **notice** and
+  proceeds on an abnormal-but-settled prior run ("Prior Run Reconciled"), else proceeds silently; it
+  writes a `recovery.json` audit artifact every run and never auto-unwinds a stray order.
 
 ---
 

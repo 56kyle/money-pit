@@ -33,7 +33,7 @@ We welcome pull requests! For significant changes, it's best to open an issue fi
 
 ### Prerequisites
 
-- Python 3.10+ (this project supports Python 3.10-3.13)
+- Python 3.11+ (this project supports Python 3.11-3.13)
 - [uv][uv-documentation] for dependency management
 - Git for version control
 

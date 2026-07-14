@@ -323,6 +323,84 @@ literal in `graph/edges.py`, the `recovery_decision` state key, and the `RECOVER
 
 ---
 
+# Remaining Work
+
+The deterministic spine (Phases 1–4), the LLM cores (Phase 5), the source-adapter interface (Phase 6),
+the MCP/email layer (Phase 7), the independent-order execution + real fill observation (ADR 0017), and
+recovery (Phase 8) are complete and green. What remains splits into three tiers: **product surface not
+yet built** (needed for autonomous real operation — Phases 9–10), a **deferred frontier** (fail-closed
+stubs correctly gated on a real trigger — build only when that trigger exists), and a **hygiene backlog**.
+
+Guiding constraint (no versions — build the final form): the deferred-frontier items are not "unfinished
+v0s." They fail closed today and must stay stubbed until their real inputs exist (an interdependent
+thesis; a second source); building them speculatively would be designing against nothing.
+
+## Phase 9: Video multimodal ingestion (`adapters/video.py` Step 2)
+
+The real front-end. Today `adapters/video.py` persists a deterministic fetch and hands a transcript to
+the A1 classifier, but the heavy multimodal Step 2 is deferred: `adapters/video_llm.py` still carries
+`has_word_timestamps` / `on_screen_text` as unwired fields. Until this lands, the pipeline runs on
+hand-authored/stub transcripts and cannot process a real YouTube episode end-to-end.
+
+Scope (see `architecture.md` §6.1 per-adapter ingestion, §6.2 source adapters, and the §8a
+build-vs-integrate table — integrate libraries, don't hand-roll):
+
+- **Fetch + caption-first cascade:** yt-dlp fetch; prefer the platform captions when present, fall back to
+  transcription only when absent (a design decision to pin — caption trust vs. always-transcribe).
+- **WhisperX forced alignment:** word-level timestamps for narration↔frame fusion (populates
+  `has_word_timestamps`).
+- **Keyframes + on-screen extraction:** PySceneDetect scene-change keyframes → OCR/VLM (Tesseract/PaddleOCR
+  + a VLM) for on-screen text and chart-footer source attribution (populates `on_screen_text` and feeds
+  `cited_sources`).
+- **Fusion → A1:** timestamp-fused transcript + on-screen text into the `video_llm` A1 classifier, which
+  emits a `SignalSetDraft` with the now-real multimodal fields; the wrapping node's deterministic layer
+  (ticker normalization, ISO dates, schema validation) is already built.
+
+Design decisions to resolve first (not yet ADR'd): the caption-vs-transcription cascade policy, and the
+keyframe-sampling + OCR/VLM fusion approach. This is the largest remaining chunk and warrants a
+design-questioner pass before implementation.
+
+## Phase 10: Scheduler / autonomous trigger
+
+`run_pipeline` is invoked manually today; there is no scheduled trigger (`architecture.md` §13
+APScheduler/cron, §16 build-order step 6). Needed for unattended daily operation. The open design
+decision is **run trigger / cadence** (`architecture.md` §15 #13): new-episode detection (video anchors
+cadence) vs. a fixed schedule vs. any-source arrival — lean is video-anchored at first. Resolve §15 #13,
+then wire the scheduler around `run_pipeline` (which already owns slug/working-dir/recovery entry).
+
+## Deferred Frontier (fail-closed stubs — gated on a real trigger)
+
+Build **only** when the gating input exists; each fails closed today and must not be built speculatively.
+
+- **Atomic-group compensation** — the `AtomicGroupNotSupportedError` terminus in `pipeline/execution.py`
+  and the full §7a step-3 transactional model (all-or-nothing pre-flight, safe-order leg execution,
+  realized-fill compensation, `COMPENSATION_FAILED` urgent escalation). Produces the currently-dead
+  `PARTIAL_COMPENSATED` / `COMPENSATION_FAILED` outcomes and unblocks the `COMPENSATION_FAILED`
+  reconciliation branch that recovery (ADR 0018) leaves stubbed. **Gated on:** a real interdependent thesis
+  (a non-null `group_id`), which at N=1 A4 never emits (`design_decisions.md` §5), **and** the open design
+  decisions `architecture.md` §15 #9 (grouping criteria), #10 (leg-execution ordering), #11 (compensation
+  cost bound). Resolve those three before any code.
+- **Multi-source corroboration (N>1)** — `agents/corroboration.py` is a no-op stub (always
+  `ClaimRelations(agree=[], disagree=[])`); the aggregator's embedding-cluster + thin-LLM corroboration/
+  conflict labelling and cross-source tier reconciliation are dormant. **Gated on:** a second source
+  adapter existing. Open design: `architecture.md` §15 #14 (corroboration/similarity mechanism), #15 (tier
+  reconciliation — confirmed max-tier, revisit if noisy), #16 (adapter trust weighting). `test_n1_stubs.py`
+  turns red the moment a second source or interdependent thesis activates a dormant path — that is the
+  signal to build this.
+
+## Hygiene / Robustness backlog (do anytime)
+
+- **Live schema-drift guard** — a `@pytest.mark.live` test diffing the pinned `mcp/alpaca_order_schema.json`
+  against the live `place_stock_order.inputSchema`; nothing currently catches Alpaca schema drift until a
+  real order rejects (flagged in the Watch Items above).
+- **`factor_tags` / `correlated_overlaps`** — v0-deferred to empty in `alpaca_portfolio.py`, so A4's
+  Step-3 overlap/factor constraint logic runs on empty inputs (degraded, not broken). Populate them (VLM/
+  reference-data sourcing) to make the overlap/factor headroom clamps real.
+- **Stale markers cleanup** — comments in `agents/research_tools.py` and `adapters/video_llm.py` still say
+  "wired in Phase 7 / converge in Phase 7"; cosmetic, retire alongside the relevant phase.
+
+---
+
 ## Key Checkpoints
 
 | Checkpoint          | Criterion                                                                                                                  |
@@ -334,6 +412,8 @@ literal in `graph/edges.py`, the `recovery_decision` state key, and the `RECOVER
 | schema pinned ✓     | real `mcp/alpaca_order_schema.json` pinned from live Alpaca MCP (stub sentinel removed); the fail-closed gate flipped green and `execution_params` validates against it |
 | recovery gate ✓     | Recovery is the graph entry node (ADR 0018); a still-open prior order halts the run to END before any snapshot/planning, an abnormal-but-settled prior run emits a notice and proceeds, else silent proceed; `recovery.json` written every run |
 | full pipeline       | End-to-end with real agents on paper-trading account; `determination.json` written; email or execution triggered correctly |
+| video ingestion     | A real YouTube episode processed end-to-end (yt-dlp + captions/WhisperX + keyframes/OCR) into a `SignalSet` with real `has_word_timestamps` / `on_screen_text` (Phase 9)                                     |
+| scheduler           | An unattended scheduled trigger runs the pipeline on cadence without manual invocation (Phase 10, §15 #13 resolved)         |
 
 ---
 

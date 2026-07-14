@@ -71,6 +71,9 @@ class Config(BaseSettings):
     llm_model: str = _DEFAULT_LLM_MODEL
     scene_detect_threshold: float = 27.0
     keyframe_max_frames: int = 40
+    whisper_model: str = "large-v3"
+    whisper_device: str = "cuda"
+    whisper_compute_type: str = "float16"
     fred_api_key: SecretStr | None = None
     brave_api_key: SecretStr | None = None
 

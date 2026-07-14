@@ -4,6 +4,7 @@ import datetime
 import re
 from pathlib import Path
 
+from platformdirs import user_cache_path
 from platformdirs import user_config_path
 from platformdirs import user_log_path
 from platformdirs import user_state_path
@@ -16,11 +17,17 @@ APP_AUTHOR: str = "56kyle"
 APP_START_TIME: datetime.datetime = datetime.datetime.now(tz=datetime.timezone.utc)
 
 _CONFIG_FILENAME: str = ".env"
+_INGEST_CACHE_DIRNAME: str = "ingest_cache"
 
 
 def user_config_folder() -> Path:
     """Return the per-user config folder, creating it on each call."""
     return user_config_path(appname=APP_NAME, appauthor=APP_AUTHOR, ensure_exists=True)
+
+
+def user_cache_folder() -> Path:
+    """Return the per-user cache folder, creating it on each call."""
+    return user_cache_path(appname=APP_NAME, appauthor=APP_AUTHOR, ensure_exists=True)
 
 
 def user_state_folder() -> Path:
@@ -36,6 +43,11 @@ def user_log_folder() -> Path:
 def default_config_path() -> Path:
     """Return the default per-user config file path, creating its parent folder on each call."""
     return user_config_folder() / _CONFIG_FILENAME
+
+
+def default_ingest_cache_dir() -> Path:
+    """Return the default per-user ingest cache directory, creating its parent folder on each call."""
+    return user_cache_folder() / _INGEST_CACHE_DIRNAME
 
 
 def source_id_to_dirname(source_id: str) -> str:

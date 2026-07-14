@@ -6,6 +6,7 @@ from typing import ClassVar
 
 import keyring
 from dotenv import load_dotenv
+from pydantic import Field
 from pydantic import SecretStr
 from pydantic import ValidationError
 from pydantic_settings import BaseSettings
@@ -15,6 +16,7 @@ from money_pit.constants import DEFAULT_SMTP_HOST
 from money_pit.constants import DEFAULT_SMTP_PORT
 from money_pit.constants import GMAIL_KEYRING_SERVICE
 from money_pit.constants import default_config_path
+from money_pit.constants import default_ingest_cache_dir
 
 
 ENV_PREFIX: str = "MONEY_PIT__"
@@ -71,6 +73,7 @@ class Config(BaseSettings):
     llm_model: str = _DEFAULT_LLM_MODEL
     scene_detect_threshold: float = 27.0
     keyframe_max_frames: int = 40
+    ingest_cache_dir: Path = Field(default_factory=default_ingest_cache_dir)
     whisper_model: str = "large-v3"
     whisper_device: str = "cuda"
     whisper_compute_type: str = "float16"

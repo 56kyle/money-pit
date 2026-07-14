@@ -32,8 +32,8 @@ class VideoPayload(BaseModel):
     source_ref: SourceRef
     transcript: str
     transcript_source: TranscriptSource
-    has_word_timestamps: bool  # wired in Phase 7 when WhisperX forced alignment runs
-    on_screen_text: list[str]  # wired in Phase 7 when OCR/VLM keyframe extraction runs
+    has_word_timestamps: bool
+    on_screen_text: list[str]
 
 
 _PROMPT_NAME: str = "agent_1"

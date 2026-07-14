@@ -77,6 +77,13 @@ cpu = [
 cu128 = [
     "torch>=2.8.0",
 ]
+video = [
+    "faster-whisper>=1.2.1",
+    "opencv-python>=5.0.0.93",
+    "pillow>=12.3.0",
+    "scenedetect>=0.7",
+    "yt-dlp>=2026.7.4",
+]
 
 [project.scripts]
 money-pit = "money_pit.__main__:app"
@@ -123,7 +130,8 @@ build-backend = "setuptools.build_meta"
 "money_pit.prompts" = ["*.md"]
 
 [tool.pytest.ini_options]
-addopts = "-m 'not live'"
+addopts = "-m 'not live and not live_video'"
 markers = [
     "live: connects to real Alpaca paper / SMTP; deselected by default (run with -m live and MONEY_PIT_LIVE=1)",
+    "live_video: runs real video ingestion (yt-dlp + faster-whisper + scenedetect + VLM) against a pinned public URL; deselected by default (run with -m live_video and MONEY_PIT_LIVE=1, needs the 'video' extra + a GPU)",
 ]

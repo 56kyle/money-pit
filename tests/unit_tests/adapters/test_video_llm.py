@@ -1,9 +1,11 @@
 """Unit tests for the VideoPayload model."""
 
 import pytest
+from _pytest.fixtures import FixtureRequest
 
 from money_pit.adapters.video_llm import TranscriptSource
 from money_pit.adapters.video_llm import VideoPayload
+from money_pit.adapters.video_llm import _build_user_message
 from money_pit.schemas.enums import SourceType
 from money_pit.schemas.provenance import SourceRef
 
@@ -22,7 +24,12 @@ def source_ref() -> SourceRef:
 
 
 @pytest.fixture
-def video_payload(source_ref: SourceRef) -> VideoPayload:
+def video_payload__on_screen_text(request: FixtureRequest) -> list[str]:
+    return getattr(request, "param", [])
+
+
+@pytest.fixture
+def video_payload(source_ref: SourceRef, video_payload__on_screen_text: list[str]) -> VideoPayload:
     return VideoPayload(
         slug="2026-06-18_14-30-00",
         source_ref=source_ref,
@@ -33,7 +40,7 @@ def video_payload(source_ref: SourceRef) -> VideoPayload:
         ),
         transcript_source=TranscriptSource.UPLOADER_CAPTIONS,
         has_word_timestamps=False,
-        on_screen_text=[],
+        on_screen_text=video_payload__on_screen_text,
     )
 
 
@@ -42,3 +49,29 @@ def test_video_payload_serializes_round_trip(video_payload: VideoPayload) -> Non
     round_tripped = VideoPayload.model_validate_json(video_payload.model_dump_json())
 
     assert round_tripped == video_payload
+
+
+@pytest.mark.parametrize(
+    "video_payload__on_screen_text",
+    [["[00:00:05] NVDA chart", "[00:00:05] Source: Bloomberg"]],
+    indirect=True,
+)
+def test__build_user_message_with_on_screen_text_present(video_payload: VideoPayload) -> None:
+    """The On-Screen Text block renders its lines and Transcript Provenance follows it."""
+    message = _build_user_message(video_payload)
+
+    assert "## On-Screen Text" in message
+    assert "[00:00:05] NVDA chart" in message
+    assert "[00:00:05] Source: Bloomberg" in message
+    assert "## Transcript Provenance" in message
+    assert video_payload.transcript_source.value in message
+    assert "word-level timestamps: False" in message
+
+
+def test__build_user_message_with_on_screen_text_absent(video_payload: VideoPayload) -> None:
+    """An empty on_screen_text omits the On-Screen Text block but keeps Transcript and Provenance."""
+    message = _build_user_message(video_payload)
+
+    assert "## On-Screen Text" not in message
+    assert "## Transcript\n" in message
+    assert "## Transcript Provenance" in message

@@ -355,8 +355,9 @@ new orchestration-owned `src/money_pit/ingestion/` subpackage that turns a YouTu
   lazy heavy imports (ADR 0022). Every stage is an injected seam tested offline with fakes + cached
   fixtures; the `agent_1` prompt now admits on-screen attribution.
 
-Remaining: run the opt-in `live_video` tier (`MONEY_PIT_LIVE=1 -m live_video`, needs the `video` extra +
-GPU + Claude creds) against the pinned URL to validate the real download→transcribe→keyframe→VLM path
+Remaining: run the opt-in `live_video` tier (`MONEY_PIT_LIVE_VIDEO=1 -m live_video` — its own gate,
+separate from the broker tier's `MONEY_PIT_LIVE`; needs the `video` extra + GPU + Claude creds) against
+the pinned URL to validate the real download→transcribe→keyframe→VLM path
 end-to-end. Deferred within Phase 9 scope: word-level narration↔frame *fusion* using the whisper word
 timestamps (captions carry only segment timing; on-screen extraction keys off keyframe locators
 independently, so this is a refinement, not a blocker).

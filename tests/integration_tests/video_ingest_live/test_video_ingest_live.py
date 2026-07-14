@@ -33,8 +33,8 @@ _VIDEO_EXTRA_MISSING: bool = (
 pytestmark = [
     pytest.mark.live_video,
     pytest.mark.skipif(
-        os.environ.get("MONEY_PIT_LIVE") != "1",
-        reason="live_video tier is opt-in; set MONEY_PIT_LIVE=1 (with real ANTHROPIC creds) to run",
+        os.environ.get("MONEY_PIT_LIVE_VIDEO") != "1",
+        reason="live_video tier is opt-in; set MONEY_PIT_LIVE_VIDEO=1 (with real ANTHROPIC creds) to run",
     ),
     pytest.mark.skipif(
         _VIDEO_EXTRA_MISSING,

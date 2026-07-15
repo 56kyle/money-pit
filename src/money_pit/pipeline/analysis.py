@@ -181,7 +181,6 @@ def _write_action_steps(working_dir: Path, slug: str, action_steps: list[ActionS
 class _Headrooms(NamedTuple):
     sector: float
     cash: float
-    overlap: float
 
 
 def _load_analysis_inputs(
@@ -231,7 +230,26 @@ def _compute_headrooms(config: Config, portfolio_snapshot: PortfolioSnapshot) ->
             0.0,
             portfolio_snapshot.available_cash - config.cash_min * portfolio_snapshot.total_account_value,
         ),
-        overlap=config.overlap_limit * portfolio_snapshot.total_account_value,
+    )
+
+
+def _overlap_headroom(config: Config, portfolio_snapshot: PortfolioSnapshot, instrument: str) -> float:
+    """Overlap ceiling for one candidate, reduced by exposure already held in its correlated group."""
+    instrument_key: str = instrument.upper()
+    correlated_tickers: set[str] = {
+        ticker.upper()
+        for overlap in portfolio_snapshot.correlated_overlaps
+        if instrument_key in {t.upper() for t in overlap.tickers}
+        for ticker in overlap.tickers
+    } - {instrument_key}
+    existing_correlated_exposure: float = sum(
+        position.current_value
+        for position in portfolio_snapshot.positions
+        if position.ticker.upper() in correlated_tickers
+    )
+    return max(
+        0.0,
+        config.overlap_limit * portfolio_snapshot.total_account_value - existing_correlated_exposure,
     )
 
 
@@ -273,6 +291,7 @@ def _materialize_action_steps(
     for i, thesis in enumerate(container.theses):
         verified: bool = thesis.disposition == Step1Disposition.SUPPORTED
         scenarios: list[tuple[float, float]] = _to_scenario_list(thesis.scenario_table)
+        overlap_headroom: float = _overlap_headroom(config, portfolio_snapshot, thesis.instrument)
         dollar_amount: float | None = size_position(
             scenarios,
             portfolio_snapshot.total_account_value,
@@ -281,7 +300,7 @@ def _materialize_action_steps(
             regime_uncertain,
             headrooms.sector,
             headrooms.cash,
-            headrooms.overlap,
+            overlap_headroom,
         )
         if dollar_amount is None:
             continue

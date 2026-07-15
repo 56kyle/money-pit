@@ -20,6 +20,7 @@ from money_pit.config import Config
 from money_pit.pipeline.analysis import _compute_headrooms
 from money_pit.pipeline.analysis import _extract_macro_indicators
 from money_pit.pipeline.analysis import _materialize_action_steps
+from money_pit.pipeline.analysis import _overlap_headroom
 from money_pit.pipeline.analysis import make_analysis_node
 from money_pit.schemas.action_steps import ActionStep
 from money_pit.schemas.analysis_draft import AnalysisHalt
@@ -38,6 +39,8 @@ from money_pit.schemas.enums import QuestionCategory
 from money_pit.schemas.enums import RegimeTag
 from money_pit.schemas.enums import Step1Disposition
 from money_pit.schemas.enums import TerminalState
+from money_pit.schemas.portfolio import CorrelatedOverlap
+from money_pit.schemas.portfolio import Position
 from money_pit.schemas.portfolio import PortfolioSnapshot
 from money_pit.schemas.questions import INDICATOR_PREFIX
 from money_pit.schemas.signals import AggregatedSignals
@@ -170,15 +173,37 @@ def _config(**overrides: object) -> Config:
     return Config(**{**defaults, **overrides})
 
 
-def _portfolio(*, total_account_value: float, available_cash: float) -> PortfolioSnapshot:
+def _position(ticker: str, current_value: float) -> Position:
+    return Position(
+        ticker=ticker,
+        quantity=1.0,
+        cost_basis=current_value,
+        current_value=current_value,
+        unrealized_pl=0.0,
+        sector="technology",
+        factor_tags=[],
+    )
+
+
+def _overlap(tickers: list[str]) -> CorrelatedOverlap:
+    return CorrelatedOverlap(tickers=tickers, note="Correlated exposure.")
+
+
+def _portfolio(
+    *,
+    total_account_value: float,
+    available_cash: float,
+    positions: list[Position] | None = None,
+    correlated_overlaps: list[CorrelatedOverlap] | None = None,
+) -> PortfolioSnapshot:
     return PortfolioSnapshot(
         slug=_SLUG,
         as_of="2026-07-02T00:00:00Z",
         total_account_value=total_account_value,
         available_cash=available_cash,
-        positions=[],
+        positions=positions or [],
         sector_weights={},
-        correlated_overlaps=[],
+        correlated_overlaps=correlated_overlaps or [],
     )
 
 
@@ -373,10 +398,10 @@ def test_make_analysis_node_with_dropped_claim_renders_it_in_analysis_md(
 
 
 def test__compute_headrooms_with_known_values_returns_products() -> None:
-    config = _config(sector_cap=0.25, overlap_limit=0.30, cash_min=0.05)
+    config = _config(sector_cap=0.25, cash_min=0.05)
     portfolio = _portfolio(total_account_value=100000.0, available_cash=50000.0)
     result = _compute_headrooms(config, portfolio)
-    assert (result.sector, result.cash, result.overlap) == (25000.0, 45000.0, 30000.0)
+    assert (result.sector, result.cash) == (25000.0, 45000.0)
 
 
 def test__compute_headrooms_with_cash_min_exceeding_available_cash_floors_at_zero() -> None:
@@ -384,6 +409,94 @@ def test__compute_headrooms_with_cash_min_exceeding_available_cash_floors_at_zer
     portfolio = _portfolio(total_account_value=100000.0, available_cash=10000.0)
     result = _compute_headrooms(config, portfolio)
     assert result.cash == 0.0
+
+
+def test__overlap_headroom_with_no_overlaps_returns_full_ceiling() -> None:
+    config = _config(overlap_limit=0.30)
+    portfolio = _portfolio(
+        total_account_value=100000.0,
+        available_cash=100000.0,
+        positions=[_position("NVDA", 10000.0)],
+        correlated_overlaps=[],
+    )
+    assert _overlap_headroom(config, portfolio, "SMH") == pytest.approx(30000.0)
+
+
+def test__overlap_headroom_with_no_group_containing_instrument_returns_full_ceiling() -> None:
+    config = _config(overlap_limit=0.30)
+    portfolio = _portfolio(
+        total_account_value=100000.0,
+        available_cash=100000.0,
+        positions=[_position("XLE", 10000.0)],
+        correlated_overlaps=[_overlap(["XLE", "XOM"])],
+    )
+    assert _overlap_headroom(config, portfolio, "SMH") == pytest.approx(30000.0)
+
+
+def test__overlap_headroom_with_instrument_in_group_reduces_by_correlated_exposure() -> None:
+    config = _config(overlap_limit=0.30)
+    portfolio = _portfolio(
+        total_account_value=100000.0,
+        available_cash=100000.0,
+        positions=[_position("NVDA", 10000.0)],
+        correlated_overlaps=[_overlap(["SMH", "NVDA"])],
+    )
+    assert _overlap_headroom(config, portfolio, "SMH") == pytest.approx(20000.0)
+
+
+def test__overlap_headroom_with_instrument_held_excludes_own_value() -> None:
+    config = _config(overlap_limit=0.30)
+    portfolio = _portfolio(
+        total_account_value=100000.0,
+        available_cash=100000.0,
+        positions=[_position("SMH", 5000.0), _position("NVDA", 10000.0)],
+        correlated_overlaps=[_overlap(["SMH", "NVDA"])],
+    )
+    assert _overlap_headroom(config, portfolio, "SMH") == pytest.approx(20000.0)
+
+
+def test__overlap_headroom_with_lowercased_instrument_still_matches() -> None:
+    config = _config(overlap_limit=0.30)
+    portfolio = _portfolio(
+        total_account_value=100000.0,
+        available_cash=100000.0,
+        positions=[_position("NVDA", 10000.0)],
+        correlated_overlaps=[_overlap(["SMH", "NVDA"])],
+    )
+    assert _overlap_headroom(config, portfolio, "smh") == pytest.approx(20000.0)
+
+
+def test__overlap_headroom_with_lowercased_overlap_and_position_tickers_still_matches() -> None:
+    config = _config(overlap_limit=0.30)
+    portfolio = _portfolio(
+        total_account_value=100000.0,
+        available_cash=100000.0,
+        positions=[_position("nvda", 10000.0)],
+        correlated_overlaps=[_overlap(["smh", "nvda"])],
+    )
+    assert _overlap_headroom(config, portfolio, "SMH") == pytest.approx(20000.0)
+
+
+def test__overlap_headroom_with_correlated_exposure_exceeding_ceiling_floors_at_zero() -> None:
+    config = _config(overlap_limit=0.30)
+    portfolio = _portfolio(
+        total_account_value=100000.0,
+        available_cash=100000.0,
+        positions=[_position("NVDA", 40000.0)],
+        correlated_overlaps=[_overlap(["SMH", "NVDA"])],
+    )
+    assert _overlap_headroom(config, portfolio, "SMH") == 0.0
+
+
+def test__overlap_headroom_with_instrument_in_multiple_groups_sums_distinct_names() -> None:
+    config = _config(overlap_limit=0.30)
+    portfolio = _portfolio(
+        total_account_value=100000.0,
+        available_cash=100000.0,
+        positions=[_position("NVDA", 10000.0), _position("AMD", 5000.0)],
+        correlated_overlaps=[_overlap(["SMH", "NVDA"]), _overlap(["SMH", "NVDA", "AMD"])],
+    )
+    assert _overlap_headroom(config, portfolio, "SMH") == pytest.approx(15000.0)
 
 
 def test__materialize_action_steps_with_sized_theses_assigns_ordered_step_ids() -> None:
@@ -416,6 +529,34 @@ def test__materialize_action_steps_with_ev_below_gate_yields_no_action_steps() -
     )
     steps = _materialize_action_steps(container, config, portfolio, RegimeTag.GROWTH_ACCELERATING, _SLUG)
     assert steps == []
+
+
+def test__materialize_action_steps_with_overlapping_candidate_clamps_to_overlap_headroom() -> None:
+    config = _config(overlap_limit=0.30)
+    portfolio = _portfolio(
+        total_account_value=100000.0,
+        available_cash=100000.0,
+        positions=[_position("NVDA", 10000.0)],
+        correlated_overlaps=[_overlap(["SMH", "NVDA"])],
+    )
+    container = AnalysisJudgment(
+        theses=[
+            _thesis("SMH", Step1Disposition.SUPPORTED, claim_id="c-overlap"),
+            _thesis("AMD", Step1Disposition.SUPPORTED, claim_id="c-clear"),
+        ],
+        dropped_claims=[],
+        macro_read=[],
+        halt=None,
+    )
+    steps = {step.instrument: step for step in _materialize_action_steps(
+        container, config, portfolio, RegimeTag.GROWTH_ACCELERATING, _SLUG
+    )}
+    overlap_notional = steps["SMH"].execution_parameters.notional
+    clear_notional = steps["AMD"].execution_parameters.notional
+    assert overlap_notional is not None
+    assert clear_notional is not None
+    assert float(overlap_notional) == pytest.approx(20000.0)
+    assert float(clear_notional) == pytest.approx(25000.0)
 
 
 def test_make_analysis_node_with_agent_exception_sets_analysis_halt(config: Config, analysis_working_dir: Path) -> None:

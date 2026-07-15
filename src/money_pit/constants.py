@@ -18,6 +18,7 @@ APP_START_TIME: datetime.datetime = datetime.datetime.now(tz=datetime.timezone.u
 
 _CONFIG_FILENAME: str = ".env"
 _INGEST_CACHE_DIRNAME: str = "ingest_cache"
+_PROCESSED_EPISODES_FILENAME: str = "processed_episodes.json"
 
 
 def user_config_folder() -> Path:
@@ -48,6 +49,11 @@ def default_config_path() -> Path:
 def default_ingest_cache_dir() -> Path:
     """Return the default per-user ingest cache directory, creating its parent folder on each call."""
     return user_cache_folder() / _INGEST_CACHE_DIRNAME
+
+
+def default_processed_episodes_path() -> Path:
+    """Return the default per-user processed-episodes ledger path, creating its parent folder on each call."""
+    return user_state_folder() / _PROCESSED_EPISODES_FILENAME
 
 
 def source_id_to_dirname(source_id: str) -> str:

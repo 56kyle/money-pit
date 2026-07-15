@@ -70,6 +70,13 @@ class Config(BaseSettings):
     threshold_pmi: float = 50.0
     threshold_earnings_revisions: float = 0.0
     threshold_inflation: float = 2.5
+    threshold_factor_value_pe: float = 20.0
+    threshold_factor_value_pb: float = 2.0
+    threshold_factor_growth: float = 0.15
+    threshold_factor_momentum: float = 0.10
+    threshold_factor_quality_roe: float = 0.15
+    threshold_factor_quality_margin: float = 0.15
+    threshold_factor_low_vol_beta: float = 0.90
     llm_model: str = _DEFAULT_LLM_MODEL
     youtube_channel_id: str | None = None
     scene_detect_threshold: float = 27.0

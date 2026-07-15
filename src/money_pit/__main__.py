@@ -19,6 +19,7 @@ from money_pit.config import load_config
 from money_pit.config import resolve_alpaca_credentials
 from money_pit.constants import FILE_SAFE_DATETIME_FORMAT
 from money_pit.constants import SIGNALS_DIRNAME
+from money_pit.constants import default_processed_episodes_path
 from money_pit.constants import source_id_to_dirname
 from money_pit.graph.state import PipelineState
 from money_pit.ingestion.pipeline import IngestionSeams
@@ -31,6 +32,15 @@ from money_pit.mcp.order_schema import ALPACA_ORDER_SCHEMA_PATH
 from money_pit.mcp.order_schema import ALPACA_ORDER_SCHEMA_STUB_SENTINEL
 from money_pit.pipeline.orchestration import production_deps
 from money_pit.pipeline.orchestration import run_pipeline
+from money_pit.scheduler.channel import fetch_latest_video_id
+from money_pit.scheduler.channel import make_requests_http_get
+from money_pit.scheduler.runner import Clock
+from money_pit.scheduler.runner import LatestReader
+from money_pit.scheduler.runner import RunLatestOutcome
+from money_pit.scheduler.runner import RunLatestResult
+from money_pit.scheduler.runner import SchedulerConfigError
+from money_pit.scheduler.runner import UrlRunner
+from money_pit.scheduler.runner import run_latest_once
 from money_pit.schemas.enums import TerminalState
 from money_pit.schemas.signal_draft import SignalSetDraft
 from money_pit.schemas.signals import SignalSet
@@ -68,6 +78,24 @@ def _ingest_to_signal_file(
     signal_path: Path = signals_dir / f"{source_id_to_dirname(signal_set.source_ref.source_id)}.json"
     _ = signal_path.write_text(signal_set.model_dump_json(indent=_JSON_INDENT), encoding="utf-8")
     return signal_path
+
+
+def _run_url(url: str, config: Config) -> PipelineState:
+    """Ingest one video URL and execute the full pipeline over it, returning the final state."""
+    slug: str = _mint_slug()
+    seams: IngestionSeams = production_seams(config)
+    agent: Callable[[VideoPayload], SignalSetDraft] = make_video_llm_agent(config)
+    signals_dir: Path = Path(tempfile.mkdtemp())
+    _ = _ingest_to_signal_file(
+        url,
+        slug,
+        config.ingest_cache_dir,
+        signals_dir,
+        seams,
+        agent,
+        max_frames=config.keyframe_max_frames,
+    )
+    return run_pipeline(signals_dir, overrides=production_deps(config))
 
 
 @app.callback()
@@ -136,23 +164,33 @@ def ingest(url: str) -> None:
 def run(url: str) -> None:
     """Ingest a URL into a fresh ephemeral signals directory and execute the full pipeline over it."""
     config: Config = load_config()
-    slug: str = _mint_slug()
-    seams: IngestionSeams = production_seams(config)
-    agent: Callable[[VideoPayload], SignalSetDraft] = make_video_llm_agent(config)
-    signals_dir: Path = Path(tempfile.mkdtemp())
-    _ = _ingest_to_signal_file(
-        url,
-        slug,
-        config.ingest_cache_dir,
-        signals_dir,
-        seams,
-        agent,
-        max_frames=config.keyframe_max_frames,
-    )
-    state: PipelineState = run_pipeline(signals_dir, overrides=production_deps(config))
+    state: PipelineState = _run_url(url, config)
     terminal_state: TerminalState | None = state.get("terminal_state")
     label: str = terminal_state.value if terminal_state is not None else _NO_TERMINAL_STATE_LABEL
     typer.echo(f"Run complete. Terminal state: {label}")
+
+
+@app.command(name="run-latest")
+def run_latest() -> None:
+    """Detect the newest episode on the configured channel and run the pipeline if it is new (idempotent)."""
+    config: Config = load_config()
+    read_latest: LatestReader = lambda channel_id: fetch_latest_video_id(channel_id, make_requests_http_get())
+    run_url: UrlRunner = lambda url: _run_url(url, config)
+    now: Clock = lambda: datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
+    ledger_path: Path = default_processed_episodes_path()
+
+    try:
+        result: RunLatestResult = run_latest_once(
+            config, read_latest=read_latest, run_url=run_url, ledger_path=ledger_path, now=now
+        )
+    except SchedulerConfigError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(code=1) from error
+
+    if result.outcome is RunLatestOutcome.SKIPPED:
+        typer.echo(f"No new episode; latest {result.source_id} already processed.")
+    else:
+        typer.echo(f"Processed {result.source_id} (run {result.slug}).")
 
 
 if __name__ == "__main__":

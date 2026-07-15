@@ -67,6 +67,18 @@ def test_main_succeeds(runner: CliRunner) -> None:
     assert result.exit_code == 0
 
 
+def test_run_latest_command_registered() -> None:
+    from money_pit.__main__ import app
+
+    assert any(command.name == "run-latest" for command in app.registered_commands)
+
+
+def test__run_url_is_importable() -> None:
+    from money_pit.__main__ import _run_url
+
+    assert callable(_run_url)
+
+
 def test_pin_order_schema_with_credential_failure(runner: CliRunner, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(__main__, "load_config", lambda: None)
 

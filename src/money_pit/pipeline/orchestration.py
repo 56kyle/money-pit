@@ -364,7 +364,7 @@ def production_deps(config: Config) -> PipelineOverrides:
     """
     credentials = resolve_alpaca_credentials(config)
     return PipelineOverrides(
-        fetch_portfolio=make_alpaca_portfolio_fetcher(credentials),
+        fetch_portfolio=make_alpaca_portfolio_fetcher(credentials, config),
         place_order=make_alpaca_write_deps(credentials),
         observe_fill=make_alpaca_fill_observer(credentials),
         send_email=make_gmail_email_sender(config),

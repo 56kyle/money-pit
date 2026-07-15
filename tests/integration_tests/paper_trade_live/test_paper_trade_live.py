@@ -42,8 +42,10 @@ pytestmark = [
 ]
 
 
-def test_live_portfolio_snapshot_validates(live_credentials: AlpacaCredentials) -> None:
-    fetch_portfolio: PortfolioFetcher = make_alpaca_portfolio_fetcher(live_credentials)
+def test_live_portfolio_snapshot_validates(
+    live_credentials: AlpacaCredentials, live_config: Config
+) -> None:
+    fetch_portfolio: PortfolioFetcher = make_alpaca_portfolio_fetcher(live_credentials, live_config)
 
     snapshot: PortfolioSnapshot = fetch_portfolio("2026-01-01_00-00-00")
 

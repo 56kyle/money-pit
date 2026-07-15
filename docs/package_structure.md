@@ -91,13 +91,30 @@ src/money_pit/
 │   ├── execution_params.py  # ActionType + judgment → execution_parameters with literal Alpaca MCP field names
 │   └── fills.py             # Alpaca-status → ExecutionPhase mapping, terminal-status classification, execution-outcome derivation (ADR 0017)
 │
-└── mcp/                     # MCP client configuration; runs inside the pipeline process
+├── mcp/                     # MCP client configuration; runs inside the pipeline process
+│   ├── __init__.py
+│   ├── constants.py         # PLACE_STOCK_ORDER_TOOL and related MCP tool-name constants (ADR 0008); imported by compute/tool_map.py and mcp/manifest.py
+│   ├── clients.py           # AlpacaWriteDeps + make_alpaca_write_deps: connect-per-call OrderPlacer over a trading-scoped stdio alpaca-mcp-server (place_stock_order) + list_write_tools introspection (ADR 0008). AlpacaReadDeps/ResearchDeps dropped — no consumer; reads use alpaca_portfolio.py, edgar_search uses edgartools
+│   ├── order_schema.py       # Shared loader: ALPACA_ORDER_SCHEMA_PATH + load_order_schema (fail-closed AlpacaOrderSchemaMissingError/MalformedError/NotPinnedError); single literal source for compute/execution_params.py and pipeline/validator.py
+│   ├── manifest.py          # pinned_manifest(): static {<place_stock_order>: <pinned schema>} for A5 (ADR 0004); live_manifest(credentials): opt-in live introspection of the connected server (ADR 0008), fail-closed ManifestUnavailableError
+│   └── alpaca_order_schema.json  # Pinned place_stock_order inputSchema snapshot (pinned from the live server via `money-pit pin-order-schema`, sentinel-free — ADR 0014); read via mcp/order_schema.py by compute/execution_params.py and pipeline/validator.py → tool manifest consumed by A5
+│
+├── ingestion/              # Video multimodal ingestion producer (orchestration-owned — ADR 0022); heavy libs lazy-imported, every stage an injected seam
+│   ├── __init__.py
+│   ├── artifacts.py        # Frozen intermediates: CaptionSegment, TranscriptResult, Keyframe, OnScreenExtraction, VideoArtifacts
+│   ├── captions.py         # WebVTT parse + uploader→auto→whisper caption cascade (ADR 0019)
+│   ├── transcribe.py       # faster-whisper transcription seam (ADR 0019)
+│   ├── keyframes.py        # PySceneDetect scene-change keyframe selection (injected detector/extractor)
+│   ├── on_screen.py        # Claude multimodal VLM on-screen text/attribution extractor (ADR 0020)
+│   ├── fetch.py            # yt-dlp fetch seam → VideoArtifacts + SourceRef
+│   ├── fuse.py             # Assemble transcript + on-screen text → VideoPayload
+│   └── pipeline.py         # ingest_video: wires stages with per-stage artifact caching (ADR 0021); IngestionSeams/production_seams
+│
+└── scheduler/              # Autonomous trigger (ADR 0023): RSS new-episode detection + idempotent run-latest
     ├── __init__.py
-    ├── constants.py         # PLACE_STOCK_ORDER_TOOL and related MCP tool-name constants (ADR 0008); imported by compute/tool_map.py and mcp/manifest.py
-    ├── clients.py           # AlpacaWriteDeps + make_alpaca_write_deps: connect-per-call OrderPlacer over a trading-scoped stdio alpaca-mcp-server (place_stock_order) + list_write_tools introspection (ADR 0008). AlpacaReadDeps/ResearchDeps dropped — no consumer; reads use alpaca_portfolio.py, edgar_search uses edgartools
-    ├── order_schema.py       # Shared loader: ALPACA_ORDER_SCHEMA_PATH + load_order_schema (fail-closed AlpacaOrderSchemaMissingError/MalformedError/NotPinnedError); single literal source for compute/execution_params.py and pipeline/validator.py
-    ├── manifest.py          # pinned_manifest(): static {<place_stock_order>: <pinned schema>} for A5 (ADR 0004); live_manifest(credentials): opt-in live introspection of the connected server (ADR 0008), fail-closed ManifestUnavailableError
-    └── alpaca_order_schema.json  # Pinned place_stock_order inputSchema snapshot (pinned from the live server via `money-pit pin-order-schema`, sentinel-free — ADR 0014); read via mcp/order_schema.py by compute/execution_params.py and pipeline/validator.py → tool manifest consumed by A5
+    ├── channel.py          # YouTube RSS feed poll → newest video id (injected http_get; official feed, no scraping)
+    ├── ledger.py           # Persistent processed-episodes ledger (user_state_folder), dedup by yt:<id>
+    └── runner.py           # run_latest_once: detect → skip-if-processed → run pipeline if new → record on success
 
 src/email_server/            # Deployable MCP server (separate process; single-sources SMTP defaults + EmailSendError from money_pit per ADR 0010)
 ├── __init__.py

@@ -541,8 +541,10 @@ which field, which tool), never as a generic failure.
 
 ## 13. Technology stack
 
-- **Orchestration:** LangGraph (graph topology, conditional edges, node state, scheduled trigger);
-  APScheduler/cron for scheduling; tenacity for retry/backoff.
+- **Orchestration:** LangGraph (graph topology, conditional edges, node state); tenacity for
+  retry/backoff. The scheduled trigger is an **idempotent `money-pit run-latest` command driven by the OS
+  scheduler** (Windows Task Scheduler / cron) — not an in-process APScheduler daemon (→ see ADR 0023); it
+  polls the channel's YouTube RSS feed for a new episode and runs the pipeline when one appears.
 - **Agents:** Pydantic AI for the LLM cores — the source-adapter classifiers, A2, A3, A4, and the aggregator's corroboration pass (typed outputs, MCP toolsets as agent tools,
   dependency injection of working-dir inputs). Confirm exact Pydantic AI parameter names against the
   pinned version.
@@ -562,12 +564,14 @@ which field, which tool), never as a generic failure.
 
 ## 14. Configuration & environment
 
-Externalized configuration (not in prompts or code constants): the YouTube channel ID; the owner
+Externalized configuration (not in prompts or code constants): the YouTube channel ID
+(`youtube_channel_id` / `MONEY_PIT__YOUTUBE_CHANNEL_ID`, the `UC…` id the RSS poll uses — ADR 0023); the owner
 recipient `56kyleoliver@gmail.com`; Alpaca credentials plus the two `ALPACA_TOOLSETS` values that scope
 the read instance (market-data) and the write instance (trading) — the scoping that enforces the
 read/write safety boundary; the **required** `alpaca_paper` flag (`MONEY_PIT__ALPACA_PAPER`) that
 explicitly routes paper vs. live capital (ADR 0013) — no default, so an unset value fails closed rather
-than silently choosing an account; data-source API keys; the schedule; the sub-agent timeout window (owned by
+than silently choosing an account; data-source API keys; the run cadence (owned by the OS scheduler that
+invokes `run-latest` — Task Scheduler / cron — not an app config field, ADR 0023); the sub-agent timeout window (owned by
 the LangGraph node definition, not by any agent); the execution fill-poll cadence and timeout
 (`execution_fill_poll_interval_seconds` / `execution_fill_poll_timeout_seconds` — the order-status poll
 loop, ADR 0017); the **regime decision table** and
@@ -620,9 +624,11 @@ working-directory root (`data/daily_show/`) is the only persistent on-disk state
     The fresh snapshot already handles every *filled* leg, so recovery only closes the open-order gap;
     there is **no auto-unwind** (deferred with §15 #11 / the atomic-group work), and the
     `COMPENSATION_FAILED` reconciliation branch stays a fail-closed stub (→ see ADR 0018).
-13. **Run trigger / cadence (orchestration).** With multiple sources, what starts a run — still the
-    video ("new episode" anchors cadence, other sources gathered at run time), a fixed schedule
-    (pull whatever each source has), or any-source arrival? Lean: video stays the anchor at first.
+13. **Run trigger / cadence (orchestration) — RESOLVED.** Video-anchored new-episode detection: the
+    `money-pit run-latest` command reads the newest episode from the channel's YouTube RSS feed, dedupes
+    against a persistent processed-episodes ledger (`user_state_folder()`), and runs the pipeline if it is
+    new — idempotent and driven by the OS scheduler (Windows Task Scheduler / cron), not an in-process
+    APScheduler daemon (→ see ADR 0023). Fixed-schedule / any-source-arrival deferred (any-source is N>1).
 14. **Corroboration mechanism (design).** The similarity threshold for clustering claims across
     sources, and how the thin LLM confirm/label step is prompted — the only new judgment surface the
     genericization adds. Tune to avoid both false merges and missed corroborations.

@@ -362,13 +362,27 @@ end-to-end. Deferred within Phase 9 scope: word-level narration↔frame *fusion*
 timestamps (captions carry only segment timing; on-screen extraction keys off keyframe locators
 independently, so this is a refinement, not a blocker).
 
-## Phase 10: Scheduler / autonomous trigger
+## Phase 10: Scheduler / autonomous trigger — COMPLETE (ADR 0023)
 
-`run_pipeline` is invoked manually today; there is no scheduled trigger (`architecture.md` §13
-APScheduler/cron, §16 build-order step 6). Needed for unattended daily operation. The open design
-decision is **run trigger / cadence** (`architecture.md` §15 #13): new-episode detection (video anchors
-cadence) vs. a fixed schedule vs. any-source arrival — lean is video-anchored at first. Resolve §15 #13,
-then wire the scheduler around `run_pipeline` (which already owns slug/working-dir/recovery entry).
+The autonomous trigger exists as a new `src/money_pit/scheduler/` subpackage and a `money-pit run-latest`
+CLI command, resolving `architecture.md` §15 #13 (video-anchored, ADR 0023):
+
+- **Detection** (`scheduler/channel.py`): the newest episode is read from the channel's official YouTube
+  **RSS feed** (`feeds/videos.xml?channel_id=…`, stdlib XML parse) — stable, no scraping; the download
+  still uses the Phase 9 yt-dlp fetcher. Injected `http_get` seam; pure parser tested against a committed feed.
+- **Dedup** (`scheduler/ledger.py`): a persistent processed-episodes ledger under the now-activated
+  `user_state_folder()`, keyed by `yt:<id>`, so an episode is never re-run.
+- **Idempotent core** (`scheduler/runner.py`): `run_latest_once` detects → skips if already processed →
+  runs the pipeline if new → records **only on a completed run** (a failed run retries next poll). Fails
+  closed with `SchedulerConfigError` when `youtube_channel_id` is unset.
+- **CLI** (`__main__.py`): `money-pit run-latest` wires the production RSS reader + ledger into
+  `run_latest_once` (sharing the `run <url>` path via the extracted `_run_url`), exits non-zero on failure.
+
+**Deployment (run on a schedule):** set `MONEY_PIT__YOUTUBE_CHANNEL_ID` (the `UC…` id) and invoke
+`money-pit run-latest` from **Windows Task Scheduler** (a task on an interval / at a fixed daily time) or
+**cron** (`*/30 * * * * money-pit run-latest`). The command is idempotent — safe to run as often as you
+like; it no-ops until a genuinely new episode appears. No long-running daemon; the OS scheduler owns cadence.
+The off-hours case needs no market-clock — the pipeline queues orders and recovery reconciles.
 
 ## Deferred Frontier (fail-closed stubs — gated on a real trigger)
 
@@ -415,7 +429,7 @@ Build **only** when the gating input exists; each fails closed today and must no
 | recovery gate ✓     | Recovery is the graph entry node (ADR 0018); a still-open prior order halts the run to END before any snapshot/planning, an abnormal-but-settled prior run emits a notice and proceeds, else silent proceed; `recovery.json` written every run |
 | full pipeline       | End-to-end with real agents on paper-trading account; `determination.json` written; email or execution triggered correctly |
 | video ingestion ✓ (code) | `ingestion/` subpackage turns a YouTube URL into a real `VideoPayload` → `SignalSet` (yt-dlp + captions/faster-whisper + PySceneDetect + Claude VLM); all stages green offline (ADRs 0019–0022). Live end-to-end validation (`-m live_video`, needs the `video` extra + GPU) pending an owner run |
-| scheduler           | An unattended scheduled trigger runs the pipeline on cadence without manual invocation (Phase 10, §15 #13 resolved)         |
+| scheduler ✓         | `money-pit run-latest` (RSS new-episode detection + processed-episodes ledger, idempotent) drives the pipeline unattended via Windows Task Scheduler / cron (Phase 10, ADR 0023 — §15 #13 resolved)         |
 
 ---
 

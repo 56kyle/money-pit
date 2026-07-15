@@ -663,7 +663,8 @@ Three reconciliations Agent 4 forces:
    portfolio factor profile _from the tags on each position_. So the snapshot should ship the tags;
    the aggregate `factor_exposure` profile (which Agent 2 references) is then a **derived** value —
    compute it deterministically (code) and, if Agent 2 needs it, attach it as a derived field rather
-   than a second source of truth.
+   than a second source of truth. The per-position tags are themselves sourced deterministically — a
+   yfinance-metric threshold classifier, `compute/factor_tags.py` (ADR 0024) — not v0-empty.
 3. **One factor set, five factors.** Agent 4 uses `growth | value | momentum | quality | low_vol`.
    Agent 2 and my earlier draft used `value | momentum | quality | volatility` (four, no growth,
    `volatility` not `low_vol`). Pin the five-factor set from §0 everywhere; `factor_tags` values and
@@ -722,10 +723,11 @@ structural-enforcement principle. This table is the quick reference.)
 | **Agent 5 checks 1,2,4** (existence + literal schema field match) | Agent 5 (LLM)                     | **code (`jsonschema`)**        | MCP `inputSchema` is JSON Schema → `jsonschema.validate()`; LLM is the _wrong_ tool for "never map `share_count`→`quantity`"                                                    |
 | **Agent 6 determination**                                         | Agent 6 (LLM)                     | **determination node + finalizer** | pure `recompute_determination`: `all(MATCHED) ? PROCEED : HALT`; no model call; finalizer writes `determination.json/.md` once (ADR 0006)                                    |
 | **Agent 4 EV**                                                    | Agent 4 (LLM)                     | **code post-process**          | `EV = Σ(Pᵢ/100 × Rᵢ)`; then apply the ≥ +3.0% gate                                                                                                                              |
-| **Agent 4 constraint extraction**                                 | Agent 4 (LLM)                     | **code**                       | sector headroom to 25% in $ and %, cash %, overlap reductions — all arithmetic from the snapshot                                                                                |
+| **Agent 4 constraint extraction**                                 | Agent 4 (LLM)                     | **code**                       | sector headroom to 25% in $ and %, cash %, overlap reductions — all arithmetic from the snapshot. Overlap reduction now consumes `correlated_overlaps` per candidate (ADR 0025); flat per-sector headroom is a known follow-up |
 | **Agent 4 position sizing**                                       | Agent 4 (LLM)                     | **code post-process**          | fractional Kelly: `w = kelly_fraction × h_unverified × h_uncertain × f_kelly`; clamp to `max_position_weight`; then to 25%/cash/overlap headroom. See `design_decisions.md §2`. |
 | **Agent 4 `execution_parameters`**                                | Agent 4 (LLM)                     | **code post-process**          | emit manifest-correct keys from `ticker`/`action_type`/`dollar_amount` — fixes §5b/§5c in one place                                                                             |
-| factor profile aggregation                                        | (new)                             | **code**                       | sum/normalize per-position `factor_tags` into the five-factor profile                                                                                                           |
+| factor tag classification                                         | —                                 | **code**                       | per-position `factor_tags` from yfinance metrics via a threshold decision table, `compute/factor_tags.py` (ADR 0024)                                                            |
+| factor profile aggregation                                        | —                                 | **code**                       | sum/normalize per-position `factor_tags` into the five-factor profile (`compute/factor_profile.py`)                                                                             |
 
 What stays LLM: source-adapter classification, the aggregator's thin corroboration label, Agent 2 question authoring, Agent 3 retrieval +
 sufficiency judgment, **Agent 4's _judgments_ only** (which claims survive each gate, scenario

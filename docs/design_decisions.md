@@ -237,7 +237,8 @@ named field in `Config` with a documented default; everything fixed is either th
 | `max_position_weight`                     | hard per-name cap                            | risk policy |
 | `haircut_unverified`, `haircut_uncertain` | multiplicative size penalties                | risk policy |
 | `ev_gate` (= 3%)                          | entry go/no-go floor                         | risk policy |
-| `sector_cap` (= 25%), cash, overlap       | concentration limits                         | risk policy |
+| `sector_cap` (= 25%), cash, overlap       | concentration limits (overlap is reduced per candidate by held correlated exposure — ADR 0025) | risk policy |
+| `threshold_factor_*` (pe, pb, growth, momentum, quality_roe, quality_margin, low_vol_beta) | factor-tag classification cutoffs (ADR 0024) | tuning      |
 | `execution_fill_poll_interval_seconds`, `execution_fill_poll_timeout_seconds` | order-status fill polling cadence and timeout (ADR 0017) | tuning |
 
 Fixed, by design: the regime truth table (§1b) and indicator orientations (§1a) — spec, not magic.

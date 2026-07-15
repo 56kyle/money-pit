@@ -14,7 +14,7 @@ src/money_pit/
 ├── config.py                # (existing) pydantic-settings Config + load_config
 ├── constants.py             # (existing) APP_NAME, paths, slug datetime format
 ├── contracts.py             # Cross-layer DI TypeAliases (cycle-free leaf, imports only schemas): ToolManifest, ThesisAgent, PortfolioFetcher, OrderPlacer, EmailSender, CorroborationAgent, ClaimQuestionsAgent, AnswerSynthesisAgent
-├── alpaca_portfolio.py     # alpaca-py-backed PortfolioFetcher (reads snapshot via TradingClient, not MCP — ADR 0008); yfinance best-effort sector, v0-deferred factor_tags/overlaps; NonEquityPositionError
+├── alpaca_portfolio.py     # alpaca-py-backed PortfolioFetcher (reads snapshot via TradingClient, not MCP — ADR 0008); yfinance best-effort sector + factor_tags (ADR 0024) + held-ETF correlated_overlaps (ADR 0025), all fail-soft; NonEquityPositionError
 ├── alpaca_orders.py        # alpaca-py-backed FillObserver: observes an order's real fill by client_order_id (reads via SDK — ADR 0008/0017); typed OrderNotYetVisibleError/FillObservationError
 ├── email_sender.py         # Gmail smtplib EmailSender for the pipeline (direct, not over MCP — ADR 0009); typed EmailSendError
 ├── prompt_loader.py        # Loads the packaged agent prompts from prompts/ (ADR 0012)
@@ -82,7 +82,9 @@ src/money_pit/
 │   ├── __init__.py
 │   ├── signal_flags.py      # requires_validation, has_actionable_content, ticker normalization, signal counts
 │   ├── aggregation.py       # Claim union, run-global re-ID, tier max across corroborations
+│   ├── factor_tags.py       # Deterministic per-position factor classification: yfinance metrics → FactorTag list via threshold decision table (ADR 0024)
 │   ├── factor_profile.py    # Factor-profile aggregation from per-position factor_tags
+│   ├── overlaps.py          # Held-ETF single-name overlap detection: funds_data top-holdings → CorrelatedOverlap (ADR 0025)
 │   ├── regime.py            # Regime decision table: five indicators (yield curve, credit spreads, PMI, earnings revisions, inflation) → RegimeTag (UNCERTAIN on missing/conflict)
 │   ├── sizing.py            # EV = ΣP×R, EV gate, constraint extraction, position sizing, clamps
 │   ├── routing.py           # Category → tool routing table (consumed by A2 templating and A3 fetch)

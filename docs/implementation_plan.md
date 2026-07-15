@@ -409,9 +409,13 @@ Build **only** when the gating input exists; each fails closed today and must no
 - **Live schema-drift guard** — a `@pytest.mark.live` test diffing the pinned `mcp/alpaca_order_schema.json`
   against the live `place_stock_order.inputSchema`; nothing currently catches Alpaca schema drift until a
   real order rejects (flagged in the Watch Items above).
-- **`factor_tags` / `correlated_overlaps`** — v0-deferred to empty in `alpaca_portfolio.py`, so A4's
-  Step-3 overlap/factor constraint logic runs on empty inputs (degraded, not broken). Populate them (VLM/
-  reference-data sourcing) to make the overlap/factor headroom clamps real.
+- **Candidate-side overlap + per-sector headroom** — the deterministic sector headroom is a flat
+  `sector_cap × TAV` per candidate (`analysis.py`), so two new same-sector positions can each take 25% →
+  50% in one sector, breaching the 25% sector cap; and correlated-overlap detection covers only *held↔held*
+  duplication (ADR 0025), so a brand-new buy that would *create* an overlap with a holding isn't caught.
+  Both need each candidate's sector/constituents resolved at analysis time (the candidate is a new name,
+  absent from the snapshot). Recommended next task. *(`factor_tags` / `correlated_overlaps` sourcing and the
+  overlap-reduction clamp are now done — ADR 0024, ADR 0025.)*
 - **Stale markers cleanup** — comments in `agents/research_tools.py` and `adapters/video_llm.py` still say
   "wired in Phase 7 / converge in Phase 7"; cosmetic, retire alongside the relevant phase.
 

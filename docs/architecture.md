@@ -161,8 +161,10 @@ only in the source-adapter classifiers, the aggregator's thin corroboration pass
   silently. Writes a `recovery.json` audit artifact every run. **No auto-unwind** — a stray order is
   handed to a human, never auto-cancelled (that policy is deferred with the atomic-group work) (→ see ADR 0018).
 - **Snapshot builder node** — calls the Alpaca **read** tools and writes `portfolio_snapshot.json`
-  (`PortfolioSnapshot`). Computes the aggregate factor profile from per-position `factor_tags`
-  deterministically. This snapshot is the single source of truth for portfolio state for the run.
+  (`PortfolioSnapshot`). Derives each position's sector and `factor_tags` from yfinance metrics
+  deterministically (the threshold classifier, ADR 0024) and detects held-ETF `correlated_overlaps` from
+  `funds_data` (ADR 0025); the aggregate factor profile is a derived convenience over the tags. This
+  snapshot is the single source of truth for portfolio state for the run.
 - **Per-adapter ingestion** — each source adapter does its own fetch/transcription. The video adapter
   runs yt-dlp + Whisper **plus** the multimodal layer (scene-change keyframes, OCR/VLM, timestamp-fused
   transcript) so on-screen sources and spatial references survive into the claims; lighter adapters
@@ -514,6 +516,8 @@ Defense in depth, ordered from structural to procedural:
    data is never treated as favorable and cannot be filled from model knowledge.
 5. **Deterministic sizing with hard limits.** 25% sector cap, available-cash ceiling, and
    correlated-overlap reductions are arithmetic clamps in the post-processor, not model discretion.
+   The overlap reduction consumes `correlated_overlaps` per candidate (ADR 0025); a true per-sector
+   headroom (vs. the current flat `sector_cap × TAV`) is a tracked follow-up.
 6. **Conservative bias.** Unverified signals and `UNCERTAIN` regimes cap conviction and forbid the
    largest size multiplier.
 7. **Execution consistency (transactional, §6.8).** Idempotent submission prevents double-execution;

@@ -1,11 +1,14 @@
 """Tests for money_pit.pipeline.analysis — the A4 post-processor node over the §6.5 container.
 
-Pins wave S3 / ADR 0005:
+Pins wave S3 / ADR 0005 plus the reworked deterministic sizing loop:
 - verified = (disposition == SUPPORTED) threads into sizing (supported sizes strictly larger);
 - regime is classified only from the deterministic macro indicators, never the container's macro_read;
 - container.halt drives ANALYSIS_HALT with an empty action_steps.json;
 - empty theses with no halt drives NO_ACTION;
-- analysis.md is rendered deterministically from the container, carrying every dropped claim.
+- analysis.md is rendered deterministically from the container, carrying every dropped claim;
+- exposure-increasing theses size in priority order against running per-sector, cash, and
+  candidate-vs-holdings overlap tallies; exposure-reducing theses are never clamped and never accrue;
+- make_analysis_node resolves only the distinct BUY/ADD instruments into candidate_facts.
 """
 
 from collections.abc import Callable
@@ -17,10 +20,14 @@ from pytest import FixtureRequest
 
 from money_pit.compute.regime import classify_regime
 from money_pit.config import Config
-from money_pit.pipeline.analysis import _compute_headrooms
+from money_pit.pipeline.analysis import _conviction_rank
 from money_pit.pipeline.analysis import _extract_macro_indicators
+from money_pit.pipeline.analysis import _held_correlated_value
+from money_pit.pipeline.analysis import _in_run_correlated_dollars
 from money_pit.pipeline.analysis import _materialize_action_steps
-from money_pit.pipeline.analysis import _overlap_headroom
+from money_pit.pipeline.analysis import _priority_ordered
+from money_pit.pipeline.analysis import _sector_key
+from money_pit.pipeline.analysis import _seed_sector_exposure
 from money_pit.pipeline.analysis import make_analysis_node
 from money_pit.schemas.action_steps import ActionStep
 from money_pit.schemas.analysis_draft import AnalysisHalt
@@ -39,7 +46,7 @@ from money_pit.schemas.enums import QuestionCategory
 from money_pit.schemas.enums import RegimeTag
 from money_pit.schemas.enums import Step1Disposition
 from money_pit.schemas.enums import TerminalState
-from money_pit.schemas.portfolio import CorrelatedOverlap
+from money_pit.schemas.instrument import InstrumentFacts
 from money_pit.schemas.portfolio import Position
 from money_pit.schemas.portfolio import PortfolioSnapshot
 from money_pit.schemas.questions import INDICATOR_PREFIX
@@ -68,21 +75,50 @@ def _scenario_table() -> ScenarioTable:
     )
 
 
-def _thesis(instrument: str, disposition: Step1Disposition, *, claim_id: str = "c-1") -> ThesisJudgment:
+def _thesis(
+    instrument: str,
+    disposition: Step1Disposition,
+    *,
+    claim_id: str = "c-1",
+    action_type: ActionType = ActionType.BUY,
+    conviction: ConvictionLevel = ConvictionLevel.MEDIUM,
+    expected_value: float = 0.08,
+) -> ThesisJudgment:
     return ThesisJudgment(
         claim_id=claim_id,
         instrument=instrument,
-        action_type=ActionType.BUY,
+        action_type=action_type,
         description=f"Establish a starter position in {instrument}.",
         group_id=None,
         one_sentence_thesis="The growth thesis still holds on current data.",
-        expected_value=0.08,
-        conviction=ConvictionLevel.MEDIUM,
+        expected_value=expected_value,
+        conviction=conviction,
         scenario_table=_scenario_table(),
         invalidation_conditions=[],
         sizing_rationale="Sized to conviction and account risk budget.",
         disposition=disposition,
     )
+
+
+def _facts(sector: str, *, is_etf: bool = False, holdings: list[str] | None = None) -> InstrumentFacts:
+    return InstrumentFacts(sector=sector, is_etf=is_etf, holdings=holdings or [])
+
+
+class _ScriptedResolver:
+    """A ResolveInstrumentFacts fake that records requested tickers and returns canned facts."""
+
+    def __init__(self, facts_by_ticker: dict[str, InstrumentFacts], default: InstrumentFacts) -> None:
+        self._facts_by_ticker = facts_by_ticker
+        self._default = default
+        self.requested: list[str] = []
+
+    def __call__(self, ticker: str) -> InstrumentFacts:
+        self.requested.append(ticker)
+        return self._facts_by_ticker.get(ticker, self._default)
+
+
+def _default_resolver() -> _ScriptedResolver:
+    return _ScriptedResolver({}, _facts("generic"))
 
 
 def _macro_answer(indicator: str, value: float) -> Answer:
@@ -173,20 +209,16 @@ def _config(**overrides: object) -> Config:
     return Config(**{**defaults, **overrides})
 
 
-def _position(ticker: str, current_value: float) -> Position:
+def _position(ticker: str, current_value: float, *, sector: str = "technology") -> Position:
     return Position(
         ticker=ticker,
         quantity=1.0,
         cost_basis=current_value,
         current_value=current_value,
         unrealized_pl=0.0,
-        sector="technology",
+        sector=sector,
         factor_tags=[],
     )
-
-
-def _overlap(tickers: list[str]) -> CorrelatedOverlap:
-    return CorrelatedOverlap(tickers=tickers, note="Correlated exposure.")
 
 
 def _portfolio(
@@ -194,7 +226,7 @@ def _portfolio(
     total_account_value: float,
     available_cash: float,
     positions: list[Position] | None = None,
-    correlated_overlaps: list[CorrelatedOverlap] | None = None,
+    etf_holdings: dict[str, list[str]] | None = None,
 ) -> PortfolioSnapshot:
     return PortfolioSnapshot(
         slug=_SLUG,
@@ -203,21 +235,25 @@ def _portfolio(
         available_cash=available_cash,
         positions=positions or [],
         sector_weights={},
-        correlated_overlaps=correlated_overlaps or [],
+        correlated_overlaps=[],
+        etf_holdings=etf_holdings or {},
     )
+
+
+def _materialize(
+    container: AnalysisJudgment,
+    config: Config,
+    portfolio: PortfolioSnapshot,
+    candidate_facts: dict[str, InstrumentFacts],
+    *,
+    regime_tag: RegimeTag = RegimeTag.GROWTH_ACCELERATING,
+) -> list[ActionStep]:
+    return _materialize_action_steps(container, config, portfolio, regime_tag, _SLUG, candidate_facts)
 
 
 @pytest.fixture
 def config() -> Config:
-    return Config(
-        alpaca_service="stub",
-        alpaca_username="stub",
-        alpaca_paper=True,
-        max_position_weight=1.0,
-        sector_cap=1.0,
-        overlap_limit=1.0,
-        cash_min=0.0,
-    )
+    return _config()
 
 
 @pytest.fixture
@@ -226,7 +262,18 @@ def analysis_working_dir__macro_answers(request: FixtureRequest) -> list[Answer]
 
 
 @pytest.fixture
-def analysis_working_dir(tmp_path: Path, analysis_working_dir__macro_answers: list[Answer]) -> Path:
+def analysis_working_dir__portfolio(request: FixtureRequest) -> PortfolioSnapshot:
+    return getattr(
+        request, "param", _portfolio(total_account_value=100000.0, available_cash=100000.0)
+    )
+
+
+@pytest.fixture
+def analysis_working_dir(
+    tmp_path: Path,
+    analysis_working_dir__macro_answers: list[Answer],
+    analysis_working_dir__portfolio: PortfolioSnapshot,
+) -> Path:
     aggregated_signals = AggregatedSignals(
         slug=_SLUG,
         sources=[],
@@ -235,28 +282,24 @@ def analysis_working_dir(tmp_path: Path, analysis_working_dir__macro_answers: li
         conflicts=[],
         has_actionable_content=True,
     )
-    portfolio_snapshot = PortfolioSnapshot(
-        slug=_SLUG,
-        as_of="2026-07-02T00:00:00Z",
-        total_account_value=100000.0,
-        available_cash=100000.0,
-        positions=[],
-        sector_weights={},
-        correlated_overlaps=[],
-    )
     initial_answers = InitialAnswers(slug=_SLUG, sources=[], answers=analysis_working_dir__macro_answers)
     _ = (tmp_path / "aggregated_signals.json").write_text(
         aggregated_signals.model_dump_json(indent=2), encoding="utf-8"
     )
     _ = (tmp_path / "portfolio_snapshot.json").write_text(
-        portfolio_snapshot.model_dump_json(indent=2), encoding="utf-8"
+        analysis_working_dir__portfolio.model_dump_json(indent=2), encoding="utf-8"
     )
     _ = (tmp_path / "initial_answers.json").write_text(initial_answers.model_dump_json(indent=2), encoding="utf-8")
     return tmp_path
 
 
-def _run_node(config: Config, container: AnalysisJudgment, working_dir: Path) -> dict[str, object]:
-    node = make_analysis_node(config, _stub_agent(container))
+def _run_node(
+    config: Config,
+    container: AnalysisJudgment,
+    working_dir: Path,
+    resolver: _ScriptedResolver | None = None,
+) -> dict[str, object]:
+    node = make_analysis_node(config, _stub_agent(container), resolver or _default_resolver())
     return node({"slug": _SLUG, "working_dir": str(working_dir)})
 
 
@@ -308,6 +351,139 @@ def test__extract_macro_indicators_with_non_numeric_value_leaves_none(
 def test__extract_macro_indicators_with_absent_indicator_leaves_none(indicator: str) -> None:
     result = _extract_macro_indicators([])
     assert getattr(result, indicator) is None
+
+
+@pytest.mark.parametrize(
+    ("conviction", "expected_rank"),
+    [
+        (ConvictionLevel.HIGH, 0),
+        (ConvictionLevel.MEDIUM, 1),
+        (ConvictionLevel.LOW, 2),
+    ],
+)
+def test__conviction_rank_with_each_level_returns_expected_rank(
+    conviction: ConvictionLevel, expected_rank: int
+) -> None:
+    assert _conviction_rank(conviction) == expected_rank
+
+
+def test__priority_ordered_with_mixed_convictions_sorts_high_before_medium_before_low() -> None:
+    theses = [
+        _thesis("LOW", Step1Disposition.SUPPORTED, claim_id="c-low", conviction=ConvictionLevel.LOW),
+        _thesis("HIGH", Step1Disposition.SUPPORTED, claim_id="c-high", conviction=ConvictionLevel.HIGH),
+        _thesis("MED", Step1Disposition.SUPPORTED, claim_id="c-med", conviction=ConvictionLevel.MEDIUM),
+    ]
+    ordered = _priority_ordered(theses)
+    assert [thesis.instrument for _index, thesis in ordered] == ["HIGH", "MED", "LOW"]
+
+
+def test__priority_ordered_with_equal_conviction_sorts_higher_expected_value_first() -> None:
+    theses = [
+        _thesis("LOWEV", Step1Disposition.SUPPORTED, claim_id="c-1", expected_value=0.05),
+        _thesis("HIGHEV", Step1Disposition.SUPPORTED, claim_id="c-2", expected_value=0.10),
+    ]
+    ordered = _priority_ordered(theses)
+    assert [thesis.instrument for _index, thesis in ordered] == ["HIGHEV", "LOWEV"]
+
+
+def test__priority_ordered_with_equal_conviction_and_ev_is_stable_by_original_index() -> None:
+    theses = [
+        _thesis("FIRST", Step1Disposition.SUPPORTED, claim_id="c-1"),
+        _thesis("SECOND", Step1Disposition.SUPPORTED, claim_id="c-2"),
+    ]
+    ordered = _priority_ordered(theses)
+    assert [index for index, _thesis in ordered] == [0, 1]
+
+
+@pytest.mark.parametrize(
+    ("sector", "expected"),
+    [("Technology", "technology"), ("ENERGY", "energy"), ("energy", "energy")],
+)
+def test__sector_key_with_mixed_casing_casefolds(sector: str, expected: str) -> None:
+    assert _sector_key(sector) == expected
+
+
+def test__seed_sector_exposure_with_same_sector_different_casing_folds_and_sums() -> None:
+    positions = [
+        _position("AAA", 1000.0, sector="Technology"),
+        _position("BBB", 2000.0, sector="technology"),
+    ]
+    assert _seed_sector_exposure(positions) == {"technology": pytest.approx(3000.0)}
+
+
+def test__held_correlated_value_with_candidate_etf_holding_held_name_counts_it() -> None:
+    facts = _facts("semis", is_etf=True, holdings=["NVDA"])
+    snapshot = _portfolio(
+        total_account_value=100000.0,
+        available_cash=100000.0,
+        positions=[_position("NVDA", 10000.0)],
+    )
+    assert _held_correlated_value("SMH", facts, snapshot) == pytest.approx(10000.0)
+
+
+def test__held_correlated_value_with_candidate_held_by_held_etf_counts_it() -> None:
+    facts = _facts("semis")
+    snapshot = _portfolio(
+        total_account_value=100000.0,
+        available_cash=100000.0,
+        positions=[_position("SMH", 5000.0)],
+        etf_holdings={"SMH": ["NVDA"]},
+    )
+    assert _held_correlated_value("NVDA", facts, snapshot) == pytest.approx(5000.0)
+
+
+def test__held_correlated_value_excludes_the_instruments_own_held_value() -> None:
+    facts = _facts("semis")
+    snapshot = _portfolio(
+        total_account_value=100000.0,
+        available_cash=100000.0,
+        positions=[_position("NVDA", 10000.0)],
+    )
+    assert _held_correlated_value("NVDA", facts, snapshot) == 0.0
+
+
+def test__held_correlated_value_is_case_insensitive() -> None:
+    facts = _facts("semis", is_etf=True, holdings=["nvda"])
+    snapshot = _portfolio(
+        total_account_value=100000.0,
+        available_cash=100000.0,
+        positions=[_position("NVDA", 10000.0)],
+    )
+    assert _held_correlated_value("smh", facts, snapshot) == pytest.approx(10000.0)
+
+
+def test__held_correlated_value_with_uncorrelated_candidate_returns_zero() -> None:
+    facts = _facts("semis")
+    snapshot = _portfolio(
+        total_account_value=100000.0,
+        available_cash=100000.0,
+        positions=[_position("NVDA", 10000.0)],
+    )
+    assert _held_correlated_value("AMD", facts, snapshot) == 0.0
+
+
+def test__in_run_correlated_dollars_with_prior_held_by_candidate_counts_it() -> None:
+    facts = _facts("semis", is_etf=True, holdings=["NVDA"])
+    candidate_facts = {"SMH": facts, "NVDA": _facts("semis")}
+    assert _in_run_correlated_dollars("SMH", facts, candidate_facts, {"NVDA": 5000.0}) == pytest.approx(5000.0)
+
+
+def test__in_run_correlated_dollars_with_candidate_held_by_prior_counts_it() -> None:
+    facts = _facts("semis")
+    candidate_facts = {"NVDA": facts, "SMH": _facts("semis", is_etf=True, holdings=["NVDA"])}
+    assert _in_run_correlated_dollars("NVDA", facts, candidate_facts, {"SMH": 7000.0}) == pytest.approx(7000.0)
+
+
+def test__in_run_correlated_dollars_with_unrelated_prior_returns_zero() -> None:
+    facts = _facts("semis")
+    candidate_facts = {"NVDA": facts, "AMD": _facts("semis")}
+    assert _in_run_correlated_dollars("NVDA", facts, candidate_facts, {"AMD": 3000.0}) == 0.0
+
+
+def test__in_run_correlated_dollars_excludes_the_instrument_itself() -> None:
+    facts = _facts("semis")
+    candidate_facts = {"NVDA": facts}
+    assert _in_run_correlated_dollars("NVDA", facts, candidate_facts, {"NVDA": 9000.0}) == 0.0
 
 
 def test_make_analysis_node_with_disposition_sizes_supported_larger(
@@ -397,108 +573,6 @@ def test_make_analysis_node_with_dropped_claim_renders_it_in_analysis_md(
     assert dropped.reason in rendered
 
 
-def test__compute_headrooms_with_known_values_returns_products() -> None:
-    config = _config(sector_cap=0.25, cash_min=0.05)
-    portfolio = _portfolio(total_account_value=100000.0, available_cash=50000.0)
-    result = _compute_headrooms(config, portfolio)
-    assert (result.sector, result.cash) == (25000.0, 45000.0)
-
-
-def test__compute_headrooms_with_cash_min_exceeding_available_cash_floors_at_zero() -> None:
-    config = _config(cash_min=0.5)
-    portfolio = _portfolio(total_account_value=100000.0, available_cash=10000.0)
-    result = _compute_headrooms(config, portfolio)
-    assert result.cash == 0.0
-
-
-def test__overlap_headroom_with_no_overlaps_returns_full_ceiling() -> None:
-    config = _config(overlap_limit=0.30)
-    portfolio = _portfolio(
-        total_account_value=100000.0,
-        available_cash=100000.0,
-        positions=[_position("NVDA", 10000.0)],
-        correlated_overlaps=[],
-    )
-    assert _overlap_headroom(config, portfolio, "SMH") == pytest.approx(30000.0)
-
-
-def test__overlap_headroom_with_no_group_containing_instrument_returns_full_ceiling() -> None:
-    config = _config(overlap_limit=0.30)
-    portfolio = _portfolio(
-        total_account_value=100000.0,
-        available_cash=100000.0,
-        positions=[_position("XLE", 10000.0)],
-        correlated_overlaps=[_overlap(["XLE", "XOM"])],
-    )
-    assert _overlap_headroom(config, portfolio, "SMH") == pytest.approx(30000.0)
-
-
-def test__overlap_headroom_with_instrument_in_group_reduces_by_correlated_exposure() -> None:
-    config = _config(overlap_limit=0.30)
-    portfolio = _portfolio(
-        total_account_value=100000.0,
-        available_cash=100000.0,
-        positions=[_position("NVDA", 10000.0)],
-        correlated_overlaps=[_overlap(["SMH", "NVDA"])],
-    )
-    assert _overlap_headroom(config, portfolio, "SMH") == pytest.approx(20000.0)
-
-
-def test__overlap_headroom_with_instrument_held_excludes_own_value() -> None:
-    config = _config(overlap_limit=0.30)
-    portfolio = _portfolio(
-        total_account_value=100000.0,
-        available_cash=100000.0,
-        positions=[_position("SMH", 5000.0), _position("NVDA", 10000.0)],
-        correlated_overlaps=[_overlap(["SMH", "NVDA"])],
-    )
-    assert _overlap_headroom(config, portfolio, "SMH") == pytest.approx(20000.0)
-
-
-def test__overlap_headroom_with_lowercased_instrument_still_matches() -> None:
-    config = _config(overlap_limit=0.30)
-    portfolio = _portfolio(
-        total_account_value=100000.0,
-        available_cash=100000.0,
-        positions=[_position("NVDA", 10000.0)],
-        correlated_overlaps=[_overlap(["SMH", "NVDA"])],
-    )
-    assert _overlap_headroom(config, portfolio, "smh") == pytest.approx(20000.0)
-
-
-def test__overlap_headroom_with_lowercased_overlap_and_position_tickers_still_matches() -> None:
-    config = _config(overlap_limit=0.30)
-    portfolio = _portfolio(
-        total_account_value=100000.0,
-        available_cash=100000.0,
-        positions=[_position("nvda", 10000.0)],
-        correlated_overlaps=[_overlap(["smh", "nvda"])],
-    )
-    assert _overlap_headroom(config, portfolio, "SMH") == pytest.approx(20000.0)
-
-
-def test__overlap_headroom_with_correlated_exposure_exceeding_ceiling_floors_at_zero() -> None:
-    config = _config(overlap_limit=0.30)
-    portfolio = _portfolio(
-        total_account_value=100000.0,
-        available_cash=100000.0,
-        positions=[_position("NVDA", 40000.0)],
-        correlated_overlaps=[_overlap(["SMH", "NVDA"])],
-    )
-    assert _overlap_headroom(config, portfolio, "SMH") == 0.0
-
-
-def test__overlap_headroom_with_instrument_in_multiple_groups_sums_distinct_names() -> None:
-    config = _config(overlap_limit=0.30)
-    portfolio = _portfolio(
-        total_account_value=100000.0,
-        available_cash=100000.0,
-        positions=[_position("NVDA", 10000.0), _position("AMD", 5000.0)],
-        correlated_overlaps=[_overlap(["SMH", "NVDA"]), _overlap(["SMH", "NVDA", "AMD"])],
-    )
-    assert _overlap_headroom(config, portfolio, "SMH") == pytest.approx(15000.0)
-
-
 def test__materialize_action_steps_with_sized_theses_assigns_ordered_step_ids() -> None:
     config = _config()
     portfolio = _portfolio(total_account_value=100000.0, available_cash=100000.0)
@@ -511,7 +585,8 @@ def test__materialize_action_steps_with_sized_theses_assigns_ordered_step_ids() 
         macro_read=[],
         halt=None,
     )
-    steps = _materialize_action_steps(container, config, portfolio, RegimeTag.GROWTH_ACCELERATING, _SLUG)
+    candidate_facts = {"NVDA": _facts("semis"), "AMD": _facts("software")}
+    steps = _materialize(container, config, portfolio, candidate_facts)
     assert [step.step_id for step in steps] == ["A001", "A002"]
 
 
@@ -527,40 +602,236 @@ def test__materialize_action_steps_with_ev_below_gate_yields_no_action_steps() -
         macro_read=[],
         halt=None,
     )
-    steps = _materialize_action_steps(container, config, portfolio, RegimeTag.GROWTH_ACCELERATING, _SLUG)
+    candidate_facts = {"NVDA": _facts("semis"), "AMD": _facts("software")}
+    steps = _materialize(container, config, portfolio, candidate_facts)
     assert steps == []
 
 
-def test__materialize_action_steps_with_overlapping_candidate_clamps_to_overlap_headroom() -> None:
-    config = _config(overlap_limit=0.30)
-    portfolio = _portfolio(
-        total_account_value=100000.0,
-        available_cash=100000.0,
-        positions=[_position("NVDA", 10000.0)],
-        correlated_overlaps=[_overlap(["SMH", "NVDA"])],
-    )
+def test__materialize_action_steps_with_running_sector_cap_clamps_the_second_same_sector_buy() -> None:
+    config = _config(sector_cap=0.30)
+    portfolio = _portfolio(total_account_value=100000.0, available_cash=100000.0)
     container = AnalysisJudgment(
         theses=[
-            _thesis("SMH", Step1Disposition.SUPPORTED, claim_id="c-overlap"),
-            _thesis("AMD", Step1Disposition.SUPPORTED, claim_id="c-clear"),
+            _thesis("AAA", Step1Disposition.SUPPORTED, claim_id="c-1"),
+            _thesis("BBB", Step1Disposition.SUPPORTED, claim_id="c-2"),
         ],
         dropped_claims=[],
         macro_read=[],
         halt=None,
     )
-    steps = {step.instrument: step for step in _materialize_action_steps(
-        container, config, portfolio, RegimeTag.GROWTH_ACCELERATING, _SLUG
-    )}
-    overlap_notional = steps["SMH"].execution_parameters.notional
-    clear_notional = steps["AMD"].execution_parameters.notional
-    assert overlap_notional is not None
-    assert clear_notional is not None
-    assert float(overlap_notional) == pytest.approx(20000.0)
-    assert float(clear_notional) == pytest.approx(25000.0)
+    candidate_facts = {"AAA": _facts("semis"), "BBB": _facts("semis")}
+    steps = {step.instrument: step for step in _materialize(container, config, portfolio, candidate_facts)}
+    assert float(steps["AAA"].execution_parameters.notional or "nan") == pytest.approx(25000.0)
+    assert float(steps["BBB"].execution_parameters.notional or "nan") == pytest.approx(5000.0)
+
+
+def test__materialize_action_steps_with_different_sectors_are_each_unclamped_by_sector() -> None:
+    config = _config(sector_cap=0.30)
+    portfolio = _portfolio(total_account_value=100000.0, available_cash=100000.0)
+    container = AnalysisJudgment(
+        theses=[
+            _thesis("AAA", Step1Disposition.SUPPORTED, claim_id="c-1"),
+            _thesis("BBB", Step1Disposition.SUPPORTED, claim_id="c-2"),
+        ],
+        dropped_claims=[],
+        macro_read=[],
+        halt=None,
+    )
+    candidate_facts = {"AAA": _facts("semis"), "BBB": _facts("software")}
+    steps = {step.instrument: step for step in _materialize(container, config, portfolio, candidate_facts)}
+    assert float(steps["AAA"].execution_parameters.notional or "nan") == pytest.approx(25000.0)
+    assert float(steps["BBB"].execution_parameters.notional or "nan") == pytest.approx(25000.0)
+
+
+def test__materialize_action_steps_with_running_cash_clamps_the_second_buy() -> None:
+    config = _config()
+    portfolio = _portfolio(total_account_value=100000.0, available_cash=40000.0)
+    container = AnalysisJudgment(
+        theses=[
+            _thesis("AAA", Step1Disposition.SUPPORTED, claim_id="c-1"),
+            _thesis("BBB", Step1Disposition.SUPPORTED, claim_id="c-2"),
+        ],
+        dropped_claims=[],
+        macro_read=[],
+        halt=None,
+    )
+    candidate_facts = {"AAA": _facts("semis"), "BBB": _facts("software")}
+    steps = {step.instrument: step for step in _materialize(container, config, portfolio, candidate_facts)}
+    first = float(steps["AAA"].execution_parameters.notional or "nan")
+    second = float(steps["BBB"].execution_parameters.notional or "nan")
+    assert first == pytest.approx(25000.0)
+    assert second == pytest.approx(15000.0)
+    assert second < first
+
+
+def test__materialize_action_steps_drops_sub_minimum_notional_candidate() -> None:
+    config = _config()
+    portfolio = _portfolio(total_account_value=100000.0, available_cash=0.005)
+    container = AnalysisJudgment(
+        theses=[_thesis("NVDA", Step1Disposition.SUPPORTED, claim_id="c-1")],
+        dropped_claims=[],
+        macro_read=[],
+        halt=None,
+    )
+    candidate_facts = {"NVDA": _facts("semis")}
+    steps = _materialize(container, config, portfolio, candidate_facts)
+    assert steps == []
+
+
+def test__materialize_action_steps_with_candidate_etf_holding_held_name_is_reduced() -> None:
+    config = _config(overlap_limit=0.30)
+    portfolio = _portfolio(
+        total_account_value=100000.0,
+        available_cash=100000.0,
+        positions=[_position("NVDA", 10000.0)],
+    )
+    container = AnalysisJudgment(
+        theses=[_thesis("SMH", Step1Disposition.SUPPORTED, claim_id="c-1")],
+        dropped_claims=[],
+        macro_read=[],
+        halt=None,
+    )
+    candidate_facts = {"SMH": _facts("semis", is_etf=True, holdings=["NVDA"])}
+    steps = _materialize(container, config, portfolio, candidate_facts)
+    assert float(steps[0].execution_parameters.notional or "nan") == pytest.approx(20000.0)
+
+
+def test__materialize_action_steps_with_candidate_held_by_held_etf_is_reduced() -> None:
+    config = _config(overlap_limit=0.30)
+    portfolio = _portfolio(
+        total_account_value=100000.0,
+        available_cash=100000.0,
+        positions=[_position("SMH", 10000.0)],
+        etf_holdings={"SMH": ["NVDA"]},
+    )
+    container = AnalysisJudgment(
+        theses=[_thesis("NVDA", Step1Disposition.SUPPORTED, claim_id="c-1")],
+        dropped_claims=[],
+        macro_read=[],
+        halt=None,
+    )
+    candidate_facts = {"NVDA": _facts("semis")}
+    steps = _materialize(container, config, portfolio, candidate_facts)
+    assert float(steps[0].execution_parameters.notional or "nan") == pytest.approx(20000.0)
+
+
+def test__materialize_action_steps_with_non_overlapping_candidate_is_not_reduced() -> None:
+    config = _config(overlap_limit=0.30)
+    portfolio = _portfolio(
+        total_account_value=100000.0,
+        available_cash=100000.0,
+        positions=[_position("NVDA", 10000.0)],
+    )
+    container = AnalysisJudgment(
+        theses=[_thesis("AMD", Step1Disposition.SUPPORTED, claim_id="c-1")],
+        dropped_claims=[],
+        macro_read=[],
+        halt=None,
+    )
+    candidate_facts = {"AMD": _facts("semis")}
+    steps = _materialize(container, config, portfolio, candidate_facts)
+    assert float(steps[0].execution_parameters.notional or "nan") == pytest.approx(25000.0)
+
+
+def test__materialize_action_steps_with_priority_sizes_high_conviction_before_low_same_sector() -> None:
+    config = _config(sector_cap=0.20)
+    portfolio = _portfolio(total_account_value=100000.0, available_cash=100000.0)
+    container = AnalysisJudgment(
+        theses=[
+            _thesis("LOW", Step1Disposition.SUPPORTED, claim_id="c-low", conviction=ConvictionLevel.LOW),
+            _thesis("HIGH", Step1Disposition.SUPPORTED, claim_id="c-high", conviction=ConvictionLevel.HIGH),
+        ],
+        dropped_claims=[],
+        macro_read=[],
+        halt=None,
+    )
+    candidate_facts = {"LOW": _facts("semis"), "HIGH": _facts("semis")}
+    steps = _materialize(container, config, portfolio, candidate_facts)
+    assert [step.instrument for step in steps] == ["HIGH"]
+    assert steps[0].step_id == "A001"
+    assert float(steps[0].execution_parameters.notional or "nan") == pytest.approx(20000.0)
+
+
+@pytest.mark.parametrize("action_type", [ActionType.SELL, ActionType.TRIM])
+def test__materialize_action_steps_with_exposure_reducing_thesis_is_never_clamped(
+    action_type: ActionType,
+) -> None:
+    config = _config(sector_cap=0.25)
+    portfolio = _portfolio(
+        total_account_value=100000.0,
+        available_cash=100000.0,
+        positions=[_position("HELD", 100000.0, sector="energy")],
+    )
+    container = AnalysisJudgment(
+        theses=[_thesis("XLE", Step1Disposition.SUPPORTED, claim_id="c-1", action_type=action_type)],
+        dropped_claims=[],
+        macro_read=[],
+        halt=None,
+    )
+    steps = _materialize(container, config, portfolio, {})
+    assert float(steps[0].execution_parameters.notional or "nan") == pytest.approx(25000.0)
+
+
+@pytest.mark.parametrize("action_type", [ActionType.SELL, ActionType.TRIM])
+def test__materialize_action_steps_with_exposure_reducing_thesis_does_not_consume_budget(
+    action_type: ActionType,
+) -> None:
+    config = _config(sector_cap=0.25)
+    portfolio = _portfolio(total_account_value=100000.0, available_cash=100000.0)
+    container = AnalysisJudgment(
+        theses=[
+            _thesis("XLE", Step1Disposition.SUPPORTED, claim_id="c-sell", action_type=action_type),
+            _thesis("AMD", Step1Disposition.SUPPORTED, claim_id="c-buy"),
+        ],
+        dropped_claims=[],
+        macro_read=[],
+        halt=None,
+    )
+    steps = {step.instrument: step for step in _materialize(container, config, portfolio, {"AMD": _facts("semis")})}
+    assert float(steps["XLE"].execution_parameters.notional or "nan") == pytest.approx(25000.0)
+    assert float(steps["AMD"].execution_parameters.notional or "nan") == pytest.approx(25000.0)
+
+
+@pytest.mark.parametrize(
+    "analysis_working_dir__macro_answers", [_GROWTH_ACCELERATING_ANSWERS], indirect=True
+)
+@pytest.mark.parametrize(
+    "analysis_working_dir__portfolio",
+    [
+        _portfolio(
+            total_account_value=100000.0,
+            available_cash=100000.0,
+            positions=[_position("NVDA", 10000.0)],
+        )
+    ],
+    indirect=True,
+)
+def test_make_analysis_node_resolves_only_distinct_buy_add_and_reflects_overlap_clamp(
+    analysis_working_dir: Path,
+) -> None:
+    container = AnalysisJudgment(
+        theses=[
+            _thesis("SMH", Step1Disposition.SUPPORTED, claim_id="c-buy"),
+            _thesis("NVDA", Step1Disposition.SUPPORTED, claim_id="c-sell", action_type=ActionType.SELL),
+            _thesis("SMH", Step1Disposition.SUPPORTED, claim_id="c-add", action_type=ActionType.ADD),
+        ],
+        dropped_claims=[],
+        macro_read=[],
+        halt=None,
+    )
+    resolver = _ScriptedResolver({"SMH": _facts("semis", is_etf=True, holdings=["NVDA"])}, _facts("generic"))
+    _ = _run_node(_config(overlap_limit=0.30), container, analysis_working_dir, resolver)
+
+    assert resolver.requested == ["SMH"]
+    steps = _read_action_steps(analysis_working_dir)
+    buy_smh = next(s for s in steps if s.instrument == "SMH" and s.action_type == ActionType.BUY)
+    sell_nvda = next(s for s in steps if s.instrument == "NVDA" and s.action_type == ActionType.SELL)
+    assert float(buy_smh.execution_parameters.notional or "nan") == pytest.approx(20000.0)
+    assert float(sell_nvda.execution_parameters.notional or "nan") == pytest.approx(25000.0)
 
 
 def test_make_analysis_node_with_agent_exception_sets_analysis_halt(config: Config, analysis_working_dir: Path) -> None:
-    node = make_analysis_node(config, _raising_agent())
+    node = make_analysis_node(config, _raising_agent(), _default_resolver())
     result = node({"slug": _SLUG, "working_dir": str(analysis_working_dir)})
     assert result.get("terminal_state") == TerminalState.ANALYSIS_HALT
 
@@ -568,6 +839,6 @@ def test_make_analysis_node_with_agent_exception_sets_analysis_halt(config: Conf
 def test_make_analysis_node_with_agent_exception_writes_empty_action_steps(
     config: Config, analysis_working_dir: Path
 ) -> None:
-    node = make_analysis_node(config, _raising_agent())
+    node = make_analysis_node(config, _raising_agent(), _default_resolver())
     _ = node({"slug": _SLUG, "working_dir": str(analysis_working_dir)})
     assert _read_action_steps(analysis_working_dir) == []

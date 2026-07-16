@@ -10,7 +10,7 @@ from money_pit.schemas.action_steps import ExecutionParameters
 from money_pit.schemas.enums import ActionType
 
 
-_BUY_SIDES: frozenset[ActionType] = frozenset({ActionType.BUY, ActionType.ADD})
+BUY_SIDES: frozenset[ActionType] = frozenset({ActionType.BUY, ActionType.ADD})
 
 _SIDE_BUY: Literal["buy"] = "buy"
 _SIDE_SELL: Literal["sell"] = "sell"
@@ -18,7 +18,7 @@ _ORDER_TYPE_MARKET: Literal["market"] = "market"
 _TIME_IN_FORCE_DAY: Literal["day"] = "day"
 
 _NOTIONAL_DECIMAL_PLACES: int = 2
-_MIN_NOTIONAL_DOLLARS: float = 10 ** -_NOTIONAL_DECIMAL_PLACES
+MIN_NOTIONAL_DOLLARS: float = 10 ** -_NOTIONAL_DECIMAL_PLACES
 
 
 class InvalidExecutionAmountError(Exception):
@@ -39,13 +39,13 @@ def build_execution_params(
     AlpacaOrderSchemaMalformedError) if the schema is absent or malformed, and lets
     jsonschema.ValidationError propagate when the emitted payload violates the schema.
     """
-    if not math.isfinite(dollar_amount) or dollar_amount < _MIN_NOTIONAL_DOLLARS:
+    if not math.isfinite(dollar_amount) or dollar_amount < MIN_NOTIONAL_DOLLARS:
         raise InvalidExecutionAmountError(
             f"Notional order requires a finite dollar amount of at least the minimum notional "
-            f"({_MIN_NOTIONAL_DOLLARS:.{_NOTIONAL_DECIMAL_PLACES}f}), got {dollar_amount!r}."
+            f"({MIN_NOTIONAL_DOLLARS:.{_NOTIONAL_DECIMAL_PLACES}f}), got {dollar_amount!r}."
         )
     schema: dict[str, object] = load_order_schema()
-    side: Literal["buy", "sell"] = _SIDE_BUY if action_type in _BUY_SIDES else _SIDE_SELL
+    side: Literal["buy", "sell"] = _SIDE_BUY if action_type in BUY_SIDES else _SIDE_SELL
     notional: str = f"{dollar_amount:.{_NOTIONAL_DECIMAL_PLACES}f}"
     params: ExecutionParameters = ExecutionParameters(
         symbol=symbol,

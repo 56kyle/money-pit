@@ -14,6 +14,7 @@ from money_pit.contracts import EmailSender
 from money_pit.contracts import FillObserver
 from money_pit.contracts import OrderPlacer
 from money_pit.contracts import PortfolioFetcher
+from money_pit.contracts import ResolveInstrumentFacts
 from money_pit.contracts import ThesisAgent
 from money_pit.contracts import ToolManifest
 from money_pit.graph.edges import EXECUTE
@@ -62,6 +63,7 @@ def build_graph(
     deterministic_tools: DeterministicResearchTools,
     config: Config,
     thesis_agent: ThesisAgent,
+    resolve_instrument_facts: ResolveInstrumentFacts,
     place_order: OrderPlacer,
     observe_fill: FillObserver,
     send_email: EmailSender,
@@ -81,7 +83,9 @@ def build_graph(
     )
     builder.add_node(
         "analysis",
-        make_analysis_node(config=config, thesis_agent=thesis_agent),
+        make_analysis_node(
+            config=config, thesis_agent=thesis_agent, resolve_instrument_facts=resolve_instrument_facts
+        ),
     )
     builder.add_node("validator", make_validator_node(manifest=manifest))
     builder.add_node("determination", make_determination_node())

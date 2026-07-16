@@ -1,11 +1,13 @@
 """Module containing the A4 node that calls agents/thesis_judgment plus the compute/ post-processor functions and writes action_steps.json for the money_pit package."""
 
 import json
+import math
 from pathlib import Path
-from typing import NamedTuple
 
 from loguru import logger
 
+from money_pit.compute.execution_params import BUY_SIDES
+from money_pit.compute.execution_params import MIN_NOTIONAL_DOLLARS
 from money_pit.compute.execution_params import build_execution_params
 from money_pit.compute.regime import classify_regime
 from money_pit.compute.sizing import size_position
@@ -17,6 +19,7 @@ from money_pit.constants import ANALYSIS_JUDGMENT_JSON_FILENAME
 from money_pit.constants import ANALYSIS_MD_FILENAME
 from money_pit.constants import INITIAL_ANSWERS_JSON_FILENAME
 from money_pit.constants import PORTFOLIO_SNAPSHOT_FILENAME
+from money_pit.contracts import ResolveInstrumentFacts
 from money_pit.contracts import ThesisAgent
 from money_pit.graph.state import PipelineNode
 from money_pit.graph.state import PipelineState
@@ -31,13 +34,16 @@ from money_pit.schemas.analysis_draft import ScenarioTable
 from money_pit.schemas.analysis_draft import ThesisJudgment
 from money_pit.schemas.answers import Answer
 from money_pit.schemas.answers import InitialAnswers
+from money_pit.schemas.enums import ConvictionLevel
 from money_pit.schemas.enums import QuestionCategory
 from money_pit.schemas.enums import RegimeTag
 from money_pit.schemas.enums import Step1Disposition
 from money_pit.schemas.enums import TerminalState
+from money_pit.schemas.instrument import InstrumentFacts
 from money_pit.schemas.macro import MACRO_INDICATOR_SERIES
 from money_pit.schemas.macro import MacroIndicators
 from money_pit.schemas.portfolio import PortfolioSnapshot
+from money_pit.schemas.portfolio import Position
 from money_pit.schemas.questions import INDICATOR_PREFIX
 from money_pit.schemas.signals import AggregatedSignals
 
@@ -178,11 +184,6 @@ def _write_action_steps(working_dir: Path, slug: str, action_steps: list[ActionS
     )
 
 
-class _Headrooms(NamedTuple):
-    sector: float
-    cash: float
-
-
 def _load_analysis_inputs(
     working_dir: Path,
 ) -> tuple[AggregatedSignals, PortfolioSnapshot, InitialAnswers]:
@@ -223,34 +224,72 @@ def _run_and_persist_thesis_judgment(
     return container
 
 
-def _compute_headrooms(config: Config, portfolio_snapshot: PortfolioSnapshot) -> _Headrooms:
-    return _Headrooms(
-        sector=config.sector_cap * portfolio_snapshot.total_account_value,
-        cash=max(
-            0.0,
-            portfolio_snapshot.available_cash - config.cash_min * portfolio_snapshot.total_account_value,
-        ),
+def _conviction_rank(conviction: ConvictionLevel) -> int:
+    """Rank convictions so highest sizes first: HIGH before MEDIUM before LOW."""
+    return {ConvictionLevel.HIGH: 0, ConvictionLevel.MEDIUM: 1, ConvictionLevel.LOW: 2}[conviction]
+
+
+def _priority_ordered(theses: list[ThesisJudgment]) -> list[tuple[int, ThesisJudgment]]:
+    """Order theses by conviction, then expected value, breaking ties by original index."""
+    return sorted(
+        enumerate(theses),
+        key=lambda it: (_conviction_rank(it[1].conviction), -it[1].expected_value, it[0]),
     )
 
 
-def _overlap_headroom(config: Config, portfolio_snapshot: PortfolioSnapshot, instrument: str) -> float:
-    """Overlap ceiling for one candidate, reduced by exposure already held in its correlated group."""
+def _sector_key(sector: str) -> str:
+    """Normalize a sector label for case-insensitive tallying."""
+    return sector.casefold()
+
+
+def _seed_sector_exposure(positions: list[Position]) -> dict[str, float]:
+    """Sum held current value per normalized sector to seed the running sector tally."""
+    exposure: dict[str, float] = {}
+    for position in positions:
+        key: str = _sector_key(position.sector)
+        exposure[key] = exposure.get(key, 0.0) + position.current_value
+    return exposure
+
+
+def _held_correlated_value(instrument: str, facts: InstrumentFacts, snapshot: PortfolioSnapshot) -> float:
+    """Sum held value duplicative with the candidate: a name it holds, or an ETF that holds it."""
     instrument_key: str = instrument.upper()
-    correlated_tickers: set[str] = {
-        ticker.upper()
-        for overlap in portfolio_snapshot.correlated_overlaps
-        if instrument_key in {t.upper() for t in overlap.tickers}
-        for ticker in overlap.tickers
-    } - {instrument_key}
-    existing_correlated_exposure: float = sum(
-        position.current_value
-        for position in portfolio_snapshot.positions
-        if position.ticker.upper() in correlated_tickers
-    )
-    return max(
-        0.0,
-        config.overlap_limit * portfolio_snapshot.total_account_value - existing_correlated_exposure,
-    )
+    candidate_holdings: set[str] = {holding.upper() for holding in facts.holdings}
+    total: float = 0.0
+    for position in snapshot.positions:
+        position_key: str = position.ticker.upper()
+        if position_key == instrument_key:
+            continue
+        candidate_holds_position: bool = position_key in candidate_holdings
+        etf_holds_candidate: bool = instrument_key in {
+            holding.upper() for holding in snapshot.etf_holdings.get(position.ticker, [])
+        }
+        if candidate_holds_position or etf_holds_candidate:
+            total += position.current_value
+    return total
+
+
+def _in_run_correlated_dollars(
+    instrument: str,
+    facts: InstrumentFacts,
+    candidate_facts: dict[str, InstrumentFacts],
+    in_run_by_ticker: dict[str, float],
+) -> float:
+    """Sum this-run allocations to candidates directly ETF-correlated with the candidate."""
+    instrument_key: str = instrument.upper()
+    candidate_holdings: set[str] = {holding.upper() for holding in facts.holdings}
+    total: float = 0.0
+    for prior, prior_dollars in in_run_by_ticker.items():
+        prior_key: str = prior.upper()
+        if prior_key == instrument_key:
+            continue
+        prior_held_by_candidate: bool = prior_key in candidate_holdings
+        candidate_held_by_prior: bool = instrument_key in {
+            holding.upper() for holding in candidate_facts[prior].holdings
+        }
+        if prior_held_by_candidate or candidate_held_by_prior:
+            total += prior_dollars
+    return total
 
 
 def _build_action_step(
@@ -282,30 +321,57 @@ def _materialize_action_steps(
     portfolio_snapshot: PortfolioSnapshot,
     regime_tag: RegimeTag,
     slug: str,
+    candidate_facts: dict[str, InstrumentFacts],
 ) -> list[ActionStep]:
-    """Size each surviving thesis into an ActionStep, dropping any the sizer declines."""
+    """Size each surviving thesis into an ActionStep, dropping any the sizer declines.
+
+    Exposure-increasing theses size in priority order against running per-sector, cash,
+    and candidate-vs-holdings overlap tallies; exposure-reducing theses are never clamped.
+    """
+    tav: float = portfolio_snapshot.total_account_value
     regime_uncertain: bool = regime_tag == RegimeTag.UNCERTAIN
-    headrooms: _Headrooms = _compute_headrooms(config, portfolio_snapshot)
+    sector_used: dict[str, float] = _seed_sector_exposure(portfolio_snapshot.positions)
+    cash_available: float = max(0.0, portfolio_snapshot.available_cash - config.cash_min * tav)
+    in_run_by_ticker: dict[str, float] = {}
 
     action_steps: list[ActionStep] = []
-    for i, thesis in enumerate(container.theses):
+    for _original_index, thesis in _priority_ordered(container.theses):
         verified: bool = thesis.disposition == Step1Disposition.SUPPORTED
         scenarios: list[tuple[float, float]] = _to_scenario_list(thesis.scenario_table)
-        overlap_headroom: float = _overlap_headroom(config, portfolio_snapshot, thesis.instrument)
+        exposure_increasing: bool = thesis.action_type in BUY_SIDES
+
+        if exposure_increasing:
+            facts: InstrumentFacts = candidate_facts[thesis.instrument]
+            sector_key: str = _sector_key(facts.sector)
+            sector_headroom: float = max(0.0, config.sector_cap * tav - sector_used.get(sector_key, 0.0))
+            correlated_dollars: float = _held_correlated_value(
+                thesis.instrument, facts, portfolio_snapshot
+            ) + _in_run_correlated_dollars(thesis.instrument, facts, candidate_facts, in_run_by_ticker)
+            overlap_headroom: float = max(0.0, config.overlap_limit * tav - correlated_dollars)
+            cash_headroom: float = cash_available
+        else:
+            sector_key = ""
+            sector_headroom = overlap_headroom = cash_headroom = math.inf
+
         dollar_amount: float | None = size_position(
             scenarios,
-            portfolio_snapshot.total_account_value,
+            tav,
             config,
             verified,
             regime_uncertain,
-            headrooms.sector,
-            headrooms.cash,
+            sector_headroom,
+            cash_headroom,
             overlap_headroom,
         )
-        if dollar_amount is None:
+        if dollar_amount is None or dollar_amount < MIN_NOTIONAL_DOLLARS:
             continue
 
-        step_id: str = f"A{i + 1:03d}"
+        if exposure_increasing:
+            sector_used[sector_key] = sector_used.get(sector_key, 0.0) + dollar_amount
+            cash_available -= dollar_amount
+            in_run_by_ticker[thesis.instrument] = in_run_by_ticker.get(thesis.instrument, 0.0) + dollar_amount
+
+        step_id: str = f"A{len(action_steps) + 1:03d}"
         execution_parameters: ExecutionParameters = build_execution_params(
             step_id, slug, thesis.instrument, thesis.action_type, dollar_amount
         )
@@ -332,6 +398,7 @@ def _persist_analysis_outputs(
 def make_analysis_node(
     config: Config,
     thesis_agent: ThesisAgent,
+    resolve_instrument_facts: ResolveInstrumentFacts,
 ) -> PipelineNode:
     """Return a LangGraph node that runs A4 judgment and the deterministic post-processor.
 
@@ -363,8 +430,17 @@ def make_analysis_node(
                 "completed_steps": with_completed_step(state, "analysis"),
             }
 
+        candidate_instruments: list[str] = list(
+            dict.fromkeys(
+                thesis.instrument for thesis in container.theses if thesis.action_type in BUY_SIDES
+            )
+        )
+        candidate_facts: dict[str, InstrumentFacts] = {
+            instrument: resolve_instrument_facts(instrument) for instrument in candidate_instruments
+        }
+
         action_steps: list[ActionStep] = _materialize_action_steps(
-            container, config, portfolio_snapshot, regime_tag, slug
+            container, config, portfolio_snapshot, regime_tag, slug, candidate_facts
         )
         _persist_analysis_outputs(working_dir, slug, container, regime_tag, action_steps)
 

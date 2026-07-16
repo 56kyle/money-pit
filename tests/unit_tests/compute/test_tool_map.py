@@ -8,7 +8,7 @@ manifest — never a failed lookup. This is why A5's tool-lookup path is not fak
 
 import pytest
 
-from money_pit.compute.execution_params import _BUY_SIDES
+from money_pit.compute.execution_params import BUY_SIDES
 from money_pit.compute.tool_map import ACTION_TYPE_TO_TOOL
 from money_pit.compute.tool_map import COMPENSATING_ACTION
 from money_pit.schemas.enums import ActionType
@@ -26,4 +26,4 @@ def test_compensating_action_is_total() -> None:
 def test_compensating_action_opposes_side(action_type: ActionType) -> None:
     compensating: ActionType = COMPENSATING_ACTION[action_type]
 
-    assert (action_type in _BUY_SIDES) != (compensating in _BUY_SIDES)
+    assert (action_type in BUY_SIDES) != (compensating in BUY_SIDES)

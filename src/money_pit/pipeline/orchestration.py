@@ -32,11 +32,13 @@ from money_pit.contracts import EmailSender
 from money_pit.contracts import FillObserver
 from money_pit.contracts import OrderPlacer
 from money_pit.contracts import PortfolioFetcher
+from money_pit.contracts import ResolveInstrumentFacts
 from money_pit.contracts import ThesisAgent
 from money_pit.contracts import ToolManifest
 from money_pit.email_sender import make_gmail_email_sender
 from money_pit.graph.graph import build_graph
 from money_pit.graph.state import PipelineState
+from money_pit.market_data import make_yfinance_instrument_resolver
 from money_pit.mcp.clients import make_alpaca_write_deps
 from money_pit.mcp.manifest import live_manifest
 from money_pit.schemas.action_steps import ExecutionParameters
@@ -56,6 +58,7 @@ from money_pit.schemas.fetch_result import FetchResult
 from money_pit.schemas.fetch_result import FetchValue
 from money_pit.schemas.fetch_result import NoData
 from money_pit.schemas.fills import FillObservation
+from money_pit.schemas.instrument import InstrumentFacts
 from money_pit.schemas.portfolio import PortfolioSnapshot
 from money_pit.schemas.provenance import SourceRef
 from money_pit.schemas.question_draft import DraftQuestion
@@ -86,6 +89,7 @@ class PipelineOverrides:
     """Injectable agent overrides for testing. All fields default to None (use Phase 5 implementations)."""
 
     thesis_agent: ThesisAgent | None = field(default=None)
+    resolve_instrument_facts: ResolveInstrumentFacts | None = field(default=None)
     claim_questions_agent: ClaimQuestionsAgent | None = field(default=None)
     answer_synthesis_agent: AnswerSynthesisAgent | None = field(default=None)
     corroboration_agent: CorroborationAgent | None = field(default=None)
@@ -327,6 +331,11 @@ def _phase4_thesis_agent(
     return AnalysisJudgment(theses=[thesis], dropped_claims=[], macro_read=[], halt=None)
 
 
+def _phase4_resolve_instrument_facts(_instrument: str) -> InstrumentFacts:
+    """Return benign instrument facts so Phase 4 integration runs without network access."""
+    return InstrumentFacts(sector="unknown", is_etf=False, holdings=[])
+
+
 def _phase4_place_order(params: ExecutionParameters) -> str:
     """Return a paper trade order ID — no real order placed in Phase 4."""
     return f"PAPER-{params.client_order_id}"
@@ -346,6 +355,7 @@ def phase4_overrides() -> PipelineOverrides:
     """Return a PipelineOverrides instance using all Phase 4 stubs (for integration tests)."""
     return PipelineOverrides(
         thesis_agent=_phase4_thesis_agent,
+        resolve_instrument_facts=_phase4_resolve_instrument_facts,
         claim_questions_agent=_phase4_claim_questions,
         answer_synthesis_agent=_phase4_answer_synthesis,
         corroboration_agent=_phase4_corroborate,
@@ -435,6 +445,7 @@ def run_pipeline(
     )
 
     thesis = ov.thesis_agent or make_thesis_judgment_agent(config)
+    resolver = ov.resolve_instrument_facts or make_yfinance_instrument_resolver()
     claim_qs = ov.claim_questions_agent or make_claim_questions_agent(config)
     answer_synth = ov.answer_synthesis_agent or make_answer_synthesis_agent(open_tools, config)
     corr = ov.corroboration_agent or corroborate
@@ -447,6 +458,7 @@ def run_pipeline(
         deterministic_tools=det_tools,
         config=config,
         thesis_agent=thesis,
+        resolve_instrument_facts=resolver,
         place_order=capital_deps.place_order,
         observe_fill=capital_deps.observe_fill,
         send_email=capital_deps.send_email,

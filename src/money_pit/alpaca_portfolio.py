@@ -5,11 +5,7 @@ correlated_overlaps from held-ETF `funds_data`; every derivation is fail-soft an
 to "unknown"/empty rather than raising.
 """
 
-import math
-
-import requests
 from alpaca.trading.client import TradingClient
-from loguru import logger
 
 from money_pit.compute.factor_tags import FactorMetrics
 from money_pit.compute.factor_tags import classify_factors
@@ -17,13 +13,16 @@ from money_pit.compute.overlaps import detect_etf_overlaps
 from money_pit.config import AlpacaCredentials
 from money_pit.config import Config
 from money_pit.contracts import PortfolioFetcher
+from money_pit.market_data import as_float
+from money_pit.market_data import fetch_etf_holdings
+from money_pit.market_data import fetch_ticker_info
+from money_pit.market_data import is_etf
+from money_pit.market_data import resolve_sector
 from money_pit.schemas.portfolio import PortfolioSnapshot
 from money_pit.schemas.portfolio import Position
 
 
 _US_EQUITY_ASSET_CLASS: str = "us_equity"
-_UNKNOWN_SECTOR: str = "unknown"
-_ETF_QUOTE_TYPE: str = "ETF"
 
 
 class NonEquityPositionError(Exception):
@@ -36,71 +35,18 @@ def _asset_class_value(asset_class: object) -> str:
     return str(value)
 
 
-def _fetch_ticker_info(ticker: str) -> dict[str, object]:  # pragma: no cover
-    """Return a ticker's yfinance `.info`, best-effort, falling back to an empty mapping on any lookup failure."""
-    import yfinance as yf  # pyright: ignore[reportMissingTypeStubs]
-
-    try:
-        info: dict[str, object] = yf.Ticker(ticker).info  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-    except (requests.RequestException, OSError, KeyError, ValueError) as error:
-        logger.debug("yfinance info lookup failed for {ticker}: {error}", ticker=ticker, error=error)
-        return {}
-    return info
-
-
-def _fetch_etf_holdings(tickers: list[str]) -> dict[str, list[str]]:  # pragma: no cover
-    """Return each ETF ticker's top-holding symbols from yfinance funds_data, omitting names that yield none."""
-    import yfinance as yf  # pyright: ignore[reportMissingTypeStubs]
-
-    holdings: dict[str, list[str]] = {}
-    for ticker in tickers:
-        try:
-            top_holdings = yf.Ticker(ticker).funds_data.top_holdings  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-            symbols: list[str] = [str(symbol) for symbol in top_holdings.index]  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType, reportUnknownVariableType]
-        except Exception as error:  # noqa: BLE001
-            logger.debug("yfinance holdings lookup failed for {ticker}: {error}", ticker=ticker, error=error)
-            continue
-        if symbols:
-            holdings[ticker] = symbols
-    return holdings
-
-
-def _as_float(value: object) -> float | None:
-    """Return value as a finite float, or None when it is absent or not a finite number."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    number: float = float(value)
-    if not math.isfinite(number):
-        return None
-    return number
-
-
-def _resolve_sector(info: dict[str, object]) -> str:
-    """Return the yfinance sector from a ticker's info, falling back to "unknown" when absent or blank."""
-    sector: object = info.get("sector")
-    if isinstance(sector, str) and sector:
-        return sector
-    return _UNKNOWN_SECTOR
-
-
 def _factor_metrics_from_info(info: dict[str, object]) -> FactorMetrics:
     """Map a ticker's yfinance `.info` onto FactorMetrics, coercing each field best-effort to a finite float."""
     return FactorMetrics(
-        trailing_pe=_as_float(info.get("trailingPE")),
-        price_to_book=_as_float(info.get("priceToBook")),
-        revenue_growth=_as_float(info.get("revenueGrowth")),
-        earnings_growth=_as_float(info.get("earningsGrowth")),
-        trailing_return=_as_float(info.get("52WeekChange")),
-        return_on_equity=_as_float(info.get("returnOnEquity")),
-        profit_margin=_as_float(info.get("profitMargins")),
-        beta=_as_float(info.get("beta")),
+        trailing_pe=as_float(info.get("trailingPE")),
+        price_to_book=as_float(info.get("priceToBook")),
+        revenue_growth=as_float(info.get("revenueGrowth")),
+        earnings_growth=as_float(info.get("earningsGrowth")),
+        trailing_return=as_float(info.get("52WeekChange")),
+        return_on_equity=as_float(info.get("returnOnEquity")),
+        profit_margin=as_float(info.get("profitMargins")),
+        beta=as_float(info.get("beta")),
     )
-
-
-def _is_etf(info: dict[str, object]) -> bool:
-    """Return whether a ticker's yfinance quoteType marks it as an ETF."""
-    quote_type: object = info.get("quoteType")
-    return isinstance(quote_type, str) and quote_type.upper() == _ETF_QUOTE_TYPE
 
 
 def _to_position(raw: object, info: dict[str, object], config: Config) -> Position:
@@ -115,7 +61,7 @@ def _to_position(raw: object, info: dict[str, object], config: Config) -> Positi
         cost_basis=float(raw.avg_entry_price),
         current_value=float(raw.market_value),
         unrealized_pl=float(raw.unrealized_pl),
-        sector=_resolve_sector(info),
+        sector=resolve_sector(info),
         factor_tags=classify_factors(_factor_metrics_from_info(info), config),
     )
 
@@ -144,11 +90,11 @@ def make_alpaca_portfolio_fetcher(credentials: AlpacaCredentials, config: Config
         positions: list[Position] = []
         etf_tickers: list[str] = []
         for raw in client.get_all_positions():  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-            info: dict[str, object] = _fetch_ticker_info(raw.symbol)  # pyright: ignore[reportUnknownArgumentType]
+            info: dict[str, object] = fetch_ticker_info(raw.symbol)  # pyright: ignore[reportUnknownArgumentType]
             positions.append(_to_position(raw, info, config))
-            if _is_etf(info):
+            if is_etf(info):
                 etf_tickers.append(str(raw.symbol))
-        etf_holdings: dict[str, list[str]] = _fetch_etf_holdings(etf_tickers)
+        etf_holdings: dict[str, list[str]] = fetch_etf_holdings(etf_tickers)
         return PortfolioSnapshot(
             slug=slug,
             as_of=slug,

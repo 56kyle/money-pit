@@ -43,3 +43,4 @@ class PortfolioSnapshot(BaseModel):
     positions: list[Position]
     sector_weights: dict[str, float]
     correlated_overlaps: list[CorrelatedOverlap]
+    etf_holdings: dict[str, list[str]] = {}

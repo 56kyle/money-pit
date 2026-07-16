@@ -103,6 +103,7 @@ def make_alpaca_portfolio_fetcher(credentials: AlpacaCredentials, config: Config
             positions=positions,
             sector_weights=_sector_weights(positions, total_account_value),
             correlated_overlaps=detect_etf_overlaps(positions, etf_holdings),
+            etf_holdings=etf_holdings,
         )
 
     return fetch_portfolio

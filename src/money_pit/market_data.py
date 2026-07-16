@@ -2,14 +2,17 @@
 
 Sector, ETF classification, and factor-input coercion are derived best-effort from a ticker's
 yfinance `.info`, and top holdings from an ETF's funds_data; every derivation is fail-soft and falls
-back to "unknown"/empty rather than raising. This module is a neutral leaf: it depends on neither
-alpaca-py nor any other money_pit module.
+back to "unknown"/empty rather than raising. This module is a neutral adapter: it depends on no
+alpaca-py, and only on the cycle-free money_pit.schemas/contracts leaf for its InstrumentFacts result.
 """
 
 import math
 
 import requests
 from loguru import logger
+
+from money_pit.contracts import ResolveInstrumentFacts
+from money_pit.schemas.instrument import InstrumentFacts
 
 
 UNKNOWN_SECTOR: str = "unknown"
@@ -67,3 +70,15 @@ def is_etf(info: dict[str, object]) -> bool:
     """Return whether a ticker's yfinance quoteType marks it as an ETF."""
     quote_type: object = info.get("quoteType")
     return isinstance(quote_type, str) and quote_type.upper() == ETF_QUOTE_TYPE
+
+
+def make_yfinance_instrument_resolver() -> ResolveInstrumentFacts:
+    """Return a ResolveInstrumentFacts backed purely by yfinance, resolving a candidate ticker's sector and ETF facts."""
+
+    def resolve(ticker: str) -> InstrumentFacts:  # pragma: no cover
+        info: dict[str, object] = fetch_ticker_info(ticker)
+        etf: bool = is_etf(info)
+        holdings: list[str] = fetch_etf_holdings([ticker]).get(ticker, []) if etf else []
+        return InstrumentFacts(sector=resolve_sector(info), is_etf=etf, holdings=holdings)
+
+    return resolve

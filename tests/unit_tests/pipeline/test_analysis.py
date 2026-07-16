@@ -19,6 +19,7 @@ from pydantic import TypeAdapter
 from pytest import FixtureRequest
 
 from money_pit.compute.regime import classify_regime
+from money_pit.compute.sizing import kelly_target_dollars
 from money_pit.config import Config
 from money_pit.pipeline.analysis import _conviction_rank
 from money_pit.pipeline.analysis import _extract_macro_indicators
@@ -28,6 +29,7 @@ from money_pit.pipeline.analysis import _materialize_action_steps
 from money_pit.pipeline.analysis import _priority_ordered
 from money_pit.pipeline.analysis import _sector_key
 from money_pit.pipeline.analysis import _seed_sector_exposure
+from money_pit.pipeline.analysis import _to_scenario_list
 from money_pit.pipeline.analysis import make_analysis_node
 from money_pit.schemas.action_steps import ActionStep
 from money_pit.schemas.analysis_draft import AnalysisHalt
@@ -75,6 +77,24 @@ def _scenario_table() -> ScenarioTable:
     )
 
 
+def _weak_scenario_table() -> ScenarioTable:
+    def _scenario(probability: int, return_pct: float) -> Scenario:
+        return Scenario(
+            probability=probability,
+            return_pct=return_pct,
+            timeframe=None,
+            confirming_metric=None,
+            mechanism=None,
+            max_drawdown=None,
+        )
+
+    return ScenarioTable(
+        bull=_scenario(10, 0.02),
+        base=_scenario(50, 0.0),
+        bear=_scenario(40, -0.05),
+    )
+
+
 def _thesis(
     instrument: str,
     disposition: Step1Disposition,
@@ -83,6 +103,7 @@ def _thesis(
     action_type: ActionType = ActionType.BUY,
     conviction: ConvictionLevel = ConvictionLevel.MEDIUM,
     expected_value: float = 0.08,
+    scenario_table: ScenarioTable | None = None,
 ) -> ThesisJudgment:
     return ThesisJudgment(
         claim_id=claim_id,
@@ -93,7 +114,7 @@ def _thesis(
         one_sentence_thesis="The growth thesis still holds on current data.",
         expected_value=expected_value,
         conviction=conviction,
-        scenario_table=_scenario_table(),
+        scenario_table=scenario_table if scenario_table is not None else _scenario_table(),
         invalidation_conditions=[],
         sizing_rationale="Sized to conviction and account risk budget.",
         disposition=disposition,
@@ -209,10 +230,12 @@ def _config(**overrides: object) -> Config:
     return Config(**{**defaults, **overrides})
 
 
-def _position(ticker: str, current_value: float, *, sector: str = "technology") -> Position:
+def _position(
+    ticker: str, current_value: float, *, sector: str = "technology", quantity: float = 1.0
+) -> Position:
     return Position(
         ticker=ticker,
-        quantity=1.0,
+        quantity=quantity,
         cost_basis=current_value,
         current_value=current_value,
         unrealized_pl=0.0,
@@ -752,44 +775,154 @@ def test__materialize_action_steps_with_priority_sizes_high_conviction_before_lo
     assert float(steps[0].execution_parameters.notional or "nan") == pytest.approx(20000.0)
 
 
+def test__materialize_action_steps_with_sell_full_exits_by_held_quantity() -> None:
+    config = _config()
+    portfolio = _portfolio(
+        total_account_value=100000.0,
+        available_cash=100000.0,
+        positions=[_position("NVDA", 40000.0, quantity=40.0)],
+    )
+    container = AnalysisJudgment(
+        theses=[_thesis("NVDA", Step1Disposition.SUPPORTED, claim_id="c-1", action_type=ActionType.SELL)],
+        dropped_claims=[],
+        macro_read=[],
+        halt=None,
+    )
+    steps = _materialize(container, config, portfolio, {})
+    assert len(steps) == 1
+    params = steps[0].execution_parameters
+    assert params.qty == "40"
+    assert params.notional is None
+    assert params.side == "sell"
+
+
+def test__materialize_action_steps_with_sell_below_ev_gate_still_exits() -> None:
+    config = _config()
+    portfolio = _portfolio(
+        total_account_value=100000.0,
+        available_cash=100000.0,
+        positions=[_position("NVDA", 40000.0, quantity=40.0)],
+    )
+    container = AnalysisJudgment(
+        theses=[
+            _thesis(
+                "NVDA",
+                Step1Disposition.SUPPORTED,
+                claim_id="c-1",
+                action_type=ActionType.SELL,
+                scenario_table=_weak_scenario_table(),
+            )
+        ],
+        dropped_claims=[],
+        macro_read=[],
+        halt=None,
+    )
+    steps = _materialize(container, config, portfolio, {})
+    assert len(steps) == 1
+    params = steps[0].execution_parameters
+    assert params.qty == "40"
+    assert params.notional is None
+    assert params.side == "sell"
+
+
+def test__materialize_action_steps_with_sell_of_non_held_ticker_is_dropped() -> None:
+    config = _config()
+    portfolio = _portfolio(total_account_value=100000.0, available_cash=100000.0)
+    container = AnalysisJudgment(
+        theses=[_thesis("GHOST", Step1Disposition.SUPPORTED, claim_id="c-1", action_type=ActionType.SELL)],
+        dropped_claims=[],
+        macro_read=[],
+        halt=None,
+    )
+    assert _materialize(container, config, portfolio, {}) == []
+
+
+def test__materialize_action_steps_with_trim_reduces_by_current_value_minus_kelly_target() -> None:
+    config = _config()
+    current_value = 50000.0
+    portfolio = _portfolio(
+        total_account_value=100000.0,
+        available_cash=100000.0,
+        positions=[_position("NVDA", current_value, quantity=100.0)],
+    )
+    thesis = _thesis("NVDA", Step1Disposition.SUPPORTED, claim_id="c-1", action_type=ActionType.TRIM)
+    container = AnalysisJudgment(theses=[thesis], dropped_claims=[], macro_read=[], halt=None)
+    target = kelly_target_dollars(
+        _to_scenario_list(thesis.scenario_table),
+        portfolio.total_account_value,
+        config,
+        verified=True,
+        regime_uncertain=False,
+    )
+    steps = _materialize(container, config, portfolio, {})
+    assert len(steps) == 1
+    params = steps[0].execution_parameters
+    assert params.notional == f"{current_value - target:.2f}"
+    assert params.qty is None
+    assert params.side == "sell"
+
+
+def test__materialize_action_steps_with_trim_already_at_target_is_dropped() -> None:
+    config = _config()
+    thesis = _thesis("NVDA", Step1Disposition.SUPPORTED, claim_id="c-1", action_type=ActionType.TRIM)
+    target = kelly_target_dollars(
+        _to_scenario_list(thesis.scenario_table),
+        100000.0,
+        config,
+        verified=True,
+        regime_uncertain=False,
+    )
+    portfolio = _portfolio(
+        total_account_value=100000.0,
+        available_cash=100000.0,
+        positions=[_position("NVDA", target, quantity=100.0)],
+    )
+    container = AnalysisJudgment(theses=[thesis], dropped_claims=[], macro_read=[], halt=None)
+    assert _materialize(container, config, portfolio, {}) == []
+
+
+def test__materialize_action_steps_with_trim_of_non_held_ticker_is_dropped() -> None:
+    config = _config()
+    portfolio = _portfolio(total_account_value=100000.0, available_cash=100000.0)
+    container = AnalysisJudgment(
+        theses=[_thesis("GHOST", Step1Disposition.SUPPORTED, claim_id="c-1", action_type=ActionType.TRIM)],
+        dropped_claims=[],
+        macro_read=[],
+        halt=None,
+    )
+    assert _materialize(container, config, portfolio, {}) == []
+
+
 @pytest.mark.parametrize("action_type", [ActionType.SELL, ActionType.TRIM])
-def test__materialize_action_steps_with_exposure_reducing_thesis_is_never_clamped(
+def test__materialize_action_steps_with_exposure_reducing_thesis_does_not_consume_buy_budget(
     action_type: ActionType,
 ) -> None:
     config = _config(sector_cap=0.25)
     portfolio = _portfolio(
         total_account_value=100000.0,
         available_cash=100000.0,
-        positions=[_position("HELD", 100000.0, sector="energy")],
+        positions=[_position("XLE", 50000.0, sector="energy", quantity=500.0)],
     )
-    container = AnalysisJudgment(
-        theses=[_thesis("XLE", Step1Disposition.SUPPORTED, claim_id="c-1", action_type=action_type)],
+    buy_only = AnalysisJudgment(
+        theses=[_thesis("AMD", Step1Disposition.SUPPORTED, claim_id="c-buy")],
         dropped_claims=[],
         macro_read=[],
         halt=None,
     )
-    steps = _materialize(container, config, portfolio, {})
-    assert float(steps[0].execution_parameters.notional or "nan") == pytest.approx(25000.0)
+    baseline = _materialize(buy_only, config, portfolio, {"AMD": _facts("semis")})
+    baseline_amd = baseline[0].execution_parameters.notional
 
-
-@pytest.mark.parametrize("action_type", [ActionType.SELL, ActionType.TRIM])
-def test__materialize_action_steps_with_exposure_reducing_thesis_does_not_consume_budget(
-    action_type: ActionType,
-) -> None:
-    config = _config(sector_cap=0.25)
-    portfolio = _portfolio(total_account_value=100000.0, available_cash=100000.0)
-    container = AnalysisJudgment(
+    with_exit = AnalysisJudgment(
         theses=[
-            _thesis("XLE", Step1Disposition.SUPPORTED, claim_id="c-sell", action_type=action_type),
+            _thesis("XLE", Step1Disposition.SUPPORTED, claim_id="c-exit", action_type=action_type),
             _thesis("AMD", Step1Disposition.SUPPORTED, claim_id="c-buy"),
         ],
         dropped_claims=[],
         macro_read=[],
         halt=None,
     )
-    steps = {step.instrument: step for step in _materialize(container, config, portfolio, {"AMD": _facts("semis")})}
-    assert float(steps["XLE"].execution_parameters.notional or "nan") == pytest.approx(25000.0)
-    assert float(steps["AMD"].execution_parameters.notional or "nan") == pytest.approx(25000.0)
+    steps = {step.instrument: step for step in _materialize(with_exit, config, portfolio, {"AMD": _facts("semis")})}
+    assert steps["AMD"].execution_parameters.notional == baseline_amd
 
 
 @pytest.mark.parametrize(
@@ -827,7 +960,9 @@ def test_make_analysis_node_resolves_only_distinct_buy_add_and_reflects_overlap_
     buy_smh = next(s for s in steps if s.instrument == "SMH" and s.action_type == ActionType.BUY)
     sell_nvda = next(s for s in steps if s.instrument == "NVDA" and s.action_type == ActionType.SELL)
     assert float(buy_smh.execution_parameters.notional or "nan") == pytest.approx(20000.0)
-    assert float(sell_nvda.execution_parameters.notional or "nan") == pytest.approx(25000.0)
+    assert sell_nvda.execution_parameters.qty == "1"
+    assert sell_nvda.execution_parameters.notional is None
+    assert sell_nvda.execution_parameters.side == "sell"
 
 
 def test_make_analysis_node_with_agent_exception_sets_analysis_halt(config: Config, analysis_working_dir: Path) -> None:

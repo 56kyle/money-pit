@@ -1,7 +1,6 @@
 """Module containing the A4 node that calls agents/thesis_judgment plus the compute/ post-processor functions and writes action_steps.json for the money_pit package."""
 
 import json
-import math
 from pathlib import Path
 
 from loguru import logger
@@ -9,7 +8,9 @@ from loguru import logger
 from money_pit.compute.execution_params import BUY_SIDES
 from money_pit.compute.execution_params import MIN_NOTIONAL_DOLLARS
 from money_pit.compute.execution_params import build_execution_params
+from money_pit.compute.execution_params import build_quantity_execution_params
 from money_pit.compute.regime import classify_regime
+from money_pit.compute.sizing import kelly_target_dollars
 from money_pit.compute.sizing import size_position
 from money_pit.config import Config
 from money_pit.constants import ACTION_STEPS_JSON_FILENAME
@@ -34,6 +35,7 @@ from money_pit.schemas.analysis_draft import ScenarioTable
 from money_pit.schemas.analysis_draft import ThesisJudgment
 from money_pit.schemas.answers import Answer
 from money_pit.schemas.answers import InitialAnswers
+from money_pit.schemas.enums import ActionType
 from money_pit.schemas.enums import ConvictionLevel
 from money_pit.schemas.enums import QuestionCategory
 from money_pit.schemas.enums import RegimeTag
@@ -333,14 +335,17 @@ def _materialize_action_steps(
     sector_used: dict[str, float] = _seed_sector_exposure(portfolio_snapshot.positions)
     cash_available: float = max(0.0, portfolio_snapshot.available_cash - config.cash_min * tav)
     in_run_by_ticker: dict[str, float] = {}
+    held_by_ticker: dict[str, Position] = {p.ticker.upper(): p for p in portfolio_snapshot.positions}
 
     action_steps: list[ActionStep] = []
     for _original_index, thesis in _priority_ordered(container.theses):
-        verified: bool = thesis.disposition == Step1Disposition.SUPPORTED
-        scenarios: list[tuple[float, float]] = _to_scenario_list(thesis.scenario_table)
-        exposure_increasing: bool = thesis.action_type in BUY_SIDES
+        action: ActionType = thesis.action_type
+        order_quantity: float | None = None
+        order_notional: float | None = None
 
-        if exposure_increasing:
+        if action in BUY_SIDES:
+            verified: bool = thesis.disposition == Step1Disposition.SUPPORTED
+            scenarios: list[tuple[float, float]] = _to_scenario_list(thesis.scenario_table)
             facts: InstrumentFacts = candidate_facts[thesis.instrument]
             sector_key: str = _sector_key(facts.sector)
             sector_headroom: float = max(0.0, config.sector_cap * tav - sector_used.get(sector_key, 0.0))
@@ -348,33 +353,58 @@ def _materialize_action_steps(
                 thesis.instrument, facts, portfolio_snapshot
             ) + _in_run_correlated_dollars(thesis.instrument, facts, candidate_facts, in_run_by_ticker)
             overlap_headroom: float = max(0.0, config.overlap_limit * tav - correlated_dollars)
-            cash_headroom: float = cash_available
-        else:
-            sector_key = ""
-            sector_headroom = overlap_headroom = cash_headroom = math.inf
-
-        dollar_amount: float | None = size_position(
-            scenarios,
-            tav,
-            config,
-            verified,
-            regime_uncertain,
-            sector_headroom,
-            cash_headroom,
-            overlap_headroom,
-        )
-        if dollar_amount is None or dollar_amount < MIN_NOTIONAL_DOLLARS:
-            continue
-
-        if exposure_increasing:
+            dollar_amount: float | None = size_position(
+                scenarios,
+                tav,
+                config,
+                verified,
+                regime_uncertain,
+                sector_headroom,
+                cash_available,
+                overlap_headroom,
+            )
+            if dollar_amount is None or dollar_amount < MIN_NOTIONAL_DOLLARS:
+                continue
             sector_used[sector_key] = sector_used.get(sector_key, 0.0) + dollar_amount
             cash_available -= dollar_amount
             in_run_by_ticker[thesis.instrument] = in_run_by_ticker.get(thesis.instrument, 0.0) + dollar_amount
+            order_notional = dollar_amount
+
+        elif action == ActionType.SELL:
+            held: Position | None = held_by_ticker.get(thesis.instrument.upper())
+            if held is None:
+                logger.warning(
+                    "SELL thesis names a non-held instrument {instrument}; dropping.",
+                    instrument=thesis.instrument,
+                )
+                continue
+            order_quantity = held.quantity
+
+        else:
+            held = held_by_ticker.get(thesis.instrument.upper())
+            if held is None:
+                logger.warning(
+                    "TRIM thesis names a non-held instrument {instrument}; dropping.",
+                    instrument=thesis.instrument,
+                )
+                continue
+            verified = thesis.disposition == Step1Disposition.SUPPORTED
+            scenarios = _to_scenario_list(thesis.scenario_table)
+            target: float = kelly_target_dollars(scenarios, tav, config, verified, regime_uncertain)
+            trim_notional: float = max(0.0, held.current_value - target)
+            if trim_notional < MIN_NOTIONAL_DOLLARS:
+                continue
+            order_notional = trim_notional
 
         step_id: str = f"A{len(action_steps) + 1:03d}"
-        execution_parameters: ExecutionParameters = build_execution_params(
-            step_id, slug, thesis.instrument, thesis.action_type, dollar_amount
-        )
+        if order_quantity is not None:
+            execution_parameters: ExecutionParameters = build_quantity_execution_params(
+                step_id, slug, thesis.instrument, action, order_quantity
+            )
+        else:
+            execution_parameters = build_execution_params(
+                step_id, slug, thesis.instrument, action, order_notional
+            )
         action_steps.append(_build_action_step(step_id, thesis, regime_tag, execution_parameters))
 
     return action_steps

@@ -5,6 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import model_validator
 
 from money_pit.schemas.analysis_draft import InvalidationCondition
 from money_pit.schemas.analysis_draft import ScenarioTable
@@ -25,6 +26,16 @@ class ExecutionParameters(BaseModel):
     type: Literal["market"]
     time_in_force: Literal["day"]
     client_order_id: str
+
+    @model_validator(mode="after")
+    def _require_exactly_one_amount(self) -> "ExecutionParameters":
+        """Enforce that exactly one of notional or qty is set, since Alpaca rejects both-set and neither-set orders."""
+        if (self.notional is None) == (self.qty is None):
+            raise ValueError(
+                "ExecutionParameters requires exactly one of notional or qty to be set, "
+                f"got notional={self.notional!r}, qty={self.qty!r}."
+            )
+        return self
 
     def to_order_payload(self) -> dict[str, object]:
         """Return the exact order-tool payload dict, omitting None-valued optional fields."""

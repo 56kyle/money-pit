@@ -35,6 +35,62 @@ def test_execution_parameters_with_invalid_side_raises() -> None:
         _execution_parameters("notaside")
 
 
+def test_execution_parameters_with_notional_only() -> None:
+    params = ExecutionParameters(
+        symbol="NVDA",
+        notional="10.00",
+        qty=None,
+        side="buy",
+        type="market",
+        time_in_force="day",
+        client_order_id="oid-1",
+    )
+
+    assert params.notional == "10.00"
+    assert params.qty is None
+
+
+def test_execution_parameters_with_qty_only() -> None:
+    params = ExecutionParameters(
+        symbol="NVDA",
+        notional=None,
+        qty="5",
+        side="buy",
+        type="market",
+        time_in_force="day",
+        client_order_id="oid-1",
+    )
+
+    assert params.qty == "5"
+    assert params.notional is None
+
+
+def test_execution_parameters_with_neither_amount_raises() -> None:
+    with pytest.raises(ValidationError):
+        _ = ExecutionParameters(
+            symbol="NVDA",
+            notional=None,
+            qty=None,
+            side="buy",
+            type="market",
+            time_in_force="day",
+            client_order_id="oid-1",
+        )
+
+
+def test_execution_parameters_with_both_amounts_raises() -> None:
+    with pytest.raises(ValidationError):
+        _ = ExecutionParameters(
+            symbol="NVDA",
+            notional="10.00",
+            qty="5",
+            side="buy",
+            type="market",
+            time_in_force="day",
+            client_order_id="oid-1",
+        )
+
+
 def test_execution_parameters_to_order_payload_emits_stored_strings_under_schema_keys() -> None:
     params = ExecutionParameters(
         symbol="NVDA",

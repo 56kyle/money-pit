@@ -12,6 +12,7 @@ import pytest
 
 from money_pit.compute.execution_params import InvalidExecutionAmountError
 from money_pit.compute.execution_params import build_execution_params
+from money_pit.compute.execution_params import build_quantity_execution_params
 from money_pit.mcp.order_schema import ALPACA_ORDER_SCHEMA_PATH
 from money_pit.mcp.order_schema import load_order_schema
 from money_pit.schemas.enums import ActionType
@@ -155,4 +156,71 @@ def test_build_execution_params_with_invalid_amount_precedes_schema_load(monkeyp
             symbol="NVDA",
             action_type=ActionType.BUY,
             dollar_amount=-100.0,
+        )
+
+
+def test_build_quantity_execution_params_with_sell() -> None:
+    result = build_quantity_execution_params(
+        step_id="A001",
+        slug="2026-01-01_00-00-00",
+        symbol="NVDA",
+        action_type=ActionType.SELL,
+        quantity=10.0,
+    )
+    payload = result.to_order_payload()
+
+    assert result.qty == "10"
+    assert result.notional is None
+    assert result.side == "sell"
+    assert result.type == "market"
+    assert result.time_in_force == "day"
+    assert result.client_order_id == "2026-01-01_00-00-00:A001"
+    assert "qty" in payload
+    assert "notional" not in payload
+
+
+@pytest.mark.parametrize(
+    ("quantity", "expected_qty"),
+    [(10.0, "10"), (3.5, "3.5"), (0.001, "0.001"), (10.25, "10.25")],
+)
+def test_build_quantity_execution_params_formats_quantity(quantity: float, expected_qty: str) -> None:
+    result = build_quantity_execution_params(
+        step_id="A001",
+        slug="2026-01-01_00-00-00",
+        symbol="NVDA",
+        action_type=ActionType.SELL,
+        quantity=quantity,
+    )
+
+    assert result.qty == expected_qty
+
+
+def test_build_quantity_execution_params_emitted_payload_validates_against_real_schema() -> None:
+    result = build_quantity_execution_params(
+        step_id="A001",
+        slug="2026-01-01_00-00-00",
+        symbol="MSFT",
+        action_type=ActionType.SELL,
+        quantity=5.0,
+    )
+    payload = result.to_order_payload()
+
+    jsonschema.validate(instance=payload, schema=load_order_schema(ALPACA_ORDER_SCHEMA_PATH))
+    assert payload["qty"] == "5"
+    assert "notional" not in payload
+    assert "quantity" not in payload
+
+
+@pytest.mark.parametrize(
+    "quantity",
+    [0.0, -1.0, float("nan"), float("inf"), float("-inf")],
+)
+def test_build_quantity_execution_params_with_invalid_quantity(quantity: float) -> None:
+    with pytest.raises(InvalidExecutionAmountError):
+        _ = build_quantity_execution_params(
+            step_id="A001",
+            slug="2026-01-01_00-00-00",
+            symbol="NVDA",
+            action_type=ActionType.SELL,
+            quantity=quantity,
         )

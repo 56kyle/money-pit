@@ -59,6 +59,27 @@ def apply_haircuts(
     return kelly_fraction * haircut_verification * haircut_regime * f_kelly
 
 
+def kelly_target_dollars(
+    scenarios: list[tuple[float, float]],
+    total_account_value: float,
+    config: Config,
+    verified: bool,
+    regime_uncertain: bool,
+) -> float:
+    """Return the un-gated, un-clamped Kelly target dollars for the position."""
+    f_kelly: float = solve_kelly(scenarios)
+    w: float = apply_haircuts(
+        f_kelly,
+        config.kelly_fraction,
+        config.haircut_unverified,
+        config.haircut_uncertain,
+        verified,
+        regime_uncertain,
+    )
+    w = min(w, config.max_position_weight)
+    return w * total_account_value
+
+
 def size_position(
     scenarios: list[tuple[float, float]],
     total_account_value: float,
@@ -73,17 +94,13 @@ def size_position(
     if compute_ev(scenarios) < config.ev_gate:
         return None
 
-    f_kelly: float = solve_kelly(scenarios)
-    w: float = apply_haircuts(
-        f_kelly,
-        config.kelly_fraction,
-        config.haircut_unverified,
-        config.haircut_uncertain,
+    dollars: float = kelly_target_dollars(
+        scenarios,
+        total_account_value,
+        config,
         verified,
         regime_uncertain,
     )
-    w = min(w, config.max_position_weight)
-    dollars: float = w * total_account_value
     dollars = min(dollars, sector_headroom, cash_headroom, overlap_headroom)
     if dollars <= 0:
         return None

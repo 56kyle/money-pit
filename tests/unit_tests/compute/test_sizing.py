@@ -5,6 +5,7 @@ import pytest
 from money_pit.compute.sizing import _kelly_derivative
 from money_pit.compute.sizing import apply_haircuts
 from money_pit.compute.sizing import compute_ev
+from money_pit.compute.sizing import kelly_target_dollars
 from money_pit.compute.sizing import size_position
 from money_pit.compute.sizing import solve_kelly
 from money_pit.config import Config
@@ -201,6 +202,72 @@ def test_size_position_monotonic_decreasing_in_variance(
     assert low_var_result is not None
     assert high_var_result is not None
     assert low_var_result > high_var_result
+
+
+def test_kelly_target_dollars_with_positive_edge(stub_config: Config) -> None:
+    scenarios: list[tuple[float, float]] = [(0.7, 0.20), (0.3, -0.05)]
+
+    target: float = kelly_target_dollars(scenarios, _TOTAL_ACCOUNT_VALUE, stub_config, True, False)
+
+    assert target > 0.0
+
+
+def test_kelly_target_dollars_matches_size_position_pre_clamp(stub_config: Config) -> None:
+    # EV=0.125 clears the gate and headroom is unbounded, so size_position returns the raw Kelly target.
+    scenarios: list[tuple[float, float]] = [(0.7, 0.20), (0.3, -0.05)]
+
+    target: float = kelly_target_dollars(scenarios, _TOTAL_ACCOUNT_VALUE, stub_config, True, False)
+    sized = size_position(
+        scenarios, _TOTAL_ACCOUNT_VALUE, stub_config, True, False, _LARGE_HEADROOM, _LARGE_HEADROOM, _LARGE_HEADROOM
+    )
+
+    assert sized is not None
+    assert target == pytest.approx(sized)
+
+
+def test_kelly_target_dollars_positive_below_ev_gate_where_size_position_is_none(stub_config: Config) -> None:
+    # Positive edge but EV below the entry gate: exits/trims are un-gated, so the Kelly target is positive
+    # while size_position (EV-gated) declines the same scenarios.
+    scenarios: list[tuple[float, float]] = [(0.6, 0.01), (0.4, -0.005)]
+    assert 0.0 < compute_ev(scenarios) < stub_config.ev_gate
+
+    target: float = kelly_target_dollars(scenarios, _TOTAL_ACCOUNT_VALUE, stub_config, True, False)
+    sized = size_position(
+        scenarios, _TOTAL_ACCOUNT_VALUE, stub_config, True, False, _LARGE_HEADROOM, _LARGE_HEADROOM, _LARGE_HEADROOM
+    )
+
+    assert target > 0.0
+    assert sized is None
+
+
+@pytest.mark.parametrize(
+    "scenarios",
+    [
+        [(0.6, 0.0), (0.4, -0.10)],
+        [(0.5, 0.10), (0.5, -0.10)],
+    ],
+)
+def test_kelly_target_dollars_with_non_positive_ev(stub_config: Config, scenarios: list[tuple[float, float]]) -> None:
+    assert kelly_target_dollars(scenarios, _TOTAL_ACCOUNT_VALUE, stub_config, True, False) == 0.0
+
+
+def test_kelly_target_dollars_haircut_reduces_unverified(stub_config: Config) -> None:
+    # Small edge keeps the Kelly weight below max_position_weight so the haircut is not masked by the clamp.
+    scenarios: list[tuple[float, float]] = [(0.51, 0.10), (0.49, -0.10)]
+
+    verified: float = kelly_target_dollars(scenarios, _TOTAL_ACCOUNT_VALUE, stub_config, True, False)
+    unverified: float = kelly_target_dollars(scenarios, _TOTAL_ACCOUNT_VALUE, stub_config, False, False)
+
+    assert 0.0 < unverified < verified
+
+
+def test_kelly_target_dollars_haircut_reduces_regime_uncertain(stub_config: Config) -> None:
+    scenarios: list[tuple[float, float]] = [(0.51, 0.10), (0.49, -0.10)]
+
+    certain: float = kelly_target_dollars(scenarios, _TOTAL_ACCOUNT_VALUE, stub_config, True, False)
+    uncertain: float = kelly_target_dollars(scenarios, _TOTAL_ACCOUNT_VALUE, stub_config, True, True)
+
+    assert 0.0 < uncertain < certain
 
 
 def test_apply_haircuts_with_verified_no_uncertainty() -> None:

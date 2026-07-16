@@ -20,6 +20,8 @@ _TIME_IN_FORCE_DAY: Literal["day"] = "day"
 _NOTIONAL_DECIMAL_PLACES: int = 2
 MIN_NOTIONAL_DOLLARS: float = 10 ** -_NOTIONAL_DECIMAL_PLACES
 
+_QUANTITY_DECIMAL_PLACES: int = 9
+
 
 class InvalidExecutionAmountError(Exception):
     """Raised when the dollar amount for a notional order is not finite or is below the minimum representable notional."""
@@ -51,6 +53,44 @@ def build_execution_params(
         symbol=symbol,
         notional=notional,
         qty=None,
+        side=side,
+        type=_ORDER_TYPE_MARKET,
+        time_in_force=_TIME_IN_FORCE_DAY,
+        client_order_id=f"{slug}:{step_id}",
+    )
+    jsonschema.validate(instance=params.to_order_payload(), schema=schema)
+    return params
+
+
+def _format_quantity(quantity: float) -> str:
+    """Return quantity as a plain-decimal string with no scientific notation and no trailing-zero cruft."""
+    return f"{quantity:.{_QUANTITY_DECIMAL_PLACES}f}".rstrip("0").rstrip(".")
+
+
+def build_quantity_execution_params(
+    step_id: str,
+    slug: str,
+    symbol: str,
+    action_type: ActionType,
+    quantity: float,
+) -> ExecutionParameters:
+    """Build a share-quantity ExecutionParameters instance and validate its emitted payload against the pinned schema.
+
+    Raises InvalidExecutionAmountError if quantity is not finite or is not strictly positive.
+    Fails closed via load_order_schema (AlpacaOrderSchemaMissingError /
+    AlpacaOrderSchemaMalformedError) if the schema is absent or malformed, and lets
+    jsonschema.ValidationError propagate when the emitted payload violates the schema.
+    """
+    if not math.isfinite(quantity) or quantity <= 0:
+        raise InvalidExecutionAmountError(
+            f"Quantity order requires a finite, strictly positive share quantity, got {quantity!r}."
+        )
+    schema: dict[str, object] = load_order_schema()
+    side: Literal["buy", "sell"] = _SIDE_BUY if action_type in BUY_SIDES else _SIDE_SELL
+    params: ExecutionParameters = ExecutionParameters(
+        symbol=symbol,
+        notional=None,
+        qty=_format_quantity(quantity),
         side=side,
         type=_ORDER_TYPE_MARKET,
         time_in_force=_TIME_IN_FORCE_DAY,

@@ -406,9 +406,10 @@ Build **only** when the gating input exists; each fails closed today and must no
 
 ## Hygiene / Robustness backlog (do anytime)
 
-- **Live schema-drift guard** — a `@pytest.mark.live` test diffing the pinned `mcp/alpaca_order_schema.json`
-  against the live `place_stock_order.inputSchema`; nothing currently catches Alpaca schema drift until a
-  real order rejects (flagged in the Watch Items above).
+- **Live schema-drift guard** — *done*: `test_live_place_stock_order_schema_matches_pinned` (the
+  `paper_trade_live` tier) fetches the live `place_stock_order.inputSchema` and diffs it against the pinned
+  `mcp/alpaca_order_schema.json` (mirroring the `pin-order-schema` normalization), so drift is caught in the
+  live tier rather than only when a real order rejects.
 - **SELL/TRIM exit sizing** — *done (ADR 0027)*: SELL fully exits by held quantity (`qty` order, no EV
   gate), TRIM reduces by `current_value − weakened Kelly target` (notional); non-held exit theses drop with
   a warning; exits are budget-neutral. Resolves `design_decisions.md` §4's "not yet built" quantity path.
@@ -435,7 +436,7 @@ Build **only** when the gating input exists; each fails closed today and must no
 
 ## Watch Items
 
-- **`src/money_pit/mcp/alpaca_order_schema.json`**: **pinned** from the live Alpaca MCP server (`money-pit pin-order-schema`, ADR 0008); the stub sentinel is removed, so the ADR-0007 fail-closed gate is green and `test_load_order_schema_default_path_is_pinned` asserts it stays pinned. The two deferred `ExecutionParameters` reconciliations the pin forced have landed (ADR 0014): the `quantity → qty` rename (the transitional `mcp/clients._order_arguments` shim is deleted; the write client submits `to_order_payload()` directly) and float → string param typing, with the `InvalidExecutionAmountError` amount guard added (ADR 0015). The per-test stub opt-in scaffolding (`stub_free_order_schema_path` fixture and the `order_schema_path`/`schema_path` injection seams) has been **retired** — ADR 0007's terminus reached — leaving only `load_order_schema(path=)`; ADR 0016 records the related `pinned_manifest` error-propagation simplification that fell out of it. **Remaining follow-up:** a live-tier schema-drift guard comparing the pinned artifact to the live `inputSchema`.
+- **`src/money_pit/mcp/alpaca_order_schema.json`**: **pinned** from the live Alpaca MCP server (`money-pit pin-order-schema`, ADR 0008); the stub sentinel is removed, so the ADR-0007 fail-closed gate is green and `test_load_order_schema_default_path_is_pinned` asserts it stays pinned. The two deferred `ExecutionParameters` reconciliations the pin forced have landed (ADR 0014): the `quantity → qty` rename (the transitional `mcp/clients._order_arguments` shim is deleted; the write client submits `to_order_payload()` directly) and float → string param typing, with the `InvalidExecutionAmountError` amount guard added (ADR 0015). The per-test stub opt-in scaffolding (`stub_free_order_schema_path` fixture and the `order_schema_path`/`schema_path` injection seams) has been **retired** — ADR 0007's terminus reached — leaving only `load_order_schema(path=)`; ADR 0016 records the related `pinned_manifest` error-propagation simplification that fell out of it. A live-tier schema-drift guard (`test_live_place_stock_order_schema_matches_pinned`) now diffs the pinned artifact against the live `inputSchema`.
 - **Write-client boundary discipline** (ADR 0008): Alpaca has no key-level read/write split, so the "only execution places orders" guarantee now rests on **client separation** (alpaca-py reads, MCP writes) and constructing `AlpacaWriteDeps` only on the execution path — no type prevents a future caller from breaching it. Snapshot reads must stay on alpaca-py, never a `trading`-scoped MCP instance.
 - **N=1 stub inertness** (`test_n1_stubs.py`): turns red when a second source or the first interdependent thesis activates a dormant aggregation path.
 - **`terminal_state_router`**: routes `None`→"validate", `NO_ACTION`→"no_action", else→"notify"; the 4-member `TerminalState` (ADR 0006) is authoritative — confirm against `pipeline_contracts.md` §0/§6a when touching it.

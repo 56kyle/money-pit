@@ -21,6 +21,8 @@ from money_pit.mcp.clients import list_write_tools
 from money_pit.mcp.clients import make_alpaca_write_deps
 from money_pit.mcp.constants import PLACE_STOCK_ORDER_TOOL
 from money_pit.mcp.manifest import live_manifest
+from money_pit.mcp.order_schema import ALPACA_ORDER_SCHEMA_STUB_SENTINEL
+from money_pit.mcp.order_schema import load_order_schema
 from money_pit.pipeline.execution import _poll_fill
 from money_pit.schemas.action_steps import ExecutionParameters
 from money_pit.schemas.enums import ExecutionPhase
@@ -63,6 +65,21 @@ def test_live_manifest_includes_place_stock_order(live_credentials: AlpacaCreden
     manifest = live_manifest(live_credentials)
 
     assert PLACE_STOCK_ORDER_TOOL in manifest
+
+
+def test_live_place_stock_order_schema_matches_pinned(live_credentials: AlpacaCredentials) -> None:
+    """Trip the wire when the live Alpaca place_stock_order inputSchema drifts from the committed pin.
+
+    Read-only introspection (no order placed, no capital moved). Normalizes the live schema exactly as the
+    pin-order-schema CLI does (dropping the stub sentinel) so the comparison is apples-to-apples, then asserts a
+    plain dict `==`: any field-level change (added/removed/renamed properties, type changes, description edits)
+    fails here so the operator re-pins/reconciles before a real live order rejects against a stale schema.
+    """
+    live_schema = live_manifest(live_credentials)[PLACE_STOCK_ORDER_TOOL]
+    expected = dict(live_schema)
+    _ = expected.pop(ALPACA_ORDER_SCHEMA_STUB_SENTINEL, None)
+
+    assert load_order_schema() == expected
 
 
 def test_live_gmail_email_smoke(live_config: Config) -> None:

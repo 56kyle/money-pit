@@ -233,7 +233,8 @@ The system's core, split into a judgment agent and a deterministic compute node.
 - **Post-processor (node):** consumes `AnalysisJudgment + PortfolioSnapshot` and produces
   `action_steps.json` (`list[ActionStep]`). It performs every deterministic operation: Step 2 regime
   tagging via the five-indicator decision table (`design_decisions.md §1`), Step 3 constraint
-  extraction (25% sector cap, cash, overlap), Step 5 `EV = Σ(Pᵢ/100 × Rᵢ)` and the ≥ +3.0% gate,
+  extraction (25% sector cap, cash, overlap — enforced as **running** per-sector/cash/correlated-group
+  tallies across a run's BUY/ADD candidates sized in conviction/EV priority order, ADR 0026), Step 5 `EV = Σ(Pᵢ/100 × Rᵢ)` and the ≥ +3.0% gate,
   Step 7 fractional-Kelly sizing (`design_decisions.md §2`: `w = kelly_fraction × h_unverified × h_uncertain × f_kelly`, clamped to `max_position_weight`, then to §3 headroom), direction →
   `action_type` mapping, probability-sum validation, and emission of `execution_parameters` with
   **manifest-correct field names**. This node is where the `ticker→symbol` / `dollar_amount→notional` /
@@ -514,10 +515,11 @@ Defense in depth, ordered from structural to procedural:
    field. Any non-`MATCHED` step forces `HALT`. No "close enough."
 4. **Evidence-only analysis (A4).** Every quantitative claim must trace to an input field; missing
    data is never treated as favorable and cannot be filled from model knowledge.
-5. **Deterministic sizing with hard limits.** 25% sector cap, available-cash ceiling, and
-   correlated-overlap reductions are arithmetic clamps in the post-processor, not model discretion.
-   The overlap reduction consumes `correlated_overlaps` per candidate (ADR 0025); a true per-sector
-   headroom (vs. the current flat `sector_cap × TAV`) is a tracked follow-up.
+5. **Deterministic sizing with hard limits.** The 25% sector cap, available-cash ceiling, and
+   correlated-overlap reductions are arithmetic clamps in the post-processor, not model discretion —
+   enforced as running per-sector/cash/correlated-group tallies across a run's BUY/ADD candidates (sized
+   in conviction/EV priority order), against each candidate's yfinance-resolved sector and constituents
+   (ADR 0026). Exposure-reducing SELL/TRIM are not clamped.
 6. **Conservative bias.** Unverified signals and `UNCERTAIN` regimes cap conviction and forbid the
    largest size multiplier.
 7. **Execution consistency (transactional, §6.8).** Idempotent submission prevents double-execution;

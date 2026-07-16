@@ -13,8 +13,9 @@ src/money_pit/
 ├── log.py                   # (existing) loguru setup
 ├── config.py                # (existing) pydantic-settings Config + load_config
 ├── constants.py             # (existing) APP_NAME, paths, slug datetime format
-├── contracts.py             # Cross-layer DI TypeAliases (cycle-free leaf, imports only schemas): ToolManifest, ThesisAgent, PortfolioFetcher, OrderPlacer, EmailSender, CorroborationAgent, ClaimQuestionsAgent, AnswerSynthesisAgent
-├── alpaca_portfolio.py     # alpaca-py-backed PortfolioFetcher (reads snapshot via TradingClient, not MCP — ADR 0008); yfinance best-effort sector + factor_tags (ADR 0024) + held-ETF correlated_overlaps (ADR 0025), all fail-soft; NonEquityPositionError
+├── contracts.py             # Cross-layer DI TypeAliases (cycle-free leaf, imports only schemas): ToolManifest, ThesisAgent, PortfolioFetcher, ResolveInstrumentFacts, OrderPlacer, EmailSender, CorroborationAgent, ClaimQuestionsAgent, AnswerSynthesisAgent
+├── market_data.py          # Neutral yfinance reference-data leaf (no alpaca-py): fetch_ticker_info/fetch_etf_holdings/resolve_sector/is_etf/as_float + make_yfinance_instrument_resolver (candidate InstrumentFacts); all fail-soft
+├── alpaca_portfolio.py     # alpaca-py-backed PortfolioFetcher (reads snapshot via TradingClient, not MCP — ADR 0008); sector + factor_tags (ADR 0024) + held-ETF correlated_overlaps + persisted etf_holdings (ADR 0025) via market_data helpers, all fail-soft; NonEquityPositionError
 ├── alpaca_orders.py        # alpaca-py-backed FillObserver: observes an order's real fill by client_order_id (reads via SDK — ADR 0008/0017); typed OrderNotYetVisibleError/FillObservationError
 ├── email_sender.py         # Gmail smtplib EmailSender for the pipeline (direct, not over MCP — ADR 0009); typed EmailSendError
 ├── prompt_loader.py        # Loads the packaged agent prompts from prompts/ (ADR 0012)
@@ -42,7 +43,8 @@ src/money_pit/
 │   ├── journal.py           # ExecutionJournalEntry, ExecutionJournal
 │   ├── recovery.py          # PriorRunReconciliation, ReconciledOrder — recovery reconciliation result written to recovery.json (ADR 0018)
 │   ├── fills.py             # FillObservation — typed order-fill observation (raw status, mapped phase, filled_qty/avg_price/realized_notional) — ADR 0017
-│   └── portfolio.py         # Position, PortfolioSnapshot
+│   ├── portfolio.py         # Position, PortfolioSnapshot (incl. persisted held-ETF etf_holdings — ADR 0026)
+│   └── instrument.py        # InstrumentFacts — candidate reference-data (sector, is_etf, holdings) resolved via the ResolveInstrumentFacts seam (ADR 0026)
 │
 ├── graph/                   # LangGraph wiring only — zero business logic
 │   ├── __init__.py

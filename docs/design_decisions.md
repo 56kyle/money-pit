@@ -130,6 +130,12 @@ w = clamp( kelly_fraction · h_unverified · h_uncertain · f_kelly,  0,  max_po
 dollars = w · total_account_value         # then clamp to §3 sector / cash / overlap headroom; drop if 0
 ```
 
+The §3 headroom is not flat: BUY/ADD candidates are sized in conviction→EV priority order against **running**
+per-sector, cash, and correlated-group tallies (seeded from held exposure), so a run's candidates
+collectively respect the 25% sector cap, the cash ceiling, and the overlap budget — evaluated against each
+candidate's yfinance-resolved sector and constituents (ADR 0026). The clamps are gated to exposure-increasing
+actions; SELL/TRIM are not clamped. A size below the minimum notional drops rather than halting.
+
 - `kelly_fraction` (κ): the **single global risk dial** — fractional Kelly (e.g. quarter-Kelly) for the
   cushion against estimation error in a coarse 3-point distribution.
 - `h_unverified`, `h_uncertain`: multiplicative haircuts (`< 1`, else `1.0`) replacing the old

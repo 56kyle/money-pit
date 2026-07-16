@@ -239,9 +239,10 @@ The system's core, split into a judgment agent and a deterministic compute node.
   `action_type` mapping, probability-sum validation, and emission of `execution_parameters` with
   **manifest-correct field names**. This node is where the `ticker→symbol` / `dollar_amount→notional` /
   `action_type→side` translation lives — never inside the validator. Per the pinned schema (ADR 0014)
-  it emits `notional` as a cents-formatted **string** (`f"{dollar_amount:.2f}"`) with `qty = null` on
-  the notional path, and fails closed with `InvalidExecutionAmountError` (ADR 0015) on any non-finite or
-  sub-cent amount before the payload is validated. A4 also writes `analysis.md`, the full
+  BUY/ADD and TRIM emit `notional` as a cents-formatted **string** (`f"{dollar_amount:.2f}"`, `qty = null`),
+  while a **SELL** full exit emits `qty` (the held share quantity, `notional = null`) — the exit-sizing
+  split (ADR 0027). It fails closed with `InvalidExecutionAmountError` (ADR 0015) on any non-finite or
+  sub-minimum amount before the payload is validated. A4 also writes `analysis.md`, the full
   human-readable reasoning including every drop.
 
 ### 6.6 A5 — Validation node (deterministic, no LLM)

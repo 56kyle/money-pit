@@ -147,8 +147,9 @@ actions; SELL/TRIM are not clamped. A size below the minimum notional drops rath
   from a fixed "÷20" base, which is removed.
 
 **Exits.** `BUY`/`ADD` size _to_ the Kelly target (ADD tops up toward it). `TRIM` reduces _toward_ the
-lower Kelly target implied by the weakened thesis; `SELL` is a full exit. The field translation
-(notional vs quantity) is §4.
+lower Kelly target implied by the weakened thesis; `SELL` is a full exit. Exits are sized from the held
+position, not the entry sizer, and are not EV-gated (ADR 0027). The field translation (notional vs
+quantity) is §4.
 
 **Prompt note.** This supersedes agent_4 Step 7's "base ÷ 20 × {1.5/1.0/0.5}" arithmetic — but that
 arithmetic had already been moved out of A4 into the deterministic post-processor (architecture §9), so
@@ -167,12 +168,14 @@ snapshot.
 
 ## 4. Sell / trim translation (§15 #5) — **RESOLVED**
 
-`SELL` (full exit) closes the position by **quantity** (snapshot `quantity`) to avoid fractional dust.
-`TRIM` uses **notional** (dollars to remove). The pinned `place_stock_order` schema accepts both
-`notional` and `qty` (each string-or-null, mutually exclusive); the current post-processor emits the
-**notional** path only (`qty = None`), so the "convert to quantity via snapshot price" branch is not yet
-built. Entries are Kelly-sized (§2); `compute/execution_params.py` emits the literal `notional` string
-the pinned schema defines (§7, ADR 0014).
+`SELL` (full exit) closes the position by **quantity** (snapshot `quantity`) to avoid fractional dust —
+no EV gate, no Kelly (a decision to exit must exit). `TRIM` uses **notional**: `max(0, current_value −
+weakened Kelly target)`, the target being `compute/sizing.py::kelly_target_dollars` with no entry EV-gate
+or headroom clamps. Both paths are **built** (ADR 0027): `build_quantity_execution_params` emits the `qty`
+order for SELL, `build_execution_params` the `notional` order for TRIM (and BUY/ADD); an
+`ExecutionParameters` validator enforces exactly one of `qty`/`notional`. A SELL/TRIM naming a non-held
+ticker is dropped with a warning. The pinned `place_stock_order` schema accepts both `notional` and `qty`
+(each string-or-null, mutually exclusive; §7, ADR 0014). Entries are Kelly-sized (§2).
 
 ## 5. Atomic groups at N=1 (§15 #9) — **STUB**
 

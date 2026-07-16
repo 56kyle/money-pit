@@ -409,12 +409,9 @@ Build **only** when the gating input exists; each fails closed today and must no
 - **Live schema-drift guard** — a `@pytest.mark.live` test diffing the pinned `mcp/alpaca_order_schema.json`
   against the live `place_stock_order.inputSchema`; nothing currently catches Alpaca schema drift until a
   real order rejects (flagged in the Watch Items above).
-- **SELL/TRIM exit sizing (`design_decisions.md` §4)** — SELL/TRIM still route through the same
-  Kelly/EV-gate/notional path as BUY/ADD; the exposure clamps are now correctly gated off for them (ADR
-  0026), but their *sizing* is still an entry sizer, not an exit. SELL should close a full position by the
-  snapshot's held quantity and TRIM should reduce toward a lower target. Recommended next task. *(The
-  candidate-side per-sector cap, cash running tally, and candidate-vs-holdings overlap are now done — ADR
-  0026, resolving the sector-cap gap flagged in ADR 0024/0025.)*
+- **SELL/TRIM exit sizing** — *done (ADR 0027)*: SELL fully exits by held quantity (`qty` order, no EV
+  gate), TRIM reduces by `current_value − weakened Kelly target` (notional); non-held exit theses drop with
+  a warning; exits are budget-neutral. Resolves `design_decisions.md` §4's "not yet built" quantity path.
 - **Stale markers cleanup** — comments in `agents/research_tools.py` and `adapters/video_llm.py` still say
   "wired in Phase 7 / converge in Phase 7"; cosmetic, retire alongside the relevant phase.
 

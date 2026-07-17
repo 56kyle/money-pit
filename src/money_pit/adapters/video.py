@@ -5,17 +5,11 @@ from pathlib import Path
 
 from typing_extensions import override
 
+from money_pit.adapters.assembly import signal_set_from_draft
 from money_pit.adapters.base import SourceAdapter
 from money_pit.adapters.video_llm import VideoPayload
-from money_pit.compute.signal_flags import has_actionable_content
-from money_pit.compute.signal_flags import normalize_ticker
-from money_pit.compute.signal_flags import requires_validation as is_validation_required
 from money_pit.constants import source_id_to_dirname
-from money_pit.schemas.enums import ClaimCategory
-from money_pit.schemas.enums import SignalTier
-from money_pit.schemas.signal_draft import ClaimDraft
 from money_pit.schemas.signal_draft import SignalSetDraft
-from money_pit.schemas.signals import Claim
 from money_pit.schemas.signals import SignalSet
 
 
@@ -46,34 +40,8 @@ class VideoAdapter(SourceAdapter[VideoPayload]):
         payload_path: Path = payload_dir / _PAYLOAD_FILENAME
         _ = payload_path.write_text(payload.model_dump_json(indent=2), encoding="utf-8")
 
-        draft: SignalSetDraft = self._agent(payload)
-        claims: list[Claim] = [_to_claim(c, payload) for c in draft.claims]
-
-        return SignalSet(
+        return signal_set_from_draft(
+            self._agent(payload),
             slug=payload.slug,
             source_ref=payload.source_ref,
-            summary=draft.summary,
-            claims=claims,
-            tickers_mentioned=_normalize_tickers(draft.tickers_mentioned),
-            sectors_mentioned=draft.sectors_mentioned,
-            macro_themes=draft.macro_themes,
-            has_actionable_content=has_actionable_content(claims),
         )
-
-
-def _to_claim(draft_claim: ClaimDraft, payload: VideoPayload) -> Claim:
-    tier: SignalTier = SignalTier(draft_claim.tier)
-    return Claim(
-        claim_id=draft_claim.claim_id,
-        tier=tier,
-        claim=draft_claim.claim,
-        category=ClaimCategory(draft_claim.category),
-        tickers_affected=_normalize_tickers(draft_claim.tickers_affected),
-        requires_validation=is_validation_required(tier),
-        source_ref=payload.source_ref,
-        cited_sources=draft_claim.cited_sources,
-    )
-
-
-def _normalize_tickers(raw_tickers: list[str]) -> list[str]:
-    return [t for t in (normalize_ticker(raw) for raw in raw_tickers) if t is not None]

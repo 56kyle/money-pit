@@ -96,6 +96,7 @@ def test_live_paper_order_fill_observed(live_credentials: AlpacaCredentials) -> 
     through the real _poll_fill loop with a short timeout so the just-submitted 404 race resolves and the
     test is honest whether the market is open (fills) or closed (stays SUBMITTED).
     """
+    assert live_credentials.paper, "refusing to place a live order: credentials are not paper-routed"
     place_order = make_alpaca_write_deps(live_credentials)
     observe_fill = make_alpaca_fill_observer(live_credentials)
 

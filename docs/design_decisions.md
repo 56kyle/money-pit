@@ -205,15 +205,20 @@ notify), and the journal carries the real `phase`/fill fields. Only the atomic-g
 The shared-loader / co-located-path shape landed: `mcp/alpaca_order_schema.json` is the pinned
 artifact and `mcp/order_schema.py` is the single loader (`load_order_schema`, exposing
 `ALPACA_ORDER_SCHEMA_PATH`), so the post-processor's `compute/execution_params.py` emission and
-`pipeline/validator.py`'s `jsonschema` check share one literal source. A5 validates against a **static,
-pinned manifest** (`pinned_manifest()` = `{"place_stock_order": <that schema>}`) rather than live
-introspection (→ see ADR 0004); introspecting the registered MCP servers is the deferred
-live-introspection swap of the injected default. The real `place_stock_order` schema has now been
+`pipeline/validator.py`'s `jsonschema` check share one literal source. A5 validates against an **injected
+manifest**: the default is the **static, pinned** `pinned_manifest()` (= `{"place_stock_order": <that
+schema>}`, resolved eagerly when nothing is injected — → see ADR 0004), and the deferred
+live-introspection swap has since landed as `mcp/manifest.py`'s `live_manifest()`, which introspects a
+freshly spawned Alpaca MCP write server and fails closed with `ManifestUnavailableError`. Production wires
+the live manifest (`pipeline/orchestration.py`'s `production_deps`); the pinned manifest stays the offline
+default. The real `place_stock_order` schema has now been
 **pinned from the live Alpaca MCP server** (`money-pit pin-order-schema`): the stub sentinel is gone,
 the fail-closed gate (ADR 0007) is satisfied, and the emitted payload was reconciled to the real schema
 — string `notional`/`qty`, cents-formatted notional, the `quantity→qty` shim deleted (→ see ADR 0014;
-§5/§7 of contracts). The one remaining follow-up is drift detection between the pinned artifact and the
-live schema — a deferred live-tier test, since the artifact was pinned from live.
+§5/§7 of contracts). Drift between the pinned artifact and the live schema is now guarded by
+`test_live_place_stock_order_schema_matches_pinned` in the `paper_trade_live` tier, which diffs the live
+`place_stock_order.inputSchema` against the pinned artifact — so drift surfaces in the live tier rather
+than only when a real order rejects.
 
 ## 8. Step ID origin — **post-processor assigns, not A4**
 

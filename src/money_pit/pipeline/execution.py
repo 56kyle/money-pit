@@ -48,9 +48,12 @@ class OrderSubmissionError(Exception):
 class AtomicGroupNotSupportedError(Exception):
     """Raised when an action step carries a non-null group_id (see ADR 0003).
 
-    Atomic-group (all-or-nothing) execution is the deferred Phase-7 stub; at N=1 every step
-    is independent. Rather than execute one leg of a group and leave exposure nobody chose,
-    the node fails closed before placing any order. This is the marked terminus of the stub.
+    Atomic-group (all-or-nothing) execution is deferred until an interdependent thesis
+    requires it (a non-null group_id, which A4 never emits at N=1) and the open design
+    decisions in architecture.md §15 #9 (grouping criteria), #10 (leg-execution ordering),
+    and #11 (compensation cost bound) are settled. Rather than execute one leg of a group
+    and leave exposure nobody chose, the node fails closed before placing any order. This
+    is the marked terminus of the stub.
     """
 
 
@@ -65,7 +68,7 @@ def _reject_atomic_groups(steps: list[ActionStep]) -> None:
     """Fail closed before placing any order when a step carries a non-null group_id (ADR 0003)."""
     if any(step.group_id is not None for step in steps):
         raise AtomicGroupNotSupportedError(
-            "Atomic-group execution (non-null group_id) is not supported pre-Phase-7 (ADR 0003)."
+            "Atomic-group execution (non-null group_id) is not supported (ADR 0003)."
         )
 
 

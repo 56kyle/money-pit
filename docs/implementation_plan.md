@@ -413,8 +413,13 @@ Build **only** when the gating input exists; each fails closed today and must no
 - **SELL/TRIM exit sizing** — *done (ADR 0027)*: SELL fully exits by held quantity (`qty` order, no EV
   gate), TRIM reduces by `current_value − weakened Kelly target` (notional); non-held exit theses drop with
   a warning; exits are budget-neutral. Resolves `design_decisions.md` §4's "not yet built" quantity path.
-- **Stale markers cleanup** — comments in `agents/research_tools.py` and `adapters/video_llm.py` still say
-  "wired in Phase 7 / converge in Phase 7"; cosmetic, retire alongside the relevant phase.
+- **Stale markers cleanup** — *done*: the forward references to a now-complete Phase 7 are retired from
+  `agents/research_tools.py` (the `ResearchDeps` convergence is stated as the present structural fact it is),
+  `pipeline/orchestration.py` (`_phase4_send_email` describes the deliberate test-stub no-op; `production_deps`
+  has wired the real sender since Phase 7), and `pipeline/execution.py` (the `AtomicGroupNotSupportedError`
+  docstring and message drop the "pre-Phase-7" label — the deferral is real but gated on an interdependent
+  thesis plus §15 #9/#10/#11, not on a phase). The `adapters/video_llm.py` marker this entry named was already
+  gone. ADR 0003/0004 keep their "(pre-Phase-7)" titles: they date the decision, they do not defer anything.
 
 ---
 

@@ -1,7 +1,7 @@
 """Module containing the protocol types that decouple agent code from transport implementations in the money_pit package.
 
-These protocols converge with `mcp.clients.ResearchDeps` in Phase 7 — the
-MCP-backed implementation satisfies both protocols structurally.
+These protocols converge with `mcp.clients.ResearchDeps`: the MCP-backed
+implementation satisfies both protocols structurally.
 """
 
 from typing import Protocol

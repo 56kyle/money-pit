@@ -348,7 +348,7 @@ def _phase4_observe_fill(client_order_id: str) -> FillObservation:
 
 
 def _phase4_send_email(_subject: str, _body: str) -> None:
-    """No-op email stub — real sender wired in Phase 7."""
+    """Discard the notification so Phase 4 integration runs without sending mail."""
 
 
 def phase4_overrides() -> PipelineOverrides:

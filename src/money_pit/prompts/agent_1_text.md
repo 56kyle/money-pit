@@ -1,9 +1,7 @@
 <!--
-  SYNC OBLIGATION: Sections 4 (schema), 5 (categories), 6 (tiers), 7 (why tiering),
-  8 (behavioral rules), and 12 (self-check) are shared, load-bearing contract with
-  prompts/agent_1.md and must stay behaviorally identical. A change to the SignalSetDraft
-  schema or the tiering rules must be made in BOTH files or they will silently diverge.
-  This file differs from agent_1.md only in source framing: written thesis vs. video transcript.
+  SYNC OBLIGATION (see docs/decisions/0029-fork-agent1-prompt-for-text.md): sections 4, 5, 6, 7,
+  8, and 12 are shared contract with prompts/agent_1.md and must stay behaviorally identical —
+  change both files together. This file differs only in source framing (written thesis vs. video transcript).
 -->
 
 # System Prompt — Agent 1 (Text): Thesis Summarizer & Signal Classifier

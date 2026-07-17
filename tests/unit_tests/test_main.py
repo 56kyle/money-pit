@@ -15,10 +15,13 @@ from pytest import MonkeyPatch
 from typer.testing import CliRunner
 
 from money_pit import __main__
+from money_pit.adapters.text_llm import TextPayload
 from money_pit.adapters.video_llm import TranscriptSource
 from money_pit.adapters.video_llm import VideoPayload
 from money_pit.config import AlpacaCredentials
+from money_pit.config import Config
 from money_pit.config import CredentialResolutionError
+from money_pit.graph.state import PipelineState
 from money_pit.ingestion.artifacts import Keyframe
 from money_pit.ingestion.artifacts import OnScreenExtraction
 from money_pit.ingestion.artifacts import TranscriptResult
@@ -30,6 +33,7 @@ from money_pit.mcp.order_schema import ALPACA_ORDER_SCHEMA_STUB_SENTINEL
 from money_pit.schemas.enums import ClaimCategory
 from money_pit.schemas.enums import SignalTier
 from money_pit.schemas.enums import SourceType
+from money_pit.schemas.enums import TerminalState
 from money_pit.schemas.provenance import SourceRef
 from money_pit.schemas.signal_draft import ClaimDraft
 from money_pit.schemas.signal_draft import SignalSetDraft
@@ -292,3 +296,164 @@ def test__ingest_to_signal_file_carries_agent_claims(signal_file: Path) -> None:
 def test__ingest_to_signal_file_writes_only_the_one_file(signal_file: Path, signals_dir: Path) -> None:
     assert signals_dir.is_dir()
     assert list(signals_dir.iterdir()) == [signal_file]
+
+
+_ANALYZE_TEXT_BODY: str = "NVDA is well-positioned for AI infrastructure buildout. Risk: AMD competition."
+_ANALYZE_TEXT_TERMINAL_STATE: TerminalState = TerminalState.NO_ACTION
+
+
+def _analyze_text_draft(payload: TextPayload) -> SignalSetDraft:
+    source_ref: SourceRef = payload.source_ref
+    return SignalSetDraft(
+        source_id=source_ref.source_id,
+        source_type=source_ref.source_type.value,
+        title=source_ref.title,
+        url=source_ref.url,
+        published_at=source_ref.published_at,
+        retrieved_at=source_ref.retrieved_at,
+        summary="NVDA thesis.",
+        claims=[
+            ClaimDraft(
+                claim_id=_HIGH_CLAIM_ID,
+                claim="NVDA data center segment shows 200%+ YoY growth.",
+                tier=SignalTier.HIGH.value,
+                category=ClaimCategory.FUNDAMENTAL.value,
+                tickers_affected=["NVDA"],
+                cited_sources=[],
+            ),
+        ],
+        tickers_mentioned=["NVDA"],
+        sectors_mentioned=["Technology"],
+        macro_themes=["AI infrastructure buildout"],
+    )
+
+
+@dataclass
+class _RunSignalsDirSpy:
+    """Records each call to the stubbed _run_signals_dir and returns a fixed terminal-state PipelineState."""
+
+    calls: list[Path]
+
+    def __call__(self, signals_dir: Path, _config: Config) -> PipelineState:
+        self.calls.append(signals_dir)
+        return PipelineState(terminal_state=_ANALYZE_TEXT_TERMINAL_STATE)
+
+
+@pytest.fixture
+def run_signals_dir_spy() -> _RunSignalsDirSpy:
+    return _RunSignalsDirSpy(calls=[])
+
+
+@dataclass
+class _AgentSpy:
+    """Records whether the text LLM agent factory was invoked, standing in for make_text_llm_agent."""
+
+    called: bool
+
+    def __call__(self, _config: Config) -> Callable[[TextPayload], SignalSetDraft]:
+        self.called = True
+        return _analyze_text_draft
+
+
+@pytest.fixture
+def make_text_llm_agent_spy() -> _AgentSpy:
+    return _AgentSpy(called=False)
+
+
+@pytest.fixture
+def analyze_text_config(tmp_path: Path) -> Config:
+    return Config(
+        alpaca_service="the-service",
+        alpaca_username="the-user",
+        alpaca_paper=True,
+        ingest_cache_dir=tmp_path / "cache",
+    )
+
+
+@pytest.fixture
+def stub_analyze_text(
+    monkeypatch: MonkeyPatch,
+    analyze_text_config: Config,
+    run_signals_dir_spy: _RunSignalsDirSpy,
+    make_text_llm_agent_spy: _AgentSpy,
+) -> None:
+    monkeypatch.setattr(__main__, "load_config", lambda: analyze_text_config)
+    monkeypatch.setattr(__main__, "make_text_llm_agent", make_text_llm_agent_spy)
+    monkeypatch.setattr(__main__, "_run_signals_dir", run_signals_dir_spy)
+
+
+@pytest.fixture
+def thesis_file(tmp_path: Path) -> Path:
+    path = tmp_path / "thesis.txt"
+    _ = path.write_text(_ANALYZE_TEXT_BODY, encoding="utf-8")
+    return path
+
+
+def test_analyze_text_command_registered() -> None:
+    assert any(command.name == "analyze-text" for command in __main__.app.registered_commands)
+
+
+def test_analyze_text_with_valid_exits_zero(
+    runner: CliRunner, stub_analyze_text: None, thesis_file: Path
+) -> None:
+    result = runner.invoke(__main__.app, ["analyze-text", str(thesis_file)])
+
+    assert result.exit_code == 0
+
+
+def test_analyze_text_with_valid_runs_signals_dir_once(
+    runner: CliRunner, stub_analyze_text: None, thesis_file: Path, run_signals_dir_spy: _RunSignalsDirSpy
+) -> None:
+    _ = runner.invoke(__main__.app, ["analyze-text", str(thesis_file)])
+
+    assert len(run_signals_dir_spy.calls) == 1
+
+
+def test_analyze_text_with_valid_writes_one_signal_file(
+    runner: CliRunner, stub_analyze_text: None, thesis_file: Path, run_signals_dir_spy: _RunSignalsDirSpy
+) -> None:
+    _ = runner.invoke(__main__.app, ["analyze-text", str(thesis_file)])
+
+    signals_dir = run_signals_dir_spy.calls[0]
+    signal_files = list(signals_dir.iterdir())
+    assert len(signal_files) == 1
+    _ = SignalSet.model_validate_json(signal_files[0].read_text(encoding="utf-8"))
+
+
+def test_analyze_text_with_valid_echoes_terminal_state(
+    runner: CliRunner, stub_analyze_text: None, thesis_file: Path
+) -> None:
+    result = runner.invoke(__main__.app, ["analyze-text", str(thesis_file)])
+
+    assert _ANALYZE_TEXT_TERMINAL_STATE.value in result.output
+
+
+def test_analyze_text_with_missing_path_exits_one_before_llm(
+    runner: CliRunner,
+    stub_analyze_text: None,
+    tmp_path: Path,
+    run_signals_dir_spy: _RunSignalsDirSpy,
+    make_text_llm_agent_spy: _AgentSpy,
+) -> None:
+    result = runner.invoke(__main__.app, ["analyze-text", str(tmp_path / "missing.txt")])
+
+    assert result.exit_code == 1
+    assert make_text_llm_agent_spy.called is False
+    assert run_signals_dir_spy.calls == []
+
+
+def test_analyze_text_with_empty_file_exits_one_before_llm(
+    runner: CliRunner,
+    stub_analyze_text: None,
+    tmp_path: Path,
+    run_signals_dir_spy: _RunSignalsDirSpy,
+    make_text_llm_agent_spy: _AgentSpy,
+) -> None:
+    empty_path = tmp_path / "empty.txt"
+    _ = empty_path.write_text("   \n\t\n", encoding="utf-8")
+
+    result = runner.invoke(__main__.app, ["analyze-text", str(empty_path)])
+
+    assert result.exit_code == 1
+    assert make_text_llm_agent_spy.called is False
+    assert run_signals_dir_spy.calls == []

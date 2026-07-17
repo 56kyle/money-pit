@@ -7,6 +7,9 @@ from money_pit.adapters.text_llm import TextPayload
 from money_pit.schemas.enums import SourceType
 from money_pit.schemas.provenance import SourceRef
 
+_SOURCE_ID_PREFIX: str = "note"
+_SOURCE_ID_HASH_LENGTH: int = 8
+
 
 class ThesisFileNotReadableError(Exception):
     """Raised when the thesis path is missing or cannot be read."""
@@ -30,7 +33,7 @@ def read_thesis(path: Path) -> str:
 
 def text_source_id(body: str) -> str:
     """Derive a deterministic, clock-free source id from the thesis body."""
-    return f"note:{hashlib.sha256(body.encode('utf-8')).hexdigest()[:8]}"
+    return f"{_SOURCE_ID_PREFIX}:{hashlib.sha256(body.encode('utf-8')).hexdigest()[:_SOURCE_ID_HASH_LENGTH]}"
 
 
 def build_text_payload(

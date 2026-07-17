@@ -9,6 +9,13 @@ from typing import TYPE_CHECKING
 
 import typer
 
+from money_pit.adapters.text import TextAdapter
+from money_pit.adapters.text_llm import TextPayload
+from money_pit.adapters.text_llm import make_text_llm_agent
+from money_pit.adapters.text_source import EmptyThesisError
+from money_pit.adapters.text_source import ThesisFileNotReadableError
+from money_pit.adapters.text_source import build_text_payload
+from money_pit.adapters.text_source import read_thesis
 from money_pit.adapters.video import VideoAdapter
 from money_pit.adapters.video_llm import VideoPayload
 from money_pit.adapters.video_llm import make_video_llm_agent
@@ -80,6 +87,11 @@ def _ingest_to_signal_file(
     return signal_path
 
 
+def _run_signals_dir(signals_dir: Path, config: Config) -> PipelineState:
+    """Execute the full pipeline over a prepared signals directory on the production (paper) deps."""
+    return run_pipeline(signals_dir, overrides=production_deps(config))
+
+
 def _run_url(url: str, config: Config) -> PipelineState:
     """Ingest one video URL and execute the full pipeline over it, returning the final state."""
     slug: str = _mint_slug()
@@ -95,7 +107,7 @@ def _run_url(url: str, config: Config) -> PipelineState:
         agent,
         max_frames=config.keyframe_max_frames,
     )
-    return run_pipeline(signals_dir, overrides=production_deps(config))
+    return _run_signals_dir(signals_dir, config)
 
 
 @app.callback()
@@ -168,6 +180,36 @@ def run(url: str) -> None:
     terminal_state: TerminalState | None = state.get("terminal_state")
     label: str = terminal_state.value if terminal_state is not None else _NO_TERMINAL_STATE_LABEL
     typer.echo(f"Run complete. Terminal state: {label}")
+
+
+@app.command(name="analyze-text")
+def analyze_text(file: Path, title: str | None = None) -> None:
+    """Classify a plain-text thesis file into signals and execute the full pipeline over it (paper)."""
+    config: Config = load_config()
+    try:
+        body: str = read_thesis(file)
+    except (ThesisFileNotReadableError, EmptyThesisError) as error:
+        typer.echo(f"Cannot analyze thesis: {error}", err=True)
+        raise typer.Exit(code=1) from error
+
+    slug: str = _mint_slug()
+    resolved_title: str = title if title is not None else file.stem
+    retrieved_at: str = datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
+    payload: TextPayload = build_text_payload(
+        body, slug=slug, title=resolved_title, retrieved_at=retrieved_at
+    )
+    signal_set: SignalSet = TextAdapter(
+        agent=make_text_llm_agent(config), cache_dir=config.ingest_cache_dir
+    ).process(payload)
+
+    signals_dir: Path = Path(tempfile.mkdtemp())
+    signal_path: Path = signals_dir / f"{source_id_to_dirname(signal_set.source_ref.source_id)}.json"
+    _ = signal_path.write_text(signal_set.model_dump_json(indent=_JSON_INDENT), encoding="utf-8")
+
+    state: PipelineState = _run_signals_dir(signals_dir, config)
+    terminal_state: TerminalState | None = state.get("terminal_state")
+    label: str = terminal_state.value if terminal_state is not None else _NO_TERMINAL_STATE_LABEL
+    typer.echo(f"Analysis complete. Terminal state: {label}")
 
 
 @app.command(name="run-latest")

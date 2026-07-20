@@ -34,7 +34,7 @@ pytestmark = [
     pytest.mark.live_video,
     pytest.mark.skipif(
         os.environ.get("MONEY_PIT_LIVE_VIDEO") != "1",
-        reason="live_video tier is opt-in; set MONEY_PIT_LIVE_VIDEO=1 (with real ANTHROPIC creds) to run",
+        reason="live_video tier is opt-in; set MONEY_PIT_LIVE_VIDEO=1 (with real OPENAI_API_KEY creds) to run",
     ),
     pytest.mark.skipif(
         _VIDEO_EXTRA_MISSING,
@@ -46,8 +46,8 @@ pytestmark = [
 def test_live_video_ingest_produces_valid_payload(live_config: Config, tmp_path: Path) -> None:
     """Run the real ingestion pipeline end-to-end and assert it assembles a valid VideoPayload.
 
-    Downloads a short public YouTube video and makes up to 3 real Claude VLM calls. Opt-in only:
-    requires MONEY_PIT_LIVE=1, the `video` extra, network, a GPU, and ANTHROPIC credentials.
+    Downloads a short public YouTube video and makes up to 3 real OpenAI VLM calls. Opt-in only:
+    requires MONEY_PIT_LIVE=1, the `video` extra, network, a GPU, and OPENAI_API_KEY credentials.
     """
     config = live_config.model_copy(update={"keyframe_max_frames": 3})
 

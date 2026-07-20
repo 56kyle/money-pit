@@ -198,7 +198,7 @@ def test_load_config_with_env_override(tmp_path: Path, monkeypatch: MonkeyPatch)
 @pytest.mark.parametrize(
     ("field_name", "expected_default"),
     [
-        ("llm_model", "claude-sonnet-5"),
+        ("llm_model", "gpt-5"),
         ("gmail_address", None),
         ("gmail_service", GMAIL_KEYRING_SERVICE),
         ("owner_recipient", DEFAULT_OWNER_RECIPIENT),

@@ -17,6 +17,6 @@ def live_config() -> Config:
     """Load the live-tier Config.
 
     The session-autouse integration_env fixture supplies placeholder MONEY_PIT__ALPACA_* so Config
-    constructs; the VLM/classifier resolve the operator's ambient ANTHROPIC credentials at run time.
+    constructs; the VLM/classifier resolve the operator's ambient OPENAI_API_KEY credentials at run time.
     """
     return load_config()

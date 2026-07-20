@@ -64,7 +64,7 @@ def source_id_to_dirname(source_id: str) -> str:
     """
     return re.sub(r"[^\w.\-]", "_", source_id)
 
-ANTHROPIC_MODEL_PREFIX: str = "anthropic:"
+OPENAI_MODEL_PREFIX: str = "openai:"
 
 GMAIL_KEYRING_SERVICE: str = "money-pit-gmail"
 

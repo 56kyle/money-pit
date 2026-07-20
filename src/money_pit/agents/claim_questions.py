@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 from pydantic_ai import Agent
 
 from money_pit.config import Config
-from money_pit.constants import ANTHROPIC_MODEL_PREFIX
+from money_pit.constants import OPENAI_MODEL_PREFIX
 from money_pit.contracts import ClaimQuestionsAgent
 from money_pit.prompt_loader import system_prompt
 from money_pit.schemas.question_draft import DraftQuestion
@@ -26,7 +26,7 @@ def make_claim_questions_agent(
     model: str | None = None,
 ) -> ClaimQuestionsAgent:
     """Return a callable that generates thesis_validation and invalidation_conditions questions."""
-    resolved_model: str = f"{ANTHROPIC_MODEL_PREFIX}{model or config.llm_model}"
+    resolved_model: str = f"{OPENAI_MODEL_PREFIX}{model or config.llm_model}"
 
     agent: AbstractAgent[object, list[DraftQuestion]] = Agent(
         model=resolved_model,

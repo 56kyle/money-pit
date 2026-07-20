@@ -8,7 +8,7 @@ from pydantic import ConfigDict
 from pydantic_ai import Agent
 
 from money_pit.config import Config
-from money_pit.constants import ANTHROPIC_MODEL_PREFIX
+from money_pit.constants import OPENAI_MODEL_PREFIX
 from money_pit.prompt_loader import system_prompt
 from money_pit.schemas.provenance import SourceRef
 from money_pit.schemas.signal_draft import SignalSetDraft
@@ -38,7 +38,7 @@ def make_text_llm_agent(
 ) -> Callable[[TextPayload], SignalSetDraft]:
     """Creates a closure that runs a TextPayload through the A1 LLM and returns SignalSetDraft."""
     agent: Agent[None, SignalSetDraft] = Agent(
-        f"{ANTHROPIC_MODEL_PREFIX}{model or config.llm_model}",
+        f"{OPENAI_MODEL_PREFIX}{model or config.llm_model}",
         output_type=SignalSetDraft,
         system_prompt=system_prompt(_PROMPT_NAME),
     )

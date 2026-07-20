@@ -19,7 +19,7 @@ from money_pit.constants import default_ingest_cache_dir
 
 
 ENV_PREFIX: str = "MONEY_PIT__"
-_DEFAULT_LLM_MODEL: str = "claude-sonnet-5"
+_DEFAULT_LLM_MODEL: str = "gpt-5"
 
 DEFAULT_OWNER_RECIPIENT: str = "56kyleoliver@gmail.com"
 

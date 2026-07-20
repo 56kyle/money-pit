@@ -10,7 +10,7 @@ from pydantic_ai import Agent
 from pydantic_ai import BinaryContent
 
 from money_pit.config import Config
-from money_pit.constants import ANTHROPIC_MODEL_PREFIX
+from money_pit.constants import OPENAI_MODEL_PREFIX
 from money_pit.ingestion.artifacts import Keyframe
 from money_pit.ingestion.artifacts import OnScreenExtraction
 from money_pit.prompt_loader import system_prompt
@@ -44,7 +44,7 @@ def _to_extraction(draft: OnScreenDraft, keyframe: Keyframe) -> OnScreenExtracti
 def make_on_screen_extractor(config: Config, *, model: str | None = None) -> OnScreenExtractor:
     """Creates a closure that reads on-screen text and cited sources from each keyframe via the VLM."""
     agent: Agent[None, OnScreenDraft] = Agent(
-        f"{ANTHROPIC_MODEL_PREFIX}{model or config.llm_model}",
+        f"{OPENAI_MODEL_PREFIX}{model or config.llm_model}",
         output_type=OnScreenDraft,
         system_prompt=system_prompt(_PROMPT_NAME),
     )

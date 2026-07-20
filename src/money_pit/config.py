@@ -1,5 +1,5 @@
 """Module responsible for handling config used throughout the money_pit package."""
-
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
@@ -46,6 +46,8 @@ class Config(BaseSettings):
     alpaca_service: str
     alpaca_username: str
     alpaca_paper: bool
+    anthropic_service: str
+    anthropic_username: str
 
     gmail_address: str | None = None
     gmail_service: str = GMAIL_KEYRING_SERVICE
@@ -103,7 +105,9 @@ def load_config(path: Path | None = None) -> Config:
     resolved_path: Path = path or default_config_path()
     _ = load_dotenv(resolved_path)
     try:
-        return Config()
+        config: Config = Config()
+        load_anthropic_api_key(config=config)
+        return config
     except ValidationError as error:
         missing: list[str] = _missing_required_env_vars(error)
         if not missing:
@@ -111,6 +115,14 @@ def load_config(path: Path | None = None) -> Config:
         raise CredentialResolutionError(
             f"Missing required money_pit config from the environment: {', '.join(missing)}."
         ) from error
+
+
+def load_anthropic_api_key(config: Config) -> None:
+    """Loads the anthropic api key and sets it in a spot that pydantic-ai expects it."""
+    api_key: str | None = keyring.get_password(service_name=config.anthropic_service, username=config.anthropic_username)
+    if api_key is None:
+        raise ValueError(f"Unable to find api key set at {config.anthropic_service=} and {config.anthropic_username=}")
+    os.environ["ANTHROPIC_API_KEY"] = api_key
 
 
 def resolve_alpaca_credentials(config: Config) -> AlpacaCredentials:

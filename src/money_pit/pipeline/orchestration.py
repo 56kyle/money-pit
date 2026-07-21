@@ -9,6 +9,7 @@ from pathlib import Path
 
 import requests
 from loguru import logger
+from pydantic import SecretStr
 
 from money_pit.agents.answer_synthesis import make_answer_synthesis_agent
 from money_pit.agents.claim_questions import make_claim_questions_agent
@@ -81,6 +82,16 @@ _BRAVE_SEARCH_URL: str = "https://api.search.brave.com/res/v1/web/search"
 _FETCH_TIMEOUT_SECONDS: int = 10
 _FRED_MISSING_VALUE: str = "."
 _TICKER_HISTORY_PERIOD: str = "1d"
+_REDACTED_SECRET_PLACEHOLDER: str = "<redacted>"
+
+
+def _error_text_with_secret_redacted(error: BaseException, secret: SecretStr) -> str:
+    """Return str(error) with every occurrence of the secret's plaintext replaced by a fixed placeholder."""
+    secret_value: str = secret.get_secret_value()
+    error_text: str = str(error)
+    if not secret_value:
+        return error_text
+    return error_text.replace(secret_value, _REDACTED_SECRET_PLACEHOLDER)
 
 
 class MissingPipelineDependencyError(Exception):
@@ -106,14 +117,15 @@ class PipelineOverrides:
 
 
 class _DirectDeterministicTools:
-    _fred_api_key: str | None
+    _fred_api_key: SecretStr | None
 
-    def __init__(self, fred_api_key: str | None) -> None:
+    def __init__(self, fred_api_key: SecretStr | None) -> None:
         self._fred_api_key = fred_api_key
 
     def fetch_fred_series(self, series_id: str) -> FetchResult:
         """Return the latest FRED observation, NoData on an empty series, FetchError on an upstream or config failure."""
-        if self._fred_api_key is None:
+        fred_api_key: SecretStr | None = self._fred_api_key
+        if fred_api_key is None:
             logger.warning("FRED API key not configured; cannot fetch series {series_id}", series_id=series_id)
             return FetchError(reason=f"FRED API key not configured; cannot fetch series {series_id}.")
         try:
@@ -121,7 +133,7 @@ class _DirectDeterministicTools:
                 _FRED_OBSERVATIONS_URL,
                 params={
                     "series_id": series_id,
-                    "api_key": self._fred_api_key,
+                    "api_key": fred_api_key.get_secret_value(),
                     "file_type": "json",
                     "sort_order": "desc",
                     "limit": "1",
@@ -130,8 +142,11 @@ class _DirectDeterministicTools:
             )
             data: object = response.json()
         except (requests.RequestException, ValueError) as error:
-            logger.warning("FRED fetch failed for series {series_id}: {error}", series_id=series_id, error=error)
-            return FetchError(reason=f"FRED fetch failed for series {series_id}: {error}")
+            redacted_error: str = _error_text_with_secret_redacted(error, fred_api_key)
+            logger.warning(
+                "FRED fetch failed for series {series_id}: {error}", series_id=series_id, error=redacted_error
+            )
+            return FetchError(reason=f"FRED fetch failed for series {series_id}: {redacted_error}")
         if not isinstance(data, dict):
             return NoData()
         observations = data.get("observations")
@@ -166,10 +181,10 @@ class _DirectDeterministicTools:
 
 
 class _DirectOpenEndedTools:
-    _brave_api_key: str | None
+    _brave_api_key: SecretStr | None
     _owner_recipient: str
 
-    def __init__(self, brave_api_key: str | None, owner_recipient: str) -> None:
+    def __init__(self, brave_api_key: SecretStr | None, owner_recipient: str) -> None:
         self._brave_api_key = brave_api_key
         self._owner_recipient = owner_recipient
 
@@ -181,7 +196,7 @@ class _DirectOpenEndedTools:
                 _BRAVE_SEARCH_URL,
                 headers={
                     "Accept": "application/json",
-                    "X-Subscription-Token": self._brave_api_key,
+                    "X-Subscription-Token": self._brave_api_key.get_secret_value(),
                 },
                 params={"q": query, "count": str(n_results)},
                 timeout=_FETCH_TIMEOUT_SECONDS,
@@ -448,12 +463,9 @@ def run_pipeline(
 
     config = load_config()
 
-    fred_api_key: str | None = config.fred_api_key.get_secret_value() if config.fred_api_key is not None else None
-    brave_api_key: str | None = config.brave_api_key.get_secret_value() if config.brave_api_key is not None else None
-
-    det_tools: DeterministicResearchTools = ov.deterministic_tools or _DirectDeterministicTools(fred_api_key)
+    det_tools: DeterministicResearchTools = ov.deterministic_tools or _DirectDeterministicTools(config.fred_api_key)
     open_tools: OpenEndedResearchTools = ov.open_ended_tools or _DirectOpenEndedTools(
-        brave_api_key, config.owner_recipient
+        config.brave_api_key, config.owner_recipient
     )
 
     thesis = ov.thesis_agent or make_thesis_judgment_agent(config)

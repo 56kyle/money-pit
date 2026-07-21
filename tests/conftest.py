@@ -38,6 +38,10 @@ def _restore_money_pit_env() -> Iterator[None]:
             os.environ[name] = value
 
 
+UNCONFIGURED_EMAIL_REASON: str = "no gmail_address is set"
+"""Reason handed to make_unconfigured_email_sender wherever a test drives the never-configured mailbox path."""
+
+
 _TESTS_FOLDER_NAME: str = "tests"
 _UNIT_TESTS_FOLDER_NAME: str = "unit_tests"
 _INTEGRATION_TESTS_FOLDER_NAME: str = "integration_tests"

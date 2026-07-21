@@ -13,6 +13,7 @@ from pytest import MonkeyPatch
 
 from money_pit.config import AlpacaCredentials
 from money_pit.config import Config
+from money_pit.email_sender import EmailNotConfiguredError
 from money_pit.pipeline import orchestration
 from money_pit.pipeline.orchestration import MissingPipelineDependencyError
 from money_pit.pipeline.orchestration import PipelineOverrides
@@ -57,6 +58,37 @@ def test_production_deps_wires_all_capital_critical_deps(config: Config, offline
     assert overrides.observe_fill is not None
     assert overrides.send_email is not None
     assert overrides.manifest is not None
+
+
+@pytest.fixture
+def config_without_gmail() -> Config:
+    return Config(alpaca_service="alpaca-paper", alpaca_username="the-key", alpaca_paper=True, gmail_address=None)
+
+
+@pytest.fixture
+def offline_alpaca_seams(
+    monkeypatch: MonkeyPatch, credentials: AlpacaCredentials, in_memory_keyring: InMemoryKeyring
+) -> None:
+    """in_memory_keyring is load-bearing: production_deps resolves the Gmail app password through the real keyring."""
+    monkeypatch.setattr(orchestration, "resolve_alpaca_credentials", lambda _config: credentials)
+    monkeypatch.setattr(orchestration, "live_manifest", lambda _credentials: {"place_stock_order": {}})
+
+
+@pytest.fixture
+def deps_without_gmail(config_without_gmail: Config, offline_alpaca_seams: None) -> PipelineOverrides:
+    return production_deps(config_without_gmail)
+
+
+def test_production_deps_with_unconfigured_gmail_still_composes(deps_without_gmail: PipelineOverrides) -> None:
+    assert deps_without_gmail.send_email is not None
+    assert deps_without_gmail.place_order is not None
+
+
+def test_production_deps_with_unconfigured_gmail_send_email_raises(deps_without_gmail: PipelineOverrides) -> None:
+    assert deps_without_gmail.send_email is not None
+
+    with pytest.raises(EmailNotConfiguredError):
+        deps_without_gmail.send_email("money-pit: Recovery Halt - test-run", "A prior leg is still open.")
 
 
 def test_run_pipeline_with_no_overrides_fails_closed(tmp_path: Path) -> None:

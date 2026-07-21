@@ -13,6 +13,9 @@ from pathlib import Path
 import pytest
 
 from money_pit.constants import EXECUTION_JOURNAL_FILENAME
+from money_pit.constants import UNDELIVERED_EMAIL_FILENAME_TEMPLATE
+from money_pit.email_sender import make_unconfigured_email_sender
+from money_pit.email_sender import with_undelivered_record
 from money_pit.graph.state import PipelineState
 from money_pit.pipeline.notification import _build_subject
 from money_pit.pipeline.notification import make_notification_node
@@ -21,6 +24,7 @@ from money_pit.schemas.enums import ExecutionPhase
 from money_pit.schemas.enums import TerminalState
 from money_pit.schemas.journal import ExecutionJournal
 from money_pit.schemas.journal import ExecutionJournalEntry
+from tests.conftest import UNCONFIGURED_EMAIL_REASON
 
 
 _SLUG = "test-run"
@@ -125,6 +129,45 @@ def test_notification_node_with_execution_incomplete_sends_subject(
 ) -> None:
     subject, _ = execution_incomplete_email.calls[0]
     assert subject == f"money-pit: Execution Incomplete - {_SLUG}"
+
+
+@pytest.fixture
+def undeliverable_notification_result(incomplete_working_dir: Path) -> PipelineState:
+    send_email = with_undelivered_record(
+        make_unconfigured_email_sender(UNCONFIGURED_EMAIL_REASON), incomplete_working_dir
+    )
+    node = make_notification_node(send_email=send_email)
+    state: PipelineState = {
+        "slug": _SLUG,
+        "working_dir": str(incomplete_working_dir),
+        "execution_outcome": ExecutionOutcome.EXECUTED_INCOMPLETE,
+        "completed_steps": [],
+    }
+    return node(state)
+
+
+def test_notification_node_with_undeliverable_email_still_completes_step(
+    undeliverable_notification_result: PipelineState,
+) -> None:
+    assert "notification" in (undeliverable_notification_result.get("completed_steps") or [])
+
+
+@pytest.fixture
+def undeliverable_notification_working_dir(
+    undeliverable_notification_result: PipelineState, incomplete_working_dir: Path
+) -> Path:
+    """The working dir after the notification node has run against an undeliverable sender."""
+    return incomplete_working_dir
+
+
+def test_notification_node_with_undeliverable_email_records_artifact(
+    undeliverable_notification_working_dir: Path,
+) -> None:
+    recorded = (undeliverable_notification_working_dir / UNDELIVERED_EMAIL_FILENAME_TEMPLATE.format(index=1)).read_text(
+        encoding="utf-8"
+    )
+
+    assert f"money-pit: Execution Incomplete - {_SLUG}" in recorded
 
 
 def test_notification_node_with_execution_incomplete_body_summarizes_entries(

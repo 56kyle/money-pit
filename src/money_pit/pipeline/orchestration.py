@@ -21,6 +21,7 @@ from money_pit.alpaca_orders import make_alpaca_fill_observer
 from money_pit.alpaca_portfolio import make_alpaca_portfolio_fetcher
 from money_pit.config import DEFAULT_OWNER_RECIPIENT
 from money_pit.config import Config
+from money_pit.config import CredentialResolutionError
 from money_pit.config import load_config
 from money_pit.config import resolve_alpaca_credentials
 from money_pit.constants import DAILY_SHOW_ROOT
@@ -36,6 +37,8 @@ from money_pit.contracts import ResolveInstrumentFacts
 from money_pit.contracts import ThesisAgent
 from money_pit.contracts import ToolManifest
 from money_pit.email_sender import make_gmail_email_sender
+from money_pit.email_sender import make_unconfigured_email_sender
+from money_pit.email_sender import with_undelivered_record
 from money_pit.graph.graph import build_graph
 from money_pit.graph.state import PipelineState
 from money_pit.market_data import make_yfinance_instrument_resolver
@@ -367,6 +370,15 @@ def phase4_overrides() -> PipelineOverrides:
     )
 
 
+def _gmail_or_unconfigured_email_sender(config: Config) -> EmailSender:
+    """Return the Gmail sender, or a sender that fails every send when Gmail credentials cannot be resolved."""
+    try:
+        return make_gmail_email_sender(config)
+    except CredentialResolutionError as error:
+        logger.warning("Gmail is not configured; owner emails will be recorded instead of sent: {error}", error=error)
+        return make_unconfigured_email_sender(str(error))
+
+
 def production_deps(config: Config) -> PipelineOverrides:
     """Return production PipelineOverrides wiring the real capital-critical deps and live tool manifest.
 
@@ -377,7 +389,7 @@ def production_deps(config: Config) -> PipelineOverrides:
         fetch_portfolio=make_alpaca_portfolio_fetcher(credentials, config),
         place_order=make_alpaca_write_deps(credentials),
         observe_fill=make_alpaca_fill_observer(credentials),
-        send_email=make_gmail_email_sender(config),
+        send_email=_gmail_or_unconfigured_email_sender(config),
         manifest=live_manifest(credentials),
     )
 
@@ -461,7 +473,7 @@ def run_pipeline(
         resolve_instrument_facts=resolver,
         place_order=capital_deps.place_order,
         observe_fill=capital_deps.observe_fill,
-        send_email=capital_deps.send_email,
+        send_email=with_undelivered_record(capital_deps.send_email, working_dir),
         manifest=ov.manifest,
     )
 

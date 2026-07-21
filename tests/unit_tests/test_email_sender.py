@@ -8,6 +8,7 @@ EmailSendError / CredentialResolutionError TYPES and concrete header values, nev
 import smtplib
 from collections.abc import Iterator
 from email.message import EmailMessage
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -16,9 +17,15 @@ from pytest import MonkeyPatch
 
 from money_pit.config import Config
 from money_pit.config import CredentialResolutionError
+from money_pit.constants import UNDELIVERED_EMAIL_FILENAME_TEMPLATE
+from money_pit.email_sender import EmailNotConfiguredError
 from money_pit.email_sender import EmailSendError
 from money_pit.email_sender import _build_message
 from money_pit.email_sender import make_gmail_email_sender
+from money_pit.email_sender import make_unconfigured_email_sender
+from money_pit.email_sender import with_undelivered_record
+from tests.conftest import UNCONFIGURED_EMAIL_REASON
+from tests.unit_tests.conftest import CapturedLog
 from tests.unit_tests.conftest import InMemoryKeyring
 
 
@@ -48,11 +55,14 @@ class _FakeSMTP:
         self._sent.append(message)
 
 
+_RELAY_REJECTION: str = "relay rejected the message"
+
+
 class _FailingSMTP(_FakeSMTP):
     """A fake SMTP whose send raises, exercising the EmailSendError translation."""
 
     def send_message(self, message: EmailMessage) -> None:
-        raise smtplib.SMTPException("relay rejected the message")
+        raise smtplib.SMTPException(_RELAY_REJECTION)
 
 
 @pytest.fixture
@@ -142,3 +152,201 @@ def test_send_email_with_smtp_failure(
 def test_make_gmail_email_sender_with_no_address(config: Config) -> None:
     with pytest.raises(CredentialResolutionError):
         _ = make_gmail_email_sender(config)
+
+
+_FIRST_ARTIFACT: str = UNDELIVERED_EMAIL_FILENAME_TEMPLATE.format(index=1)
+_SECOND_ARTIFACT: str = UNDELIVERED_EMAIL_FILENAME_TEMPLATE.format(index=2)
+_HALT_SUBJECT: str = "Recovery Halt"
+_HALT_BODY: str = "A prior leg is still open."
+_REASON_LINE_PREFIX: str = "Reason: "
+
+
+class _NonEmailSendErrorSender:
+    """A real EmailSender whose send fails with something other than EmailSendError."""
+
+    def __call__(self, subject: str, body: str) -> None:
+        raise RuntimeError("the working directory vanished")
+
+
+def test_make_unconfigured_email_sender_raises_email_not_configured_error() -> None:
+    sender: EmailSender = make_unconfigured_email_sender(UNCONFIGURED_EMAIL_REASON)
+
+    with pytest.raises(EmailNotConfiguredError):
+        sender(_REPORT_SUBJECT, _REPORT_BODY)
+
+
+def test_make_unconfigured_email_sender_is_caught_as_email_send_error() -> None:
+    sender: EmailSender = make_unconfigured_email_sender(UNCONFIGURED_EMAIL_REASON)
+
+    with pytest.raises(EmailSendError):
+        sender(_REPORT_SUBJECT, _REPORT_BODY)
+
+
+@pytest.fixture
+def delivered_working_dir(
+    tmp_path: Path, config: Config, keyring_with_gmail_password: InMemoryKeyring, sent_messages: list[EmailMessage]
+) -> Path:
+    sender: EmailSender = with_undelivered_record(make_gmail_email_sender(config), tmp_path)
+    sender(_REPORT_SUBJECT, _REPORT_BODY)
+    return tmp_path
+
+
+def test_with_undelivered_record_with_successful_send_delivers_message(
+    delivered_working_dir: Path, sent_messages: list[EmailMessage]
+) -> None:
+    assert len(sent_messages) == 1
+
+
+def test_with_undelivered_record_with_successful_send_writes_no_artifact(delivered_working_dir: Path) -> None:
+    assert list(delivered_working_dir.iterdir()) == []
+
+
+@pytest.fixture
+def undelivered_working_dir(
+    tmp_path: Path, config: Config, keyring_with_gmail_password: InMemoryKeyring, failing_smtp: None
+) -> Path:
+    sender: EmailSender = with_undelivered_record(make_gmail_email_sender(config), tmp_path)
+    sender(_REPORT_SUBJECT, _REPORT_BODY)
+    return tmp_path
+
+
+def test_with_undelivered_record_with_failing_send_writes_artifact(undelivered_working_dir: Path) -> None:
+    assert (undelivered_working_dir / _FIRST_ARTIFACT).is_file()
+
+
+def test_with_undelivered_record_artifact_carries_subject_and_body(undelivered_working_dir: Path) -> None:
+    recorded: str = (undelivered_working_dir / _FIRST_ARTIFACT).read_text(encoding="utf-8")
+
+    assert _REPORT_SUBJECT in recorded
+    assert _REPORT_BODY in recorded
+
+
+@pytest.fixture
+def twice_undelivered_working_dir(
+    tmp_path: Path, config: Config, keyring_with_gmail_password: InMemoryKeyring, failing_smtp: None
+) -> Path:
+    sender: EmailSender = with_undelivered_record(make_gmail_email_sender(config), tmp_path)
+    sender(_REPORT_SUBJECT, _REPORT_BODY)
+    sender(_HALT_SUBJECT, _HALT_BODY)
+    return tmp_path
+
+
+def test_with_undelivered_record_with_two_failures_numbers_artifacts(
+    twice_undelivered_working_dir: Path,
+) -> None:
+    assert sorted(path.name for path in twice_undelivered_working_dir.iterdir()) == [
+        _FIRST_ARTIFACT,
+        _SECOND_ARTIFACT,
+    ]
+
+
+def test_with_undelivered_record_with_two_failures_keeps_each_message(
+    twice_undelivered_working_dir: Path,
+) -> None:
+    assert _REPORT_BODY in (twice_undelivered_working_dir / _FIRST_ARTIFACT).read_text(encoding="utf-8")
+    assert _HALT_BODY in (twice_undelivered_working_dir / _SECOND_ARTIFACT).read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def two_wrappers_working_dir(tmp_path: Path) -> Path:
+    first: EmailSender = with_undelivered_record(make_unconfigured_email_sender(UNCONFIGURED_EMAIL_REASON), tmp_path)
+    second: EmailSender = with_undelivered_record(make_unconfigured_email_sender(UNCONFIGURED_EMAIL_REASON), tmp_path)
+    first(_REPORT_SUBJECT, _REPORT_BODY)
+    second(_HALT_SUBJECT, _HALT_BODY)
+    return tmp_path
+
+
+def test_with_undelivered_record_with_two_wrappers_numbers_artifacts(two_wrappers_working_dir: Path) -> None:
+    assert sorted(path.name for path in two_wrappers_working_dir.iterdir()) == [_FIRST_ARTIFACT, _SECOND_ARTIFACT]
+
+
+def test_with_undelivered_record_with_two_wrappers_keeps_each_message(two_wrappers_working_dir: Path) -> None:
+    assert _REPORT_BODY in (two_wrappers_working_dir / _FIRST_ARTIFACT).read_text(encoding="utf-8")
+    assert _HALT_BODY in (two_wrappers_working_dir / _SECOND_ARTIFACT).read_text(encoding="utf-8")
+
+
+def test_with_undelivered_record_with_other_error_propagates(tmp_path: Path) -> None:
+    sender: EmailSender = with_undelivered_record(_NonEmailSendErrorSender(), tmp_path)
+
+    with pytest.raises(RuntimeError):
+        sender(_REPORT_SUBJECT, _REPORT_BODY)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def _reason_line(artifact_path: Path) -> str:
+    lines: list[str] = artifact_path.read_text(encoding="utf-8").splitlines()
+    return next(line for line in lines if line.startswith(_REASON_LINE_PREFIX))
+
+
+@pytest.fixture
+def unconfigured_working_dir(tmp_path: Path) -> Path:
+    sender: EmailSender = with_undelivered_record(make_unconfigured_email_sender(UNCONFIGURED_EMAIL_REASON), tmp_path)
+    sender(_REPORT_SUBJECT, _REPORT_BODY)
+    return tmp_path
+
+
+def test_with_undelivered_record_artifact_carries_unconfigured_reason(unconfigured_working_dir: Path) -> None:
+    assert UNCONFIGURED_EMAIL_REASON in _reason_line(unconfigured_working_dir / _FIRST_ARTIFACT)
+
+
+def test_with_undelivered_record_artifact_carries_rejection_reason(undelivered_working_dir: Path) -> None:
+    assert _RELAY_REJECTION in _reason_line(undelivered_working_dir / _FIRST_ARTIFACT)
+
+
+@pytest.fixture
+def recorded_email_logs(loguru_records: list[CapturedLog], tmp_path: Path) -> list[CapturedLog]:
+    sender: EmailSender = with_undelivered_record(make_unconfigured_email_sender(UNCONFIGURED_EMAIL_REASON), tmp_path)
+    sender(_REPORT_SUBJECT, _REPORT_BODY)
+    return loguru_records
+
+
+def test_with_undelivered_record_logs_the_artifact_path(recorded_email_logs: list[CapturedLog]) -> None:
+    assert [record for record in recorded_email_logs if record.level == "ERROR" and _FIRST_ARTIFACT in record.message]
+
+
+def test_with_undelivered_record_keeps_the_body_out_of_the_log(recorded_email_logs: list[CapturedLog]) -> None:
+    assert all(_REPORT_BODY not in record.message for record in recorded_email_logs)
+
+
+_FILE_IN_PLACE_OF_DIR_NAME: str = "not_a_directory"
+_NEVER_CREATED_DIR_NAME: str = "never_created"
+
+
+@pytest.fixture(params=[_FILE_IN_PLACE_OF_DIR_NAME, _NEVER_CREATED_DIR_NAME])
+def unwritable_working_dir(request: FixtureRequest, tmp_path: Path) -> Path:
+    """A working_dir the artifact write must fail against — a plain file, or a directory that was never created."""
+    unwritable: Path = tmp_path / str(request.param)
+    if request.param == _FILE_IN_PLACE_OF_DIR_NAME:
+        _ = unwritable.write_text("this is a file, not a run directory", encoding="utf-8")
+    return unwritable
+
+
+def test_with_undelivered_record_with_unwritable_working_dir_returns_normally(unwritable_working_dir: Path) -> None:
+    sender: EmailSender = with_undelivered_record(
+        make_unconfigured_email_sender(UNCONFIGURED_EMAIL_REASON), unwritable_working_dir
+    )
+
+    assert sender(_REPORT_SUBJECT, _REPORT_BODY) is None
+
+
+@pytest.fixture
+def unwritable_record_logs(loguru_records: list[CapturedLog], unwritable_working_dir: Path) -> list[CapturedLog]:
+    sender: EmailSender = with_undelivered_record(
+        make_unconfigured_email_sender(UNCONFIGURED_EMAIL_REASON), unwritable_working_dir
+    )
+    sender(_REPORT_SUBJECT, _REPORT_BODY)
+    return loguru_records
+
+
+def test_with_undelivered_record_with_unwritable_working_dir_logs_the_body(
+    unwritable_record_logs: list[CapturedLog],
+) -> None:
+    assert [record for record in unwritable_record_logs if record.level == "ERROR" and _REPORT_BODY in record.message]
+
+
+def test_with_undelivered_record_with_unwritable_working_dir_writes_no_artifact(
+    unwritable_record_logs: list[CapturedLog], unwritable_working_dir: Path
+) -> None:
+    assert not unwritable_working_dir.is_dir()
+    assert not (unwritable_working_dir.parent / _FIRST_ARTIFACT).exists()

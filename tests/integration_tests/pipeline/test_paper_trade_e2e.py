@@ -10,6 +10,8 @@ from pydantic import TypeAdapter
 
 from money_pit.compute.fills import build_fill_observation
 from money_pit.constants import EXECUTION_JOURNAL_FILENAME
+from money_pit.constants import UNDELIVERED_EMAIL_FILENAME_TEMPLATE
+from money_pit.email_sender import make_unconfigured_email_sender
 from money_pit.graph.state import PipelineState
 from money_pit.mcp.manifest import pinned_manifest
 from money_pit.schemas.fills import FillObservation
@@ -32,6 +34,7 @@ from money_pit.schemas.recovery import PriorRunReconciliation
 from money_pit.schemas.questions import InitialQuestions
 from money_pit.schemas.signals import AggregatedSignals
 from money_pit.schemas.validation_results import ActionStepsValidation
+from tests.conftest import UNCONFIGURED_EMAIL_REASON
 
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -502,6 +505,48 @@ def test_paper_trade_recovery_halt_writes_no_planning_artifacts(
 ) -> None:
     run_dir, _, _ = recovery_halt_run
     assert not (run_dir / artifact).exists()
+
+
+@pytest.fixture
+def undeliverable_halt_run(tmp_path: Path, pipeline_signals_dir: Path) -> tuple[Path, PipelineState]:
+    """A recovery-HALT run whose injected sender always raises EmailSendError, pinning run_pipeline's own wrapping.
+
+    send_email is handed in raw — the undelivered-record decorator is applied by run_pipeline itself, so
+    the artifact appearing in run_dir is the only evidence that the single composition point still wraps.
+    """
+    daily_show_root = tmp_path
+    _write_prior_journal(daily_show_root, ExecutionPhase.SUBMITTED)
+    run_dir = daily_show_root / "current_run"
+    overrides = phase4_overrides()
+    overrides.observe_fill = _RecoveryScenarioObserver(build_fill_observation("accepted", None, None))
+    overrides.send_email = make_unconfigured_email_sender(UNCONFIGURED_EMAIL_REASON)
+    overrides.manifest = pinned_manifest()
+    final_state = run_pipeline(signals_dir=pipeline_signals_dir, run_dir=run_dir, overrides=overrides)
+    return run_dir, final_state
+
+
+def test_paper_trade_undeliverable_halt_email_still_halts(
+    undeliverable_halt_run: tuple[Path, PipelineState],
+) -> None:
+    _, final_state = undeliverable_halt_run
+    assert final_state.get("recovery_decision") is RecoveryDecision.HALT
+
+
+def test_paper_trade_undeliverable_halt_email_writes_halt_record(
+    undeliverable_halt_run: tuple[Path, PipelineState],
+) -> None:
+    run_dir, _ = undeliverable_halt_run
+    record = _assert_file_valid(run_dir, "recovery.json", PriorRunReconciliation)
+    assert record.decision is RecoveryDecision.HALT
+
+
+def test_paper_trade_undeliverable_halt_email_records_artifact(
+    undeliverable_halt_run: tuple[Path, PipelineState],
+) -> None:
+    run_dir, _ = undeliverable_halt_run
+    artifact = run_dir / UNDELIVERED_EMAIL_FILENAME_TEMPLATE.format(index=1)
+    assert artifact.is_file()
+    assert "money-pit: Recovery Halt - " in artifact.read_text(encoding="utf-8")
 
 
 @pytest.fixture

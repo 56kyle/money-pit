@@ -47,6 +47,10 @@ external callers, not a pipeline dependency.
 so a failed halt-email propagates loudly (fail closed, notify loudly) — and the failure-mode test can
 assert on a stable type rather than a raw library exception's message.
 
+> Amended by ADR 0031: the typed `EmailSendError` stands, but it no longer propagates out of the
+> pipeline. `run_pipeline` wraps the sender so an undeliverable message is recorded in full as an
+> `undelivered_email_NN.txt` run artifact and the run continues.
+
 **4. Credentials via the same keyring pattern.** The Gmail app password resolves through
 `resolve_gmail_app_password(config)` (keyring under `config.gmail_service` / `config.gmail_address`),
 raising `CredentialResolutionError` when the address or stored secret is absent — consistent with the

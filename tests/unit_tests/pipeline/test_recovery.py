@@ -9,6 +9,9 @@ from money_pit.alpaca_orders import OrderNotYetVisibleError
 from money_pit.compute.fills import build_fill_observation
 from money_pit.constants import EXECUTION_JOURNAL_FILENAME
 from money_pit.constants import RECOVERY_JSON_FILENAME
+from money_pit.constants import UNDELIVERED_EMAIL_FILENAME_TEMPLATE
+from money_pit.email_sender import make_unconfigured_email_sender
+from money_pit.email_sender import with_undelivered_record
 from money_pit.graph.state import PipelineState
 from money_pit.pipeline.recovery import _NOT_FOUND_STATUS
 from money_pit.pipeline.recovery import _UNOBSERVABLE_STATUS
@@ -25,6 +28,7 @@ from money_pit.schemas.journal import ExecutionJournal
 from money_pit.schemas.journal import ExecutionJournalEntry
 from money_pit.schemas.recovery import PriorRunReconciliation
 from money_pit.schemas.recovery import ReconciledOrder
+from tests.conftest import UNCONFIGURED_EMAIL_REASON
 
 
 CURRENT_SLUG = "2026-07-13"
@@ -338,6 +342,56 @@ def test_make_recovery_node_with_prior_open_leg_still_open(tmp_path: Path) -> No
     assert entry.client_order_id in body
     record = _read_recovery_record(working_dir)
     assert record.decision is RecoveryDecision.HALT
+
+
+@pytest.fixture
+def undeliverable_halt_run(tmp_path: Path) -> tuple[Path, PipelineState]:
+    """Drive the recovery node over a prior open leg with a sender that can never deliver the halt email."""
+    entry = _make_entry(PRIOR_SLUG, "s1", ExecutionPhase.SUBMITTED)
+    _write_journal(tmp_path, PRIOR_SLUG, ExecutionOutcome.EXECUTED_INCOMPLETE, [entry])
+    working_dir = tmp_path / CURRENT_SLUG
+    observer = _ScriptedObserver({entry.client_order_id: build_fill_observation("accepted", None, None)})
+    send_email = with_undelivered_record(make_unconfigured_email_sender(UNCONFIGURED_EMAIL_REASON), working_dir)
+    node = make_recovery_node(observer, send_email)
+    return working_dir, node(_make_state(working_dir, CURRENT_SLUG))
+
+
+@pytest.fixture
+def recorded_halt_working_dir(undeliverable_halt_run: tuple[Path, PipelineState]) -> Path:
+    working_dir, _ = undeliverable_halt_run
+    return working_dir
+
+
+def test_make_recovery_node_with_undeliverable_halt_email_still_halts(
+    undeliverable_halt_run: tuple[Path, PipelineState],
+) -> None:
+    _, result = undeliverable_halt_run
+
+    assert result["recovery_decision"] is RecoveryDecision.HALT
+
+
+def test_make_recovery_node_with_undeliverable_halt_email_completes_step(
+    undeliverable_halt_run: tuple[Path, PipelineState],
+) -> None:
+    _, result = undeliverable_halt_run
+
+    assert "recovery" in (result.get("completed_steps") or [])
+
+
+def test_make_recovery_node_with_undeliverable_halt_email_writes_halt_record(
+    recorded_halt_working_dir: Path,
+) -> None:
+    assert _read_recovery_record(recorded_halt_working_dir).decision is RecoveryDecision.HALT
+
+
+def test_make_recovery_node_with_undeliverable_halt_email_records_artifact(
+    recorded_halt_working_dir: Path,
+) -> None:
+    recorded = (recorded_halt_working_dir / UNDELIVERED_EMAIL_FILENAME_TEMPLATE.format(index=1)).read_text(
+        encoding="utf-8"
+    )
+
+    assert f"money-pit: Recovery Halt - {CURRENT_SLUG}" in recorded
 
 
 def _make_reconciliation(

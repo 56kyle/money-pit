@@ -26,7 +26,7 @@ from money_pit.schemas.questions import InitialQuestions
 from money_pit.schemas.questions import Question
 from money_pit.schemas.questions import SignalSummary
 from money_pit.schemas.signals import AggregatedSignals
-from tests.unit_tests.pipeline.conftest import CapturedLog
+from tests.unit_tests.conftest import CapturedLog
 
 
 @pytest.fixture

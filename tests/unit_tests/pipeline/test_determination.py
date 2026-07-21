@@ -41,7 +41,7 @@ from money_pit.schemas.enums import ValidationStatus
 from money_pit.schemas.journal import ExecutionJournal
 from money_pit.schemas.validation_results import ActionStepsValidation
 from money_pit.schemas.validation_results import ValidationStep
-from tests.unit_tests.pipeline.conftest import CapturedLog
+from tests.unit_tests.conftest import CapturedLog
 
 
 _SLUG = "2026-07-02_00-00-00"

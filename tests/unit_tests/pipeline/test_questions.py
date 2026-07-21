@@ -32,7 +32,7 @@ from money_pit.schemas.question_draft import DraftQuestion
 from money_pit.schemas.questions import InitialQuestions
 from money_pit.schemas.signals import AggregatedSignals
 from money_pit.schemas.signals import Claim
-from tests.unit_tests.pipeline.conftest import CapturedLog
+from tests.unit_tests.conftest import CapturedLog
 
 
 if TYPE_CHECKING:

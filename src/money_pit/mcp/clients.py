@@ -34,7 +34,7 @@ def _write_env(credentials: AlpacaCredentials) -> dict[str, str]:
     """Return the environment for spawning alpaca-mcp-server scoped to the write (trading) toolset."""
     return {
         "ALPACA_API_KEY": credentials.api_key,
-        "ALPACA_SECRET_KEY": credentials.secret_key,
+        "ALPACA_SECRET_KEY": credentials.secret_key.get_secret_value(),
         "ALPACA_PAPER_TRADE": _paper_flag(credentials.paper),
         "ALPACA_TOOLSETS": _ALPACA_WRITE_TOOLSET,
     }

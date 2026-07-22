@@ -9,6 +9,7 @@ The second test pins that run_pipeline(overrides=None) still fails closed with M
 from pathlib import Path
 
 import pytest
+from pydantic import SecretStr
 from pytest import MonkeyPatch
 
 from money_pit.config import AlpacaCredentials
@@ -24,7 +25,7 @@ from tests.unit_tests.conftest import InMemoryKeyring
 
 @pytest.fixture
 def credentials() -> AlpacaCredentials:
-    return AlpacaCredentials(api_key="the-key", secret_key="the-secret", paper=True)
+    return AlpacaCredentials(api_key="the-key", secret_key=SecretStr("the-secret"), paper=True)
 
 
 @pytest.fixture

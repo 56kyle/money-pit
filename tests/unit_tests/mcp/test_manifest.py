@@ -11,6 +11,7 @@ message text.
 
 import pytest
 from mcp.types import Tool
+from pydantic import SecretStr
 
 from money_pit.config import AlpacaCredentials
 from money_pit.mcp.manifest import ManifestUnavailableError
@@ -20,7 +21,7 @@ from money_pit.mcp.manifest import pinned_manifest
 
 @pytest.fixture
 def credentials() -> AlpacaCredentials:
-    return AlpacaCredentials(api_key="the-key", secret_key="the-secret", paper=True)
+    return AlpacaCredentials(api_key="the-key", secret_key=SecretStr("the-secret"), paper=True)
 
 
 def test_pinned_manifest_with_pinned_schema() -> None:

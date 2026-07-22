@@ -1,6 +1,7 @@
 # Credentials stay `SecretStr` to the point of use, and upstream exception text never leaves the local log
 
-- Status: accepted (amended 2026-07-22 — redaction rejected, superseded by structural closure of the sink)
+- Status: accepted (amended 2026-07-22 — redaction rejected, superseded by structural closure of the sink;
+  amended 2026-07-22 — decision #1 widened from the FRED/Brave keys to every resolved credential)
 - Date: 2026-07-21
 - Deciders: owner, python-dev, python-reviewer
 
@@ -44,17 +45,52 @@ disk and shipped to a third party on the single most likely failure, a network b
 
 ## Decision Outcome
 
-**1. Credential material stays `SecretStr` until the expression that transmits it.**
-`_DirectDeterministicTools._fred_api_key` and `_DirectOpenEndedTools._brave_api_key` are
-`SecretStr | None`; `run_pipeline` passes `config.fred_api_key` / `config.brave_api_key` straight
-through. `.get_secret_value()` is called inline in the `requests` params dict and the
-`X-Subscription-Token` header respectively.
+**1. Credential material stays `SecretStr` until the expression that transmits it.** This is a rule
+about **every resolved credential in the system**, not about the two keys that first motivated it. No
+resolver returns plaintext, no object holds plaintext for the lifetime of a run, and
+`.get_secret_value()` appears only inside the expression that hands the value to the transport.
+
+Covered today:
+
+| Credential | Held as | Unwrapped inline at |
+| --- | --- | --- |
+| FRED key | `_DirectDeterministicTools._fred_api_key: SecretStr \| None` | the `requests` params dict |
+| Brave key | `_DirectOpenEndedTools._brave_api_key: SecretStr \| None` | the `X-Subscription-Token` header |
+| Alpaca secret key | `AlpacaCredentials.secret_key: SecretStr` | `_write_env`'s `ALPACA_SECRET_KEY` value, and the `TradingClient(...)` construction in `alpaca_orders` and `alpaca_portfolio` |
+| Gmail app password | the `make_gmail_email_sender` closure's `app_password: SecretStr` | the `server.login(...)` call |
+
+The Alpaca secret key is the reason this widening was not optional. It is the capital-moving
+credential, it was a plain `str` on a `@dataclass(frozen=True)` with the default `repr`, and that
+dataclass is held for the whole run inside `AlpacaWriteDeps` — itself a default-`repr` dataclass
+reachable from `PipelineOverrides.place_order`, the portfolio fetcher, the fill observer, and
+`live_manifest`. Any `repr()` of the overrides, or any traceback that captured frame locals anywhere
+on that path, printed it. The Gmail app password had the same shape one layer in: resolved as `str`
+and closed over for the process lifetime.
+
+Two deliberate exclusions, both scope boundaries rather than oversights:
+
+- **`AlpacaCredentials.api_key` stays `str`.** Under this project's keyring convention it is the
+  Alpaca API *key id* — the keyring *username*, the identifier under which the secret is stored. It is
+  an identifier, not secret material, and it is already interpolated into `CredentialResolutionError`
+  messages as the thing an operator needs in order to fix a missing-secret failure. Masking it would
+  make those messages useless and would misrepresent what `SecretStr` means on the other fields.
+- **`src/email_server/server.py` stays as-is.** It is a separate process reading
+  `MONEY_PIT__GMAIL_APP_PASSWORD` from its own environment at its own entry point. It does not go
+  through `resolve_gmail_app_password`, and pulling it into this rule would be a change to a different
+  deployment unit's boundary handling.
+
+`CredentialResolutionError` messages were re-checked under the new types: all four interpolate only
+service names and usernames (`alpaca_service`, `alpaca_username`, `gmail_service`, `gmail_address`),
+never the resolved secret. No change was needed, and per decision #2a nothing is redacted.
 
 Scope claim, stated precisely: this removes the plaintext from a **run-lifetime attribute**. It does
-not make the plaintext transient in the absolute sense — `requests` assembles it into a URL and
-retains it on the `PreparedRequest`, so a traceback through `requests` still holds it. The honest
-statement is "no longer held for the lifetime of the run," not "exists only as a transient
-expression."
+not make the plaintext transient in the absolute sense. `requests` assembles the FRED key into a URL
+and retains it on the `PreparedRequest`; `alpaca-py`'s `TradingClient` stores the secret it is
+constructed with; `_write_env` produces a plaintext `dict[str, str]` that is handed to a subprocess
+environment; `smtplib` holds what it was passed for the duration of the AUTH exchange. Each resolver
+also binds one plaintext local between `keyring.get_password` and the `SecretStr(...)` wrap, which is
+unavoidable while `keyring` returns `str`. The honest statement is "no longer held for the lifetime of
+the run," not "exists only as a transient expression."
 
 **2. No upstream exception text reaches `FetchError.reason`. Detail goes to the local log only.**
 Every failure handler in `_DirectDeterministicTools` logs the exception in full via
@@ -70,6 +106,18 @@ This applies to the whole fetch layer, not to FRED alone: `fetch_ticker_price` g
 treatment. yfinance carries no credential, but the invariant is worth more as a property of the
 layer than as a FRED special case, and yfinance error text is equally untrusted for other reasons
 (upstream URLs, vendor identifiers, arbitrary third-party strings).
+
+**The rule is not fetch-layer-only: it covers the email path too.** `make_gmail_email_sender`'s send
+seam has the same shape — `smtplib` exception text interpolated into `EmailSendError`, which
+`with_undelivered_record` writes verbatim into the `Reason:` field of an undelivered-email artifact in
+the run's working directory. That is a durable sink reachable by the same argument as
+`FetchError.reason`, on a path decision #1 now covers (the Gmail app password). So `send_email` logs
+the full exception via `logger.warning` and raises an `EmailSendError` carrying only the subject, the
+recipient, and `type(error).__name__`. This is not a known leak today — `smtplib` does not echo the
+AUTH payload into `SMTPAuthenticationError` — but the invariant is worth more as a property of every
+untrusted-text-into-durable-artifact sink than as a fetch-layer special case, and it would be
+inconsistent to close one and leave the other open. As with the fetch layer, detail is relocated to
+the local log, not discarded.
 
 **2a. Redaction was tried and is rejected.** A prior revision of this ADR adopted
 `_error_text_with_secret_redacted(error, secret)` — `str(error).replace(secret_value, "<redacted>")`.
@@ -139,8 +187,31 @@ knowingly.
 
 ### Confirmation
 
-Decision #1 is pinned offline by `tests/unit_tests/pipeline/test_direct_deterministic_tools.py`,
-asserting the plaintext appears in neither `repr()` nor `vars()` of the instance.
+Decision #1 is pinned offline, one test per credential-holding object, each asserting the plaintext is
+absent from the run-lifetime state of the thing that holds it:
+
+- `tests/unit_tests/pipeline/test_direct_deterministic_tools.py` — `repr()` and `vars()` of the
+  `_DirectDeterministicTools` instance.
+- `tests/unit_tests/test_config.py` — `repr()` and `vars()` of the `AlpacaCredentials` returned by
+  `resolve_alpaca_credentials`, having first asserted `get_secret_value()` round-trips the keyring
+  value so the absence assertions cannot pass on an empty credential.
+- `tests/unit_tests/mcp/test_clients.py` — `repr()` and `vars()` of `AlpacaWriteDeps`, which is the
+  object that actually survives the run and is reachable from `PipelineOverrides`.
+- `tests/unit_tests/test_email_sender.py` — the closure cells of the returned `EmailSender`, and
+  deliberately *not* its `repr()` or `vars()`. A function's `repr` never shows closed-over values and
+  its `__dict__` is empty, so an assertion against either would pass unconditionally — vacuous inside a
+  security test, and worse than no assertion because it reads as coverage. `__closure__` is where a
+  plaintext copy would actually survive. A companion control test,
+  `test_make_gmail_email_sender_transmits_the_app_password_plaintext`, asserts the plaintext still
+  reaches `SMTP.login`, so the absence assertion cannot go vacuous either.
+
+Pinned but not by an absence assertion: `_write_env`'s output is asserted to *equal* the secret (it
+must — it is the transmitting expression). Note precisely what that assertion is against: a test-local
+sentinel constant, `_SENTINEL_SECRET_KEY`, constructed into the `AlpacaCredentials` fixture by the test
+itself — never the plaintext of a credential resolved from a keyring.
+
+Not pinned: the `TradingClient` constructions in `alpaca_orders` / `alpaca_portfolio`, which are
+unreachable offline, so their inline unwrap is asserted in this document only.
 
 Decision #2 is pinned on `fetch_fred_series` by asserting that a `requests.ConnectionError` carrying
 the real key in its URL produces a `FetchError.reason` that holds the series id and the exception's
@@ -155,6 +226,12 @@ verifiably relocated rather than lost. Whether the log also holds the plaintext 
 unpinned: that exposure is accepted residual risk (see "To watch"), and asserting it would make a later
 tightening of the local log fail a test that reads as defending the leak. The tests written against the
 removed redactor (placeholder present, plaintext absent in `reason`) are superseded and rewritten.
+
+Decision #2 on the email path is pinned in `tests/unit_tests/test_email_sender.py` by the same
+three-part shape: a fake SMTP whose `send_message` raises with a distinctive text fragment, then an
+assertion that the undelivered-email artifact's `Reason:` line names `SMTPException` and that the
+fragment is absent from the artifact, plus a companion asserting the fragment does reach the local
+`logger` — so the diagnostic is verifiably relocated, not lost.
 
 Nothing is left unpinned pending `raise_for_status()`: the handler's behaviour is independent of which
 exception type it caught, so one member of the `except` tuple witnesses the invariant for all of them.
@@ -194,5 +271,7 @@ a description of the decision.
 
 Related: ADR 0010 (pydantic-settings migration, which introduced `SecretStr` on these fields),
 ADR 0011 (typed fetch results and swallow-site discipline — `FetchError.reason` is the channel this
-ADR constrains), `src/money_pit/pipeline/orchestration.py`, `src/money_pit/pipeline/retrieval.py`,
-`tests/integration_tests/fred_live/`.
+ADR constrains), ADR 0008 (the typed, fail-closed `resolve_alpaca_credentials` whose return type
+decision #1 now constrains), ADR 0013 (`AlpacaCredentials.paper`, untouched by this amendment —
+paper/live routing behaviour is identical), `src/money_pit/pipeline/orchestration.py`,
+`src/money_pit/pipeline/retrieval.py`, `tests/integration_tests/fred_live/`.

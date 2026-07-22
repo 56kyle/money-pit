@@ -7,6 +7,7 @@ from email.message import EmailMessage
 from pathlib import Path
 
 from loguru import logger
+from pydantic import SecretStr
 
 from money_pit.config import Config
 from money_pit.config import CredentialResolutionError
@@ -34,22 +35,38 @@ def _build_message(sender_address: str, recipient: str, subject: str, body: str)
     return message
 
 
+def _log_send_failure(subject: str, recipient: str, error: Exception) -> None:
+    """Log the full upstream failure locally, this log being the only surviving copy of its text."""
+    logger.warning(
+        "Failed to send email {subject!r} to {recipient!r}: {error}",
+        subject=subject,
+        recipient=recipient,
+        error=error,
+    )
+
+
 def make_gmail_email_sender(config: Config) -> EmailSender:
-    """Return an EmailSender that delivers to the owner recipient via Gmail SMTP with STARTTLS."""
+    """Return an EmailSender that delivers to the owner recipient via Gmail SMTP with STARTTLS.
+
+    Raises CredentialResolutionError when no gmail_address is configured or no app password can be resolved.
+    """
     if config.gmail_address is None:
         raise CredentialResolutionError("No gmail_address configured; cannot build a Gmail email sender.")
     sender_address: str = config.gmail_address
-    app_password: str = resolve_gmail_app_password(config)
+    app_password: SecretStr = resolve_gmail_app_password(config)
 
     def send_email(subject: str, body: str) -> None:
         message: EmailMessage = _build_message(sender_address, config.owner_recipient, subject, body)
         try:
             with smtplib.SMTP(config.smtp_host, config.smtp_port) as server:
                 _ = server.starttls()
-                _ = server.login(sender_address, app_password)
+                _ = server.login(sender_address, app_password.get_secret_value())
                 _ = server.send_message(message)
         except (smtplib.SMTPException, OSError) as error:
-            raise EmailSendError(f"Failed to send email to {config.owner_recipient!r}: {error}.") from error
+            _log_send_failure(subject, config.owner_recipient, error)
+            raise EmailSendError(
+                f"Failed to send email {subject!r} to {config.owner_recipient!r}: {type(error).__name__}."
+            ) from error
 
     return send_email
 

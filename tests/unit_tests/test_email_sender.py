@@ -8,6 +8,7 @@ EmailSendError / CredentialResolutionError TYPES and concrete header values, nev
 import smtplib
 from collections.abc import Iterator
 from email.message import EmailMessage
+from types import CellType
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -36,8 +37,9 @@ if TYPE_CHECKING:
 class _FakeSMTP:
     """A hand-written smtplib.SMTP stand-in that records sent messages and never touches the network."""
 
-    def __init__(self, sent: list[EmailMessage]) -> None:
+    def __init__(self, sent: list[EmailMessage], logins: list[tuple[str, str]] | None = None) -> None:
         self._sent = sent
+        self._logins: list[tuple[str, str]] = logins if logins is not None else []
 
     def __enter__(self) -> "_FakeSMTP":
         return self
@@ -48,8 +50,8 @@ class _FakeSMTP:
     def starttls(self) -> None:
         return None
 
-    def login(self, _user: str, _password: str) -> None:
-        return None
+    def login(self, user: str, password: str) -> None:
+        self._logins.append((user, password))
 
     def send_message(self, message: EmailMessage) -> None:
         self._sent.append(message)
@@ -102,6 +104,13 @@ def sent_messages(monkeypatch: MonkeyPatch) -> Iterator[list[EmailMessage]]:
 
 
 @pytest.fixture
+def smtp_logins(monkeypatch: MonkeyPatch) -> list[tuple[str, str]]:
+    logins: list[tuple[str, str]] = []
+    monkeypatch.setattr(smtplib, "SMTP", lambda _host, _port: _FakeSMTP([], logins))
+    return logins
+
+
+@pytest.fixture
 def failing_smtp(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(smtplib, "SMTP", lambda _host, _port: _FailingSMTP([]))
 
@@ -112,6 +121,39 @@ def test__build_message_sets_headers() -> None:
     assert message["From"] == "from@gmail.com"
     assert message["To"] == "to@example.com"
     assert message["Subject"] == "the subject"
+
+
+def _closed_over_values(sender: "EmailSender") -> list[object]:
+    """Return the values the EmailSender closure holds for its lifetime."""
+    cells: tuple[CellType, ...] = getattr(sender, "__closure__", None) or ()
+    return [cell.cell_contents for cell in cells]
+
+
+def test_make_gmail_email_sender_never_holds_the_app_password_as_a_run_lifetime_plaintext_value(
+    config: Config, config__gmail_app_password: str, keyring_with_gmail_password: InMemoryKeyring
+) -> None:
+    """Pin ADR 0032 decision #1: the returned closure holds the app password as SecretStr, never as a plain str.
+
+    The closure outlives the process's whole email path, so its cells — not a repr — are where a plaintext
+    copy would actually survive; a traceback dumping frame locals through make_gmail_email_sender reaches them.
+    """
+    sender: EmailSender = make_gmail_email_sender(config)
+
+    assert config__gmail_app_password not in str(_closed_over_values(sender))
+
+
+def test_make_gmail_email_sender_transmits_the_app_password_plaintext(
+    config: Config,
+    config__gmail_app_password: str,
+    keyring_with_gmail_password: InMemoryKeyring,
+    smtp_logins: list[tuple[str, str]],
+) -> None:
+    """Control for the pin above: the plaintext must still reach SMTP AUTH, so the absence assertions cannot go vacuous."""
+    sender: EmailSender = make_gmail_email_sender(config)
+
+    sender("subject", "body")
+
+    assert smtp_logins == [(config.gmail_address, config__gmail_app_password)]
 
 
 _REPORT_SUBJECT: str = "Daily report"
@@ -290,8 +332,30 @@ def test_with_undelivered_record_artifact_carries_unconfigured_reason(unconfigur
     assert UNCONFIGURED_EMAIL_REASON in _reason_line(unconfigured_working_dir / _FIRST_ARTIFACT)
 
 
-def test_with_undelivered_record_artifact_carries_rejection_reason(undelivered_working_dir: Path) -> None:
-    assert _RELAY_REJECTION in _reason_line(undelivered_working_dir / _FIRST_ARTIFACT)
+def test_with_undelivered_record_artifact_carries_the_failure_class(undelivered_working_dir: Path) -> None:
+    """Pin ADR 0032 decision #2 on the email path: the durable artifact names the failure class, not upstream text."""
+    assert smtplib.SMTPException.__name__ in _reason_line(undelivered_working_dir / _FIRST_ARTIFACT)
+
+
+def test_with_undelivered_record_artifact_keeps_upstream_exception_text_out(undelivered_working_dir: Path) -> None:
+    assert _RELAY_REJECTION not in (undelivered_working_dir / _FIRST_ARTIFACT).read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def failed_send_logs(
+    loguru_records: list[CapturedLog], config: Config, keyring_with_gmail_password: InMemoryKeyring, failing_smtp: None
+) -> list[CapturedLog]:
+    sender: EmailSender = make_gmail_email_sender(config)
+    with pytest.raises(EmailSendError):
+        sender(_REPORT_SUBJECT, _REPORT_BODY)
+    return loguru_records
+
+
+def test_make_gmail_email_sender_logs_the_upstream_exception_text_locally(
+    failed_send_logs: list[CapturedLog],
+) -> None:
+    """The diagnostic dropped from EmailSendError is relocated to the local log, not discarded."""
+    assert [record for record in failed_send_logs if _RELAY_REJECTION in record.message]
 
 
 @pytest.fixture

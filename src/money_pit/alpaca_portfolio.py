@@ -80,7 +80,7 @@ def make_alpaca_portfolio_fetcher(credentials: AlpacaCredentials, config: Config
     """Return a PortfolioFetcher backed by the alpaca-py TradingClient, routed to paper or live per credentials."""
     client: TradingClient = TradingClient(
         api_key=credentials.api_key,
-        secret_key=credentials.secret_key,
+        secret_key=credentials.secret_key.get_secret_value(),
         paper=credentials.paper,
     )
 

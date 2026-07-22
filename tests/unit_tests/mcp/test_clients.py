@@ -7,13 +7,19 @@ the acceptance tier. Assertions target the OrderSubmissionError TYPE and concret
 from dataclasses import dataclass
 
 import pytest
+from pydantic import SecretStr
 from pytest import FixtureRequest
 
 from money_pit.config import AlpacaCredentials
+from money_pit.contracts import OrderPlacer
 from money_pit.mcp.clients import _extract_order_id
 from money_pit.mcp.clients import _result_text
 from money_pit.mcp.clients import _write_env
+from money_pit.mcp.clients import make_alpaca_write_deps
 from money_pit.pipeline.execution import OrderSubmissionError
+
+
+_SENTINEL_SECRET_KEY: str = "the-secret"
 
 
 @dataclass
@@ -40,7 +46,7 @@ def credentials(request: FixtureRequest, credentials__paper: bool) -> AlpacaCred
     return getattr(
         request,
         "param",
-        AlpacaCredentials(api_key="the-key", secret_key="the-secret", paper=credentials__paper),
+        AlpacaCredentials(api_key="the-key", secret_key=SecretStr(_SENTINEL_SECRET_KEY), paper=credentials__paper),
     )
 
 
@@ -49,7 +55,20 @@ def test__write_env_with_toolset_and_keys(credentials: AlpacaCredentials) -> Non
 
     assert env["ALPACA_TOOLSETS"] == "trading"
     assert env["ALPACA_API_KEY"] == credentials.api_key
-    assert env["ALPACA_SECRET_KEY"] == credentials.secret_key
+    assert env["ALPACA_SECRET_KEY"] == _SENTINEL_SECRET_KEY
+
+
+def test_make_alpaca_write_deps_never_holds_the_secret_as_a_run_lifetime_plaintext_attribute(
+    credentials: AlpacaCredentials,
+) -> None:
+    """Pin ADR 0032 decision #1 across the dep object: AlpacaWriteDeps outlives the run and has a default repr.
+
+    _write_env unwraps inline, so the plaintext must not survive on the deps object or its nested credentials.
+    """
+    deps: OrderPlacer = make_alpaca_write_deps(credentials)
+
+    assert _SENTINEL_SECRET_KEY not in repr(deps)
+    assert _SENTINEL_SECRET_KEY not in str(vars(deps))
 
 
 @pytest.mark.parametrize(

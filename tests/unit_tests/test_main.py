@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from pydantic import SecretStr
 from pytest import MonkeyPatch
 from typer.testing import CliRunner
 
@@ -56,7 +57,7 @@ def runner() -> CliRunner:
 
 @pytest.fixture
 def credentials() -> AlpacaCredentials:
-    return AlpacaCredentials(api_key="the-key", secret_key="the-secret", paper=True)
+    return AlpacaCredentials(api_key="the-key", secret_key=SecretStr("the-secret"), paper=True)
 
 
 @pytest.fixture

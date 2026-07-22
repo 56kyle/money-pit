@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 from alpaca.common.exceptions import APIError
+from pydantic import SecretStr
 
 from money_pit.alpaca_orders import FillObservationError
 from money_pit.alpaca_orders import OrderNotYetVisibleError
@@ -24,7 +25,7 @@ from money_pit.schemas.fills import FillObservation
 
 @pytest.fixture
 def credentials() -> AlpacaCredentials:
-    return AlpacaCredentials(api_key="k", secret_key="s", paper=True)
+    return AlpacaCredentials(api_key="k", secret_key=SecretStr("s"), paper=True)
 
 
 @pytest.fixture

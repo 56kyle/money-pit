@@ -33,7 +33,7 @@ class AlpacaCredentials:
     """Resolved Alpaca API credentials plus the paper/live routing decision."""
 
     api_key: str
-    secret_key: str
+    secret_key: SecretStr
     paper: bool
 
 
@@ -122,12 +122,12 @@ def resolve_alpaca_credentials(config: Config) -> AlpacaCredentials:
         )
     return AlpacaCredentials(
         api_key=config.alpaca_username,
-        secret_key=secret_key,
+        secret_key=SecretStr(secret_key),
         paper=config.alpaca_paper,
     )
 
 
-def resolve_gmail_app_password(config: Config) -> str:
+def resolve_gmail_app_password(config: Config) -> SecretStr:
     """Resolve the Gmail app password from keyring, failing closed if the address or stored secret is unset."""
     if config.gmail_address is None:
         raise CredentialResolutionError("No gmail_address configured; cannot resolve a Gmail app password.")
@@ -136,4 +136,4 @@ def resolve_gmail_app_password(config: Config) -> str:
         raise CredentialResolutionError(
             f"No Gmail app password in keyring for service {config.gmail_service!r}, username {config.gmail_address!r}."
         )
-    return app_password
+    return SecretStr(app_password)

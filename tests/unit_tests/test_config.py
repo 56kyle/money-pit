@@ -97,7 +97,7 @@ def test_resolve_alpaca_credentials_with_valid(
     result: AlpacaCredentials = resolve_alpaca_credentials(config)
 
     assert result == AlpacaCredentials(
-        api_key=config.alpaca_username, secret_key=secret_key, paper=expected_paper
+        api_key=config.alpaca_username, secret_key=SecretStr(secret_key), paper=expected_paper
     )
 
 
@@ -106,13 +106,30 @@ def test_resolve_alpaca_credentials_with_missing_secret(config: Config, in_memor
         _ = resolve_alpaca_credentials(config)
 
 
+def test_resolve_alpaca_credentials_never_holds_the_secret_as_a_run_lifetime_plaintext_attribute(
+    config: Config, secret_key: str, in_memory_keyring: InMemoryKeyring
+) -> None:
+    """Pin ADR 0032 decision #1: the Alpaca secret lives on AlpacaCredentials as SecretStr, never as a plain str.
+
+    AlpacaCredentials is a default-repr dataclass held for the whole run inside AlpacaWriteDeps, the portfolio
+    fetcher, and the fill observer, so a plain str here reaches any repr() or frame-locals traceback of those.
+    """
+    in_memory_keyring.set_password(config.alpaca_service, config.alpaca_username, secret_key)
+
+    result: AlpacaCredentials = resolve_alpaca_credentials(config)
+
+    assert result.secret_key.get_secret_value() == secret_key
+    assert secret_key not in repr(result)
+    assert secret_key not in str(vars(result))
+
+
 def test_resolve_gmail_app_password_with_valid(
     config: Config, gmail_app_password: str, in_memory_keyring: InMemoryKeyring
 ) -> None:
     assert config.gmail_address is not None
     in_memory_keyring.set_password(config.gmail_service, config.gmail_address, gmail_app_password)
 
-    assert resolve_gmail_app_password(config) == gmail_app_password
+    assert resolve_gmail_app_password(config).get_secret_value() == gmail_app_password
 
 
 @pytest.mark.parametrize("config__gmail_address", [None], indirect=True)

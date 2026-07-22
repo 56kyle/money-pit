@@ -1,4 +1,11 @@
-"""Unit tests for _DirectDeterministicTools, pinning ADR 0032's credential redaction offline.
+"""Unit tests for _DirectDeterministicTools, pinning ADR 0032 decisions #1 and #2 offline.
+
+Decision #2 is the invariant these tests exist for: no upstream exception text reaches FetchError.reason,
+which flows into Answer.answer and from there to disk, the LLM provider, and the owner email. The reason
+names the subject and the failure class only. The full exception is not discarded — it is relocated to the
+local logger.warning, which is trusted because it is local — so the log half is pinned alongside the reason
+half. Asserting only the reason half would leave "relocated, not discarded" unasserted, and a change that
+simply deleted the logging would read as correct.
 
 The network seam is the `get` attribute of the third-party `requests` module object itself — orchestration holds
 no local alias, so the monkeypatch mutates global state belonging to `requests` for the duration of each test.
@@ -9,8 +16,8 @@ The fake is never handed the plaintext key by a test: it reads params["api_key"]
 put there — assembles the real request URL through requests' own preparation machinery, and raises the
 connection error requests itself would raise. The plaintext therefore appears in the failure text only if
 production put it there, and no assertion path holds it as a literal. _RecordedFredGet.raised_texts keeps the
-raw pre-redaction message so the control test can prove the fake is still emitting the key; without that
-control, neutering the fake would turn every redaction assertion trivially green instead of red.
+raised message so the control test can prove the fake is still emitting the key; without that control,
+neutering the fake would turn every "absent from the reason" assertion trivially green instead of red.
 
 Non-error arms return a real requests.Response with real JSON bytes, so response.json() runs real
 deserialization, and the ValueError arm is obtained honestly from undecodable bytes rather than a raised stub.
@@ -27,9 +34,7 @@ from pydantic import SecretStr
 from pytest import MonkeyPatch
 
 from money_pit.pipeline import orchestration
-from money_pit.pipeline.orchestration import _REDACTED_SECRET_PLACEHOLDER
 from money_pit.pipeline.orchestration import _DirectDeterministicTools
-from money_pit.pipeline.orchestration import _error_text_with_secret_redacted
 from money_pit.schemas.fetch_result import FetchError
 from money_pit.schemas.fetch_result import FetchResult
 from money_pit.schemas.fetch_result import FetchValue
@@ -37,16 +42,31 @@ from money_pit.schemas.fetch_result import NoData
 
 
 _SENTINEL_FRED_API_KEY: str = "fred-key-Zq7Xn4tVp2"
-"""A key that collides with no other substring of the request URL or the error text.
+"""A key that collides with no other substring of the request URL, the error text, or the reason.
 
-Redaction is a substring str.replace, so a key like "json" or "1" would rewrite unrelated parts of the
-message and make the "plaintext absent" assertions pass for the wrong reason.
+A key like "json" or "1" would appear in the reason for reasons unrelated to the credential and make the
+"plaintext absent" assertions fail for the wrong reason — or, worse, pass for it.
 """
 
 _SERIES_ID: str = "CPILFESL"
 _MISSING_KEY_REASON_PREFIX: str = "FRED API key not configured"
 _FETCH_FAILED_REASON_PREFIX: str = "FRED fetch failed"
 _UNPARSEABLE_REASON_PREFIX: str = "FRED value unparseable"
+
+_CONNECTION_ERROR_TYPE_NAME: str = requests.ConnectionError.__name__
+
+_UNPARSEABLE_VALUE: str = "abc"
+"""An observation float() rejects, distinctive enough that its repr cannot appear in the reason by accident."""
+
+_CONNECTION_ERROR_FRAGMENT: str = "Max retries exceeded with url"
+"""A distinctive substring of the fake's exception text, present nowhere in a compliant reason.
+
+This is what discriminates the new contract from the old one: a reason built with `{error}` carries this
+fragment (and the key-bearing URL following it), a reason built with `type(error).__name__` cannot.
+"""
+
+_FLOAT_ERROR_FRAGMENT: str = "could not convert string to float"
+_JSON_ERROR_FRAGMENT: str = "Expecting value"
 
 _OBSERVATION_VALUE: float = 313.245
 _WELL_FORMED_BODY: bytes = json.dumps({"observations": [{"value": str(_OBSERVATION_VALUE)}]}).encode()
@@ -114,38 +134,56 @@ def deterministic_tools(fred_api_key: SecretStr) -> _DirectDeterministicTools:
 
 
 @pytest.mark.parametrize("fred_get__body", [None], indirect=True)
-def test_fetch_fred_series_with_connection_error_redacts_the_key_from_the_reason(
+def test_fetch_fred_series_with_connection_error_keeps_upstream_text_out_of_the_reason(
     deterministic_tools: _DirectDeterministicTools, fred_get: _RecordedFredGet
 ) -> None:
+    """ADR 0032 decision #2: the reason names the series and the failure class, and nothing from the exception.
+
+    The positive half matters as much as the negative one. Asserting only that the key is absent would stay
+    green under a reason that named some other part of the untrusted text; asserting the reason holds the
+    series id and the exception's type name pins the shape the handler actually promises.
+    """
     result: FetchResult = deterministic_tools.fetch_fred_series(_SERIES_ID)
 
     assert isinstance(result, FetchError)
     assert result.reason.startswith(_FETCH_FAILED_REASON_PREFIX)
-    assert _REDACTED_SECRET_PLACEHOLDER in result.reason
+    assert _SERIES_ID in result.reason
+    assert _CONNECTION_ERROR_TYPE_NAME in result.reason
     assert _SENTINEL_FRED_API_KEY not in result.reason
+    assert _CONNECTION_ERROR_FRAGMENT not in result.reason
 
 
 @pytest.mark.parametrize("fred_get__body", [None], indirect=True)
-def test_fetch_fred_series_with_connection_error_redacts_the_key_from_the_log(
+def test_fetch_fred_series_with_connection_error_relocates_the_detail_to_the_log(
     deterministic_tools: _DirectDeterministicTools,
     fred_get: _RecordedFredGet,
     loguru_warnings: list[str],
 ) -> None:
-    _ = deterministic_tools.fetch_fred_series(_SERIES_ID)
+    """Both halves of "relocated, not discarded" in one place: the log keeps the exception text, the reason keeps none.
+
+    Pinning the halves together is what makes a future change that drops the logging fail: with only the
+    reason-side assertion, deleting the logger.warning would look like an improvement rather than the loss of
+    the operator's only diagnostic. What the log does with the key-bearing URL is deliberately left unpinned —
+    ADR 0032 accepts that exposure as residual risk rather than promising it, and a test asserting the
+    plaintext is present would turn a later tightening of the local log into a red test defending the leak.
+    """
+    result: FetchResult = deterministic_tools.fetch_fred_series(_SERIES_ID)
 
     assert len(loguru_warnings) == 1
-    assert _REDACTED_SECRET_PLACEHOLDER in loguru_warnings[0]
-    assert _SENTINEL_FRED_API_KEY not in loguru_warnings[0]
+    assert _CONNECTION_ERROR_FRAGMENT in loguru_warnings[0]
+    assert isinstance(result, FetchError)
+    assert _CONNECTION_ERROR_FRAGMENT not in result.reason
+    assert _SENTINEL_FRED_API_KEY not in result.reason
 
 
 @pytest.mark.parametrize("fred_get__body", [None], indirect=True)
-def test_fetch_fred_series_with_connection_error_raises_key_bearing_text_before_redaction(
+def test_fetch_fred_series_with_connection_error_raises_key_bearing_text_at_the_seam(
     deterministic_tools: _DirectDeterministicTools, fred_get: _RecordedFredGet
 ) -> None:
-    """Control: the seam really does emit the plaintext key, so the redaction assertions above cannot go vacuous.
+    """Control: the seam really does emit the plaintext key, so the "absent from the reason" assertions cannot go vacuous.
 
     If a future edit stops the fake from putting params["api_key"] into the exception, this goes red first and
-    names the cause, instead of the redaction tests silently passing against a message that never held a key.
+    names the cause, instead of the invariant tests silently passing against a message that never held a key.
     """
     _ = deterministic_tools.fetch_fred_series(_SERIES_ID)
 
@@ -159,17 +197,17 @@ def test_fetch_fred_series_with_undecodable_body_returns_fetch_error(
 ) -> None:
     """A body response.json() cannot decode takes the ValueError arm and returns FetchError with the fetch prefix.
 
-    That is the whole claim: a 200 with an unusable payload is an error, not NoData. This does NOT pin the
-    redaction — a real JSON-decode message reports an offending character position and never holds the key, so
-    deleting the redactor leaves this green. The stronger property, that both members of the
-    `except (RequestException, ValueError)` tuple leave through the redacted string, only becomes assertable once
-    raise_for_status() lands and routes a key-bearing HTTPError into this same handler.
+    The second member of the `except (RequestException, ValueError)` tuple witnesses the same invariant as the
+    first: the handler discards the text unconditionally, so the JSON decoder's own message is absent too. That
+    the decode message happens to hold no credential is beside the point — the rule is about the text, not the
+    secret.
     """
     result: FetchResult = deterministic_tools.fetch_fred_series(_SERIES_ID)
 
     assert isinstance(result, FetchError)
     assert result.reason.startswith(_FETCH_FAILED_REASON_PREFIX)
     assert _SENTINEL_FRED_API_KEY not in result.reason
+    assert _JSON_ERROR_FRAGMENT not in result.reason
 
 
 def test_fetch_fred_series_with_no_key_configured_never_reaches_the_network(fred_get: _RecordedFredGet) -> None:
@@ -232,59 +270,28 @@ def test__DirectDeterministicTools_never_holds_the_key_as_a_run_lifetime_plainte
     """Pin ADR 0032 decision #1: the credential lives on the instance as SecretStr, never as a plain str.
 
     SecretStr's repr masks the value, so this goes red the moment a refactor stores an unwrapped copy on the
-    object — the exposure the ADR closed, which redaction of the error text does not cover.
+    object — a run-lifetime exposure independent of, and uncovered by, the decision #2 rule about error text.
     """
     assert _SENTINEL_FRED_API_KEY not in repr(deterministic_tools)
     assert _SENTINEL_FRED_API_KEY not in str(vars(deterministic_tools))
 
 
 @pytest.mark.parametrize(
-    "fred_get__body", [json.dumps({"observations": [{"value": "abc"}]}).encode()], indirect=True
+    "fred_get__body", [json.dumps({"observations": [{"value": _UNPARSEABLE_VALUE}]}).encode()], indirect=True
 )
 def test_fetch_fred_series_with_unparseable_value_returns_fetch_error(
     deterministic_tools: _DirectDeterministicTools, fred_get: _RecordedFredGet
 ) -> None:
+    """The float() handler names the rejected observation itself, and still carries no exception text.
+
+    The observation comes from the response body, never the request, so it cannot hold the credential; naming
+    it says strictly more than the exception's type name, which this handler's single-member `except` had
+    already fixed to "ValueError".
+    """
     result: FetchResult = deterministic_tools.fetch_fred_series(_SERIES_ID)
 
     assert isinstance(result, FetchError)
     assert result.reason.startswith(_UNPARSEABLE_REASON_PREFIX)
-
-
-def test__error_text_with_secret_redacted_with_one_occurrence() -> None:
-    error = ValueError(f"failed for url: ?api_key={_SENTINEL_FRED_API_KEY}&file_type=json")
-
-    redacted: str = _error_text_with_secret_redacted(error, SecretStr(_SENTINEL_FRED_API_KEY))
-
-    assert redacted == f"failed for url: ?api_key={_REDACTED_SECRET_PLACEHOLDER}&file_type=json"
-
-
-def test__error_text_with_secret_redacted_with_repeated_occurrences() -> None:
-    error = ValueError(f"retry 1: {_SENTINEL_FRED_API_KEY}; retry 2: {_SENTINEL_FRED_API_KEY}")
-
-    redacted: str = _error_text_with_secret_redacted(error, SecretStr(_SENTINEL_FRED_API_KEY))
-
-    assert redacted == (
-        f"retry 1: {_REDACTED_SECRET_PLACEHOLDER}; retry 2: {_REDACTED_SECRET_PLACEHOLDER}"
-    )
-    assert _SENTINEL_FRED_API_KEY not in redacted
-
-
-def test__error_text_with_secret_redacted_with_absent_secret() -> None:
-    """The common real case: a failure whose text never held the credential is passed through untouched."""
-    error = ValueError("connection reset by peer")
-
-    redacted: str = _error_text_with_secret_redacted(error, SecretStr(_SENTINEL_FRED_API_KEY))
-
-    assert redacted == "connection reset by peer"
-
-
-def test__error_text_with_secret_redacted_with_empty_secret() -> None:
-    """An empty secret returns the text unchanged: "".replace would splice the placeholder between every character.
-
-    An empty key is a config defect rather than a leak, so ADR 0032 fails it toward a readable diagnostic.
-    """
-    error = ValueError("connection reset by peer")
-
-    redacted: str = _error_text_with_secret_redacted(error, SecretStr(""))
-
-    assert redacted == "connection reset by peer"
+    assert _SERIES_ID in result.reason
+    assert repr(_UNPARSEABLE_VALUE) in result.reason
+    assert _FLOAT_ERROR_FRAGMENT not in result.reason

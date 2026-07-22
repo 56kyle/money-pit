@@ -82,16 +82,6 @@ _BRAVE_SEARCH_URL: str = "https://api.search.brave.com/res/v1/web/search"
 _FETCH_TIMEOUT_SECONDS: int = 10
 _FRED_MISSING_VALUE: str = "."
 _TICKER_HISTORY_PERIOD: str = "1d"
-_REDACTED_SECRET_PLACEHOLDER: str = "<redacted>"
-
-
-def _error_text_with_secret_redacted(error: BaseException, secret: SecretStr) -> str:
-    """Return str(error) with every occurrence of the secret's plaintext replaced by a fixed placeholder."""
-    secret_value: str = secret.get_secret_value()
-    error_text: str = str(error)
-    if not secret_value:
-        return error_text
-    return error_text.replace(secret_value, _REDACTED_SECRET_PLACEHOLDER)
 
 
 class MissingPipelineDependencyError(Exception):
@@ -117,6 +107,8 @@ class PipelineOverrides:
 
 
 class _DirectDeterministicTools:
+    """Direct-fetch tools whose FetchError.reason never carries upstream exception text (see ADR 0032)."""
+
     _fred_api_key: SecretStr | None
 
     def __init__(self, fred_api_key: SecretStr | None) -> None:
@@ -142,11 +134,8 @@ class _DirectDeterministicTools:
             )
             data: object = response.json()
         except (requests.RequestException, ValueError) as error:
-            redacted_error: str = _error_text_with_secret_redacted(error, fred_api_key)
-            logger.warning(
-                "FRED fetch failed for series {series_id}: {error}", series_id=series_id, error=redacted_error
-            )
-            return FetchError(reason=f"FRED fetch failed for series {series_id}: {redacted_error}")
+            logger.warning("FRED fetch failed for series {series_id}: {error}", series_id=series_id, error=error)
+            return FetchError(reason=f"FRED fetch failed for series {series_id}: {type(error).__name__}")
         if not isinstance(data, dict):
             return NoData()
         observations = data.get("observations")
@@ -162,7 +151,7 @@ class _DirectDeterministicTools:
             return FetchValue(value=float(value_str))
         except ValueError as error:
             logger.warning("FRED value unparseable for series {series_id}: {error}", series_id=series_id, error=error)
-            return FetchError(reason=f"FRED value unparseable for series {series_id}: {error}")
+            return FetchError(reason=f"FRED value unparseable for series {series_id}: {value_str!r}")
 
     def fetch_ticker_price(self, ticker: str) -> FetchResult:
         """Return the latest close, NoData when the ticker has no recent bar, FetchError on a yfinance network failure."""
@@ -172,7 +161,7 @@ class _DirectDeterministicTools:
             hist = yf.Ticker(ticker).history(period=_TICKER_HISTORY_PERIOD)  # pyright: ignore[reportUnknownMemberType]
         except (requests.RequestException, OSError) as error:
             logger.warning("yfinance fetch failed for ticker {ticker}: {error}", ticker=ticker, error=error)
-            return FetchError(reason=f"yfinance fetch failed for ticker {ticker}: {error}")
+            return FetchError(reason=f"yfinance fetch failed for ticker {ticker}: {type(error).__name__}")
         if hist.empty:
             return NoData()
         close_series = hist["Close"]

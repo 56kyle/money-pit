@@ -104,11 +104,19 @@ exception in this module reintroduces the leak, and only the helper's name guard
 
 ### Confirmation
 
-`nox -s tests-python` stays green (882 offline tests). Note the honest gap: the redaction itself is
-**not** pinned by a test, because `_DirectDeterministicTools` has no offline unit tests at all —
-deferred with the rest of this module's coverage to the queued refactor. When those land, the first
-case to write is a `RequestException` whose message contains the key, asserting the placeholder
-appears and the plaintext does not, in both the log record and the `FetchError.reason`.
+`nox -s tests-python` stays green. Decisions #1 and #2 are pinned offline by
+`tests/unit_tests/pipeline/test_direct_deterministic_tools.py`: a `requests.ConnectionError` carrying
+the real key in its URL is asserted to reach both sinks — the log record and `FetchError.reason` —
+with the placeholder present and the plaintext absent, alongside a control test proving the seam
+still emits the key so those assertions cannot go vacuous. Decision #1's run-lifetime claim is pinned
+separately by asserting the plaintext appears in neither `repr()` nor `vars()` of the instance.
+
+What remains unpinned is decision #5. Until `raise_for_status()` lands there is no arm of this handler
+that both carries the credential and is reachable offline other than the connection error, so "every
+member of the `except (RequestException, ValueError)` tuple leaves through the redactor" is asserted
+for one member only; the `ValueError` arm is covered for its return value, not for redaction, because a
+JSON-decode message never contains the key. The test that pins `HTTPError` redaction is owed by the
+change that adds the status check.
 
 ## Considered Options (key rejections)
 

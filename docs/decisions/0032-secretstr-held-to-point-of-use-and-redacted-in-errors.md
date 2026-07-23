@@ -1,7 +1,8 @@
 # Credentials stay `SecretStr` to the point of use, and upstream exception text never leaves the local log
 
 - Status: accepted (amended 2026-07-22 — redaction rejected, superseded by structural closure of the sink;
-  amended 2026-07-22 — decision #1 widened from the FRED/Brave keys to every resolved credential)
+  amended 2026-07-22 — decision #1 widened from the FRED/Brave keys to every resolved credential;
+  amended 2026-07-23 — decision #5's `raise_for_status()` landed and is now pinned)
 - Date: 2026-07-21
 - Deciders: owner, python-dev, python-reviewer
 
@@ -146,13 +147,21 @@ failure, so its error text reaches `logger` only — never a `FetchError.reason`
 same rule, since the sink that mattered does not exist on that path.
 
 **5. `raise_for_status()` is now safe to add, and no longer blocked on anything.**
-`fetch_fred_series` does not call `raise_for_status()` today, so an invalid key parses as `NoData`
-rather than `FetchError` — a known defect deferred to the queued refactor of this module. Adding it
-raises `requests.HTTPError`, a `RequestException`, whose `str()` is
+`fetch_fred_series` did not call `raise_for_status()`, so an invalid key parsed as `NoData` rather
+than `FetchError` — a known defect that violated both this module's own docstring ("`FetchError` on
+an upstream or config failure") and the `FetchResult` contract (`schemas/fetch_result.py`), which
+forbids conflating a failure to retrieve with a legitimately-empty response. Adding it raises
+`requests.HTTPError`, a `RequestException`, whose `str()` is
 `400 Client Error: Bad Request for url: https://...api_key=<KEY>...`. It lands in the same handler,
 which now discards that text unconditionally. Under redaction this ordering was a prerequisite with
 a correctness argument attached; under decision #2 the handler is closed by construction for every
 member of the `except` tuple, present and future.
+
+**Landed 2026-07-23.** The single line `response.raise_for_status()` now sits in `fetch_fred_series`
+after `requests.get(...)` and before `response.json()`, so a bad HTTP status fails closed as a
+redacted `FetchError` rather than a silent `NoData`. This was executing an already-recorded decision,
+not a new one, so no separate ADR was cut. See the Confirmation section for the offline test that
+pins the 400 → `FetchError` arm.
 
 ### Consequences
 
@@ -235,6 +244,10 @@ fragment is absent from the artifact, plus a companion asserting the fragment do
 
 Nothing is left unpinned pending `raise_for_status()`: the handler's behaviour is independent of which
 exception type it caught, so one member of the `except` tuple witnesses the invariant for all of them.
+Decision #5 now has its own positive witness — `test_fetch_fred_series_with_error_status_returns_fetch_error`
+drives a real 400 `Response` through production's `raise_for_status()` and asserts the resulting
+`FetchError.reason` names the series id and `HTTPError` while carrying neither the plaintext key nor the
+`for url:` fragment, with a seam control proving the raised `HTTPError` really embeds the key.
 
 One gap is open and named: **`fetch_ticker_price` has no tests at all.** Decision #2 extends the
 invariant to it by assertion in this document only, so a future edit interpolating `{error}` into its

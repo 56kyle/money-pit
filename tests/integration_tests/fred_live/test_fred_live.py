@@ -8,10 +8,12 @@ shares nothing with it. A missing key fails the tier loudly rather than skipping
 my key wired up" with a false green. Run explicitly with, e.g.,
 `MONEY_PIT_LIVE=1 uv run pytest tests/integration_tests/fred_live -m live --no-cov -q`.
 
-Both tests assert `FetchValue` specifically rather than merely "not FetchError". `fetch_fred_series` does
-not call `raise_for_status()`, and FRED answers an invalid or unregistered key with HTTP 400 and a JSON
-error body carrying no `observations`, which the parsing maps to `NoData` — so accepting `NoData` would
-make this tier pass with a completely bogus key.
+The tests assert `FetchValue` specifically rather than merely "not FetchError" because a bogus key must
+NOT pass this tier. `fetch_fred_series` now calls `response.raise_for_status()`, so FRED's HTTP 400 for an
+invalid or unregistered key maps to a `FetchError` (previously, without that call, the error body's missing
+`observations` was mis-mapped to `NoData`). Either way — `FetchError` now, `NoData` before — the result is
+not a `FetchValue`, so the specific `FetchValue` assertion is what keeps the tier honest against a
+completely bogus key.
 """
 
 import os

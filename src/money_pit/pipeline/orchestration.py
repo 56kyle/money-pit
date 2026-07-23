@@ -132,6 +132,7 @@ class _DirectDeterministicTools:
                 },
                 timeout=_FETCH_TIMEOUT_SECONDS,
             )
+            response.raise_for_status()
             data: object = response.json()
         except (requests.RequestException, ValueError) as error:
             logger.warning("FRED fetch failed for series {series_id}: {error}", series_id=series_id, error=error)

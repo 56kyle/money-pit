@@ -54,6 +54,11 @@ _FETCH_FAILED_REASON_PREFIX: str = "FRED fetch failed"
 _UNPARSEABLE_REASON_PREFIX: str = "FRED value unparseable"
 
 _CONNECTION_ERROR_TYPE_NAME: str = requests.ConnectionError.__name__
+_HTTP_ERROR_TYPE_NAME: str = requests.HTTPError.__name__
+
+_BAD_REQUEST_STATUS: int = 400
+_BAD_REQUEST_REASON: str = "Bad Request"
+"""FRED answers an invalid api_key or an unknown series_id with HTTP 400, which raise_for_status rejects."""
 
 _UNPARSEABLE_VALUE: str = "abc"
 """An observation float() rejects, distinctive enough that its repr cannot appear in the reason by accident."""
@@ -63,6 +68,15 @@ _CONNECTION_ERROR_FRAGMENT: str = "Max retries exceeded with url"
 
 This is what discriminates the new contract from the old one: a reason built with `{error}` carries this
 fragment (and the key-bearing URL following it), a reason built with `type(error).__name__` cannot.
+"""
+
+_HTTP_ERROR_FRAGMENT: str = "Client Error"
+"""A distinctive substring of raise_for_status()'s message, present in no compliant reason.
+
+raise_for_status builds "400 Client Error: Bad Request for url: {key-bearing url}", so the fragment travels
+alongside the plaintext key. A reason built with type(error).__name__ names only the class "HTTPError" and
+carries neither the fragment nor the URL following it; this is what discriminates the fail-closed reason from
+the raw exception text.
 """
 
 _FLOAT_ERROR_FRAGMENT: str = "could not convert string to float"
@@ -82,21 +96,42 @@ _EXPECTED_REQUEST_PARAMS: dict[str, str] = {
 
 
 class _RecordedFredGet:
-    """A stand-in for requests.get that records its calls and either raises a real ConnectionError or answers 200."""
+    """A stand-in for requests.get that either raises a real ConnectionError, answers an error status, or answers 200.
+
+    The error-status arm returns a real requests.Response carrying the key-bearing prepared URL, and leaves the
+    raising to production's own raise_for_status — so the HTTPError under test is the real one requests builds,
+    not a hand-fabricated stub. The returned error responses are kept on `responses` so the seam control can
+    invoke raise_for_status itself and prove the text really holds the plaintext key.
+    """
 
     calls: list[dict[str, str]]
     raised_texts: list[str]
+    responses: list[requests.Response]
     body: bytes | None
+    status_code: int
+    reason: str | None
 
-    def __init__(self, body: bytes | None) -> None:
+    def __init__(self, body: bytes | None, status_code: int = 200, reason: str | None = None) -> None:
         self.calls = []
         self.raised_texts = []
+        self.responses = []
         self.body = body
+        self.status_code = status_code
+        self.reason = reason
 
     def __call__(self, url: str, *, params: dict[str, str], timeout: int) -> requests.Response:
         self.calls.append(params)
+        prepared_url: str | None = requests.Request("GET", url, params=params).prepare().url
+        if self.status_code != 200:
+            response = requests.Response()
+            response.status_code = self.status_code
+            response.reason = self.reason
+            # requests sets response.url from the PreparedRequest during Session.send, which this fake bypasses;
+            # setting it is what puts the key-bearing URL into raise_for_status's message.
+            response.url = prepared_url
+            self.responses.append(response)
+            return response
         if self.body is None:
-            prepared_url: str | None = requests.Request("GET", url, params=params).prepare().url
             error = requests.ConnectionError(
                 f"HTTPSConnectionPool(host='api.stlouisfed.org', port=443): "
                 f"Max retries exceeded with url: {prepared_url}"
@@ -122,8 +157,20 @@ def fred_get__body(request: pytest.FixtureRequest) -> bytes | None:
 
 
 @pytest.fixture
-def fred_get(monkeypatch: MonkeyPatch, fred_get__body: bytes | None) -> _RecordedFredGet:
-    recorded = _RecordedFredGet(body=fred_get__body)
+def fred_get__status(request: pytest.FixtureRequest) -> int:
+    return getattr(request, "param", 200)
+
+
+@pytest.fixture
+def fred_get__reason(request: pytest.FixtureRequest) -> str | None:
+    return getattr(request, "param", None)
+
+
+@pytest.fixture
+def fred_get(
+    monkeypatch: MonkeyPatch, fred_get__body: bytes | None, fred_get__status: int, fred_get__reason: str | None
+) -> _RecordedFredGet:
+    recorded = _RecordedFredGet(body=fred_get__body, status_code=fred_get__status, reason=fred_get__reason)
     monkeypatch.setattr(orchestration.requests, "get", recorded)
     return recorded
 
@@ -191,6 +238,58 @@ def test_fetch_fred_series_with_connection_error_raises_key_bearing_text_at_the_
     assert _SENTINEL_FRED_API_KEY in fred_get.raised_texts[0]
 
 
+@pytest.mark.parametrize(
+    ("fred_get__body", "fred_get__status", "fred_get__reason"),
+    [(None, _BAD_REQUEST_STATUS, _BAD_REQUEST_REASON)],
+    indirect=True,
+)
+def test_fetch_fred_series_with_error_status_returns_fetch_error(
+    deterministic_tools: _DirectDeterministicTools, fred_get: _RecordedFredGet
+) -> None:
+    """A non-2xx status becomes a redacted FetchError once raise_for_status guards the parse, not a silent NoData.
+
+    This pins the fail-closed branch a bare requests.get lacks: without raise_for_status, an invalid api_key or
+    unknown series_id — both HTTP 400 from FRED — sails past the status check into response.json(), and the
+    handler returns NoData or a JSONDecodeError-shaped FetchError, either of which reads as "the series is
+    empty" rather than "the request was rejected". The reason must name the HTTPError class and the series, and
+    carry nothing from raise_for_status's own message.
+
+    A legitimately empty series is signalled by FRED as HTTP 200 with observations: [] (the empty_observations
+    arm), never a non-2xx status, so guarding on status cannot misclassify real emptiness as a fetch failure.
+    """
+    result: FetchResult = deterministic_tools.fetch_fred_series(_SERIES_ID)
+
+    assert isinstance(result, FetchError)
+    assert result.reason.startswith(_FETCH_FAILED_REASON_PREFIX)
+    assert _SERIES_ID in result.reason
+    assert _HTTP_ERROR_TYPE_NAME in result.reason
+    assert _SENTINEL_FRED_API_KEY not in result.reason
+    assert _HTTP_ERROR_FRAGMENT not in result.reason
+
+
+@pytest.mark.parametrize(
+    ("fred_get__body", "fred_get__status", "fred_get__reason"),
+    [(None, _BAD_REQUEST_STATUS, _BAD_REQUEST_REASON)],
+    indirect=True,
+)
+def test_fetch_fred_series_with_error_status_raises_key_bearing_text_at_the_seam(
+    deterministic_tools: _DirectDeterministicTools, fred_get: _RecordedFredGet
+) -> None:
+    """Control: production's own raise_for_status emits the plaintext key, so the "absent from the reason" checks bite.
+
+    The error response the fake returns carries the key-bearing prepared URL; invoking raise_for_status here —
+    the real requests machinery production runs after the pending fix — proves the message holds the key. If a
+    future edit drops response.url, this goes red first and names the cause, instead of the redaction assertions
+    passing against a message that never held a key.
+    """
+    _ = deterministic_tools.fetch_fred_series(_SERIES_ID)
+
+    assert len(fred_get.responses) == 1
+    with pytest.raises(requests.HTTPError) as exc_info:
+        fred_get.responses[0].raise_for_status()
+    assert _SENTINEL_FRED_API_KEY in str(exc_info.value)
+
+
 @pytest.mark.parametrize("fred_get__body", [_UNDECODABLE_BODY], indirect=True)
 def test_fetch_fred_series_with_undecodable_body_returns_fetch_error(
     deterministic_tools: _DirectDeterministicTools, fred_get: _RecordedFredGet
@@ -224,7 +323,7 @@ def test_fetch_fred_series_with_no_key_configured_never_reaches_the_network(fred
     "fred_get__body",
     [
         pytest.param(b"[]", id="non_dict_body"),
-        pytest.param(json.dumps({"error_message": "Bad Request."}).encode(), id="missing_observations"),
+        pytest.param(json.dumps({}).encode(), id="two_hundred_without_observations"),
         pytest.param(json.dumps({"observations": []}).encode(), id="empty_observations"),
         pytest.param(json.dumps({"observations": ["not-a-mapping"]}).encode(), id="non_dict_observation"),
         pytest.param(json.dumps({"observations": [{"value": "."}]}).encode(), id="missing_value_sentinel"),

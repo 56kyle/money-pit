@@ -82,6 +82,22 @@ def _render_markdown(slug: str, answers: list[Answer]) -> str:
     return "\n".join(lines)
 
 
+def _combine_fetch_results(results: list[FetchResult]) -> FetchResult:
+    """Combine per-series fetch results into one, failing closed on any component error."""
+    values: list[float] = []
+    for result in results:
+        match result:
+            case FetchError():
+                return result
+            case FetchValue(value=value):
+                values.append(value)
+            case NoData():
+                continue
+    if not values:
+        return NoData()
+    return FetchValue(value=sum(values) / len(values))
+
+
 def _fetch_deterministic(
     question: Question,
     tools: DeterministicResearchTools,
@@ -92,10 +108,10 @@ def _fetch_deterministic(
         if signal_source is None or not signal_source.startswith(INDICATOR_PREFIX):
             return NoData()
         indicator_name: str = signal_source[len(INDICATOR_PREFIX) :]
-        series_id: str | None = MACRO_INDICATOR_SERIES.get(indicator_name)
-        if series_id is None:
+        series_ids: tuple[str, ...] | None = MACRO_INDICATOR_SERIES.get(indicator_name)
+        if series_ids is None:
             return NoData()
-        return tools.fetch_fred_series(series_id)
+        return _combine_fetch_results([tools.fetch_fred_series(series_id) for series_id in series_ids])
 
     if question.category == QuestionCategory.PORTFOLIO_GAP:
         ticker: str | None = question.signal_source

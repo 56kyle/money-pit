@@ -158,7 +158,7 @@ Pure functions, no I/O, no LLM. Key design decisions resolved:
 | --------------------------------------- | --------- | ----------- |
 | `yield_curve` (T10Y2Y)                  | 0.0       | +1          |
 | `credit_spreads` (HY OAS pct pts)       | 3.0       | -1          |
-| `pmi` (ISM Mfg)                         | 50.0      | +1          |
+| `pmi` (regional Fed mfg diffusion composite) | 0.0  | +1          |
 | `earnings_revisions` (breadth fraction) | 0.0       | +1          |
 | `inflation` (CPILFESL YoY %)            | 2.5       | -1          |
 

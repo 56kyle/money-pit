@@ -36,7 +36,7 @@ The five structural thresholds:
 | -------------------------------------- | ----------- | ---------------------------------- |
 | `yield_curve` (T10Y2Y)                 | 0.0 pct pts | Inversion boundary                 |
 | `credit_spreads` (HY OAS)              | 3.0 pct pts | Long-run neutral for HY spreads    |
-| `pmi` (ISM Mfg)                        | 50.0        | ISM expansion/contraction boundary |
+| `pmi` (regional Fed mfg diffusion composite) | 0.0   | Net-diffusion expansion/contraction boundary (see ADR 0033) |
 | `earnings_revisions` (fwd-EPS breadth) | 0.0         | Zero breadth = flat revisions      |
 | `inflation` (CPILFESL YoY)             | 2.5%        | Long-run Fed target                |
 
@@ -77,3 +77,5 @@ Orientations are structural (not configurable): `yield_curve`, `pmi`, `earnings_
 ## More Information
 
 When `MacroIndicators` is extended to carry a trailing series (or when A3 retrieves multiple historical data points), `classify_regime` should be updated to use the z-score approach from `design_decisions.md §1`, at which point `regime_lookback` becomes meaningful and the `RECOVERY` rule can be re-introduced. That change warrants a superseding ADR.
+
+The `pmi` row above was revised by [ADR 0033](0033-pmi-regional-fed-composite.md): ISM removed its PMI from FRED, so `pmi` now sources a mean of regional Fed manufacturing diffusion indices (centered at 0) and its threshold is `0.0` rather than the ISM `50.0`.

@@ -66,7 +66,7 @@ class Config(BaseSettings):
     execution_fill_poll_timeout_seconds: float = 30.0
     threshold_yield_curve: float = 0.0
     threshold_credit_spreads: float = 3.0
-    threshold_pmi: float = 50.0
+    threshold_pmi: float = 0.0
     threshold_earnings_revisions: float = 0.0
     threshold_inflation: float = 2.5
     threshold_factor_value_pe: float = 20.0

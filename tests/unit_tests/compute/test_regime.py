@@ -18,7 +18,7 @@ def _good_macro() -> MacroIndicators:
     return MacroIndicators(
         yield_curve=0.8,
         credit_spreads=2.0,
-        pmi=52.0,
+        pmi=5.0,
         earnings_revisions=0.6,
         inflation=2.0,
         as_of="2026-01-01",
@@ -86,7 +86,7 @@ def test_classify_regime_with_one_none_returns_uncertain(field: str, stub_config
     base = MacroIndicators(
         yield_curve=0.8,
         credit_spreads=2.0,
-        pmi=52.0,
+        pmi=5.0,
         earnings_revisions=0.6,
         inflation=2.0,
         as_of="2026-01-01",
@@ -100,7 +100,7 @@ def test_classify_regime_with_late_cycle_stress_signals(stub_config: Config) -> 
     indicators = MacroIndicators(
         yield_curve=-0.8,
         credit_spreads=5.0,
-        pmi=48.0,
+        pmi=-5.0,
         earnings_revisions=-0.6,
         inflation=2.5,
         as_of="2026-01-01",
@@ -113,7 +113,7 @@ def test_classify_regime_with_stagflation_signals(stub_config: Config) -> None:
     indicators = MacroIndicators(
         yield_curve=0.2,
         credit_spreads=3.8,
-        pmi=48.0,
+        pmi=-5.0,
         earnings_revisions=-0.6,
         inflation=3.2,
         as_of="2026-01-01",
@@ -131,7 +131,7 @@ def test_classify_regime_with_growth_decelerating_signals(stub_config: Config) -
     indicators = MacroIndicators(
         yield_curve=0.2,
         credit_spreads=2.0,
-        pmi=48.0,
+        pmi=-5.0,
         earnings_revisions=-0.6,
         inflation=2.3,
         as_of="2026-01-01",
@@ -145,7 +145,7 @@ def test_classify_regime_with_conflict_guard_strong_financial_weak_growth(stub_c
     indicators = MacroIndicators(
         yield_curve=0.8,
         credit_spreads=2.0,
-        pmi=48.0,
+        pmi=-5.0,
         earnings_revisions=-0.6,
         inflation=3.2,
         as_of="2026-01-01",
@@ -159,7 +159,7 @@ def test_classify_regime_with_conflict_guard_weak_financial_strong_growth(stub_c
     indicators = MacroIndicators(
         yield_curve=-0.8,
         credit_spreads=5.0,
-        pmi=52.0,
+        pmi=5.0,
         earnings_revisions=0.6,
         inflation=2.5,
         as_of="2026-01-01",
@@ -173,7 +173,7 @@ def test_classify_regime_with_signed_sum_fallback_uncertain(stub_config: Config)
     indicators = MacroIndicators(
         yield_curve=0.2,
         credit_spreads=3.0,
-        pmi=50.3,
+        pmi=0.3,
         earnings_revisions=0.6,
         inflation=2.5,
         as_of="2026-01-01",
@@ -184,7 +184,7 @@ def test_classify_regime_with_signed_sum_fallback_uncertain(stub_config: Config)
 def test_classify_regime_recovery_is_unreachable(stub_config: Config) -> None:
     _yc_vals: list[float] = [-0.8, 0.2, 0.8]
     _cs_vals: list[float] = [5.0, 3.0, 2.0]
-    _pmi_vals: list[float] = [48.0, 50.3, 52.0]
+    _pmi_vals: list[float] = [-5.0, 0.3, 5.0]
     _er_vals: list[float] = [-0.6, 0.3, 0.6]
     _inf_vals: list[float] = [3.2, 2.5, 1.9]
     results: set[RegimeTag] = set()

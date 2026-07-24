@@ -62,7 +62,7 @@ Config knobs (the _only_ tunables here): `regime_lookback` (trailing window) and
 | ------------------ | -------------------------------------- | -------------------------------------- |
 | yield-curve shape  | FRED `T10Y2Y`                          | steeper = `+1`                         |
 | credit spreads     | FRED `BAMLH0A0HYM2` (HY OAS)           | **tighter** = `+1` (inverted polarity) |
-| PMI                | ISM Mfg / S&P Global                   | higher & rising = `+1`                 |
+| PMI                | FRED regional Fed mfg diffusion composite | higher & rising = `+1`              |
 | earnings revisions | fwd-EPS revision breadth               | up = `+1`                              |
 | inflation          | FRED `CPILFESL` YoY or ISM prices-paid | **cooling** = `+1` (inverted polarity) |
 

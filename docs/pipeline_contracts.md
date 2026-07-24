@@ -683,7 +683,7 @@ any missing/stale series leaves the corresponding field `null`, which triggers `
 {
   "yield_curve": -0.41, // T10Y2Y spread in percentage points; null if unavailable
   "credit_spreads": 3.82, // HY OAS in percentage points; null if unavailable
-  "pmi": 48.7, // ISM Mfg PMI level; null if unavailable
+  "pmi": 12.4, // mean of regional Fed mfg diffusion indices (0-centered); null if unavailable
   "earnings_revisions": -0.12, // fwd-EPS revision breadth (fraction, negative = net down); null
   "inflation": 3.1, // CPILFESL YoY % or ISM prices-paid index; null if unavailable
   "as_of": "2026-06-26" // date of the most recent data point used

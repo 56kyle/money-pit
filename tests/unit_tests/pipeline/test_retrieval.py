@@ -10,6 +10,7 @@ from money_pit.agents.research_tools import DeterministicResearchTools
 from money_pit.pipeline.retrieval import _deterministic_answer
 from money_pit.pipeline.retrieval import _draft_to_answer
 from money_pit.pipeline.retrieval import _fetch_deterministic
+from money_pit.pipeline.retrieval import _combine_fetch_results
 from money_pit.pipeline.retrieval import make_retrieval_node
 from money_pit.schemas.answer_draft import AnswerDraft
 from money_pit.schemas.answers import InitialAnswers
@@ -21,6 +22,7 @@ from money_pit.schemas.fetch_result import FetchError
 from money_pit.schemas.fetch_result import FetchResult
 from money_pit.schemas.fetch_result import FetchValue
 from money_pit.schemas.fetch_result import NoData
+from money_pit.schemas.macro import MACRO_INDICATOR_SERIES
 from money_pit.schemas.provenance import SourceRef
 from money_pit.schemas.questions import InitialQuestions
 from money_pit.schemas.questions import Question
@@ -121,6 +123,42 @@ def test__draft_to_answer_with_signal_tier(answer_draft: AnswerDraft, question: 
     assert result.signal_tier == question.signal_tier
 
 
+_FIRST_MEAN_ERROR = FetchError(reason="first component failed")
+_SECOND_MEAN_ERROR = FetchError(reason="second component failed")
+
+
+def test__combine_fetch_results_with_multiple_values_averages() -> None:
+    results: list[FetchResult] = [FetchValue(value=10.0), FetchValue(value=20.0), FetchValue(value=30.0)]
+    assert _combine_fetch_results(results) == FetchValue(value=20.0)
+
+
+def test__combine_fetch_results_with_single_value_passes_through() -> None:
+    assert _combine_fetch_results([FetchValue(value=42.0)]) == FetchValue(value=42.0)
+
+
+def test__combine_fetch_results_with_value_and_no_data_averages_values_only() -> None:
+    results: list[FetchResult] = [FetchValue(value=10.0), NoData(), FetchValue(value=30.0)]
+    assert _combine_fetch_results(results) == FetchValue(value=20.0)
+
+
+def test__combine_fetch_results_with_all_no_data_returns_no_data() -> None:
+    assert _combine_fetch_results([NoData(), NoData()]) == NoData()
+
+
+def test__combine_fetch_results_with_empty_list_returns_no_data() -> None:
+    assert _combine_fetch_results([]) == NoData()
+
+
+def test__combine_fetch_results_with_any_error_fails_closed() -> None:
+    results: list[FetchResult] = [FetchValue(value=10.0), _FIRST_MEAN_ERROR, FetchValue(value=30.0)]
+    assert _combine_fetch_results(results) == _FIRST_MEAN_ERROR
+
+
+def test__combine_fetch_results_with_multiple_errors_returns_first() -> None:
+    results: list[FetchResult] = [FetchValue(value=10.0), _FIRST_MEAN_ERROR, _SECOND_MEAN_ERROR]
+    assert _combine_fetch_results(results) == _FIRST_MEAN_ERROR
+
+
 class _StubResearchTools:
     def __init__(self, *, fred_result: FetchResult, ticker_result: FetchResult) -> None:
         self._fred_result = fred_result
@@ -213,6 +251,55 @@ def test__fetch_deterministic_with_no_fetchable_source_returns_no_data(
     deterministic_tools: DeterministicResearchTools,
 ) -> None:
     assert _fetch_deterministic(question, deterministic_tools) == NoData()
+
+
+class _ScriptedFredTools:
+    def __init__(self, *, fred_results: dict[str, FetchResult]) -> None:
+        self._fred_results = fred_results
+
+    def fetch_fred_series(self, series_id: str) -> FetchResult:
+        return self._fred_results[series_id]
+
+    def fetch_ticker_price(self, ticker: str) -> FetchResult:
+        raise AssertionError("fetch_ticker_price must not be called for a macro-regime question")
+
+
+_PMI_SERIES_IDS: tuple[str, ...] = MACRO_INDICATOR_SERIES["pmi"]
+_PMI_COMPONENT_ERROR = FetchError(reason="regional fed diffusion series unavailable")
+
+
+@pytest.fixture
+def scripted_pmi_tools__readings(request: FixtureRequest) -> list[FetchResult]:
+    return getattr(
+        request,
+        "param",
+        [FetchValue(value=10.0), FetchValue(value=20.0), FetchValue(value=30.0)],
+    )
+
+
+@pytest.fixture
+def scripted_pmi_tools(scripted_pmi_tools__readings: list[FetchResult]) -> DeterministicResearchTools:
+    return _ScriptedFredTools(fred_results=dict(zip(_PMI_SERIES_IDS, scripted_pmi_tools__readings, strict=True)))
+
+
+@pytest.mark.parametrize("question__signal_source", ["indicator:pmi"], indirect=True)
+def test__fetch_deterministic_with_pmi_composite_returns_mean(
+    question: Question,
+    scripted_pmi_tools: DeterministicResearchTools,
+) -> None:
+    assert _fetch_deterministic(question, scripted_pmi_tools) == FetchValue(value=20.0)
+
+
+@pytest.mark.parametrize(
+    ("question__signal_source", "scripted_pmi_tools__readings"),
+    [("indicator:pmi", [FetchValue(value=10.0), _PMI_COMPONENT_ERROR, FetchValue(value=30.0)])],
+    indirect=True,
+)
+def test__fetch_deterministic_with_pmi_component_error_fails_closed(
+    question: Question,
+    scripted_pmi_tools: DeterministicResearchTools,
+) -> None:
+    assert _fetch_deterministic(question, scripted_pmi_tools) == _PMI_COMPONENT_ERROR
 
 
 _FETCH_ERROR_REASON = "upstream 503; series temporarily unavailable"

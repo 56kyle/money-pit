@@ -26,6 +26,7 @@ from money_pit.config import load_config
 from money_pit.pipeline.orchestration import _DirectDeterministicTools
 from money_pit.schemas.fetch_result import FetchResult
 from money_pit.schemas.fetch_result import FetchValue
+from money_pit.schemas.macro import MACRO_INDICATOR_SERIES
 
 
 pytestmark = [
@@ -38,6 +39,7 @@ pytestmark = [
 
 _CORE_CPI_SERIES_ID: str = "CPILFESL"
 _TREASURY_SPREAD_SERIES_ID: str = "T10Y2Y"
+_PMI_SERIES_IDS: tuple[str, ...] = MACRO_INDICATOR_SERIES["pmi"]
 
 
 @pytest.fixture
@@ -73,6 +75,27 @@ def test_fetch_fred_series_with_live_treasury_spread(live_fred_api_key: SecretSt
     tools = _DirectDeterministicTools(fred_api_key=live_fred_api_key)
 
     result: FetchResult = tools.fetch_fred_series(_TREASURY_SPREAD_SERIES_ID)
+
+    assert isinstance(result, FetchValue)
+    assert isinstance(result.value, float)
+
+
+@pytest.mark.parametrize("series_id", _PMI_SERIES_IDS)
+def test_fetch_fred_series_with_live_pmi_regional_component(
+    series_id: str, live_fred_api_key: SecretStr | None
+) -> None:
+    """Fetch each regional Fed manufacturing diffusion index composing the PMI signal; monthly, so always populated.
+
+    NAPM was discontinued, so the PMI regime input is now the mean of three regional diffusion indices. A
+    FetchValue on each proves the composite's live inputs are wired up; a bogus key maps to FetchError, keeping
+    the tier honest.
+    """
+    assert live_fred_api_key is not None, (
+        "refusing to run the FRED live tier without a key: set MONEY_PIT__FRED_API_KEY"
+    )
+    tools = _DirectDeterministicTools(fred_api_key=live_fred_api_key)
+
+    result: FetchResult = tools.fetch_fred_series(series_id)
 
     assert isinstance(result, FetchValue)
     assert isinstance(result.value, float)

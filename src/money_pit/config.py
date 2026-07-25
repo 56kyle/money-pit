@@ -53,6 +53,7 @@ class Config(BaseSettings):
     smtp_port: int = DEFAULT_SMTP_PORT
 
     regime_lookback: int = 60
+    current_events_lookback_days: int = Field(default=7, ge=0)
     regime_band: float = 0.5
     kelly_fraction: float = 0.25
     max_position_weight: float = 0.10

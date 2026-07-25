@@ -76,7 +76,13 @@ def build_graph(
     builder.add_node("snapshot", make_snapshot_node(fetch_portfolio=fetch_portfolio))
     builder.add_node("aggregator", make_aggregator_node(corroboration_agent=corroboration_agent))
     builder.add_node("no_action_terminal", _no_action_terminal)
-    builder.add_node("questions", make_questions_node(claim_questions_agent=claim_questions_agent))
+    builder.add_node(
+        "questions",
+        make_questions_node(
+            claim_questions_agent=claim_questions_agent,
+            current_events_lookback_days=config.current_events_lookback_days,
+        ),
+    )
     builder.add_node(
         "retrieval",
         make_retrieval_node(answer_synthesis_agent=answer_synthesis_agent, deterministic_tools=deterministic_tools),

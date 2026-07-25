@@ -1,6 +1,7 @@
 """Module containing the A2 node handling template emission, ID assignment, routing-table data_sources, and file writes for the money_pit package."""
 
 from datetime import datetime
+from datetime import timedelta
 from datetime import timezone
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from money_pit.compute.signal_flags import count_by_tier
 from money_pit.constants import AGGREGATED_SIGNALS_JSON_FILENAME
 from money_pit.constants import INITIAL_QUESTIONS_JSON_FILENAME
 from money_pit.constants import INITIAL_QUESTIONS_MD_FILENAME
+from money_pit.constants import ISO_UTC_FORMAT
 from money_pit.constants import PORTFOLIO_SNAPSHOT_FILENAME
 from money_pit.contracts import ClaimQuestionsAgent
 from money_pit.graph.state import PipelineNode
@@ -33,7 +35,12 @@ from money_pit.schemas.signals import Claim
 
 _CLAIM_SUMMARY_MAX_LEN: int = 80
 
+_MISSING_PUBLISHED_AT_TEXT: str = "the source publication date"
+
 _A2_AGENT_FAILURE_LOG: str = "A2 claim questions agent failed; proceeding with no LLM-authored questions"
+_UNPARSEABLE_PUBLISHED_AT_LOG: str = (
+    "Unparseable source published_at {published_at}; falling back to the missing-publication-date cutoff text"
+)
 
 _MACRO_QUESTION_TEXT: dict[str, tuple[str, str]] = {
     "yield_curve": (
@@ -78,13 +85,28 @@ def _make_macro_questions() -> list[Question]:
     return questions
 
 
-def _make_current_events_questions(high_medium_claims: list[Claim]) -> list[Question]:
+def _evidence_cutoff_text(published_at: str | None, lookback_days: int) -> str:
+    """Return the evidence-window cutoff text: published_at backdated by lookback_days, or a fallback when absent or unparseable."""
+    if published_at is None:
+        return _MISSING_PUBLISHED_AT_TEXT
+    try:
+        parsed: datetime = datetime.fromisoformat(published_at)
+    except ValueError:
+        logger.warning(_UNPARSEABLE_PUBLISHED_AT_LOG, published_at=published_at)
+        return _MISSING_PUBLISHED_AT_TEXT
+    anchored: datetime = (
+        parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+    )
+    return (anchored - timedelta(days=lookback_days)).strftime(ISO_UTC_FORMAT)
+
+
+def _make_current_events_questions(high_medium_claims: list[Claim], lookback_days: int) -> list[Question]:
     questions: list[Question] = []
     for claim in high_medium_claims:
-        published_at: str = claim.source_ref.published_at or "the source publication date"
+        evidence_cutoff: str = _evidence_cutoff_text(claim.source_ref.published_at, lookback_days)
         question_text: str = (
             f"What material developments have occurred regarding {claim.claim[:_CLAIM_SUMMARY_MAX_LEN]}"
-            f" since {published_at}?"
+            f" since {evidence_cutoff}?"
         )
         questions.append(
             Question(
@@ -259,6 +281,8 @@ def _write_questions_outputs(working_dir: Path, initial_questions: InitialQuesti
 
 def make_questions_node(
     claim_questions_agent: ClaimQuestionsAgent,
+    *,
+    current_events_lookback_days: int,
 ) -> PipelineNode:
     """Return a LangGraph node that generates initial research questions."""
 
@@ -273,7 +297,9 @@ def make_questions_node(
         ]
 
         macro_qs: list[Question] = _make_macro_questions()
-        current_events_qs: list[Question] = _make_current_events_questions(high_medium_claims)
+        current_events_qs: list[Question] = _make_current_events_questions(
+            high_medium_claims, current_events_lookback_days
+        )
         portfolio_gap_qs: list[Question] = _make_portfolio_gap_questions(high_medium_claims, portfolio)
         llm_qs: list[Question] = _make_llm_questions(claim_questions_agent, high_medium_claims)
 

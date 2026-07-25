@@ -9,6 +9,10 @@ Pins the draft→node→contract pattern for A2:
   not a known high/medium claim_id;
 - make_questions_node runs each DraftQuestion through the helper (dropping None)
   before merging with the templated questions and writing initial_questions.json.
+
+Also pins the current-events evidence window: _evidence_cutoff_text backdates the source
+published_at by the configured lookback, and fails soft — a missing or unparseable
+published_at still emits the question rather than dropping a capital-relevant one.
 """
 
 from collections.abc import Callable
@@ -20,7 +24,11 @@ from pytest import FixtureRequest
 
 from money_pit.compute.routing import CATEGORY_TO_TOOLS
 from money_pit.pipeline.questions import _A2_AGENT_FAILURE_LOG
+from money_pit.pipeline.questions import _MISSING_PUBLISHED_AT_TEXT
+from money_pit.pipeline.questions import _UNPARSEABLE_PUBLISHED_AT_LOG
 from money_pit.pipeline.questions import _draft_to_question
+from money_pit.pipeline.questions import _evidence_cutoff_text
+from money_pit.pipeline.questions import _make_current_events_questions
 from money_pit.pipeline.questions import make_questions_node
 from money_pit.schemas.enums import ClaimCategory
 from money_pit.schemas.enums import QuestionCategory
@@ -43,6 +51,14 @@ _SLUG = "test-run"
 _KNOWN_CLAIM_ID = "claim_high_001"
 _UNKNOWN_CLAIM_ID = "claim_unknown_999"
 
+_LOOKBACK_DAYS = 3
+_PUBLISHED_AT = "2026-07-24T00:00:00Z"
+_NAIVE_DATE_ONLY_PUBLISHED_AT = "2026-07-24"
+_UNPARSEABLE_PUBLISHED_AT = "not-a-date"
+
+_CLAIM_PUBLISHED_AT = "2026-01-15T12:00:00Z"
+_CLAIM_CUTOFF_AT_LOOKBACK_DAYS = "2026-01-12T12:00:00Z"
+
 
 def _source_ref() -> SourceRef:
     return SourceRef(
@@ -50,7 +66,7 @@ def _source_ref() -> SourceRef:
         source_type=SourceType.NARRATED_VIDEO,
         title="Test Video: NVDA Thesis Review",
         url="https://www.youtube.com/watch?v=test",
-        published_at="2026-01-15T12:00:00Z",
+        published_at=_CLAIM_PUBLISHED_AT,
         retrieved_at="2026-06-18T14:30:00Z",
         locator=None,
     )
@@ -114,6 +130,99 @@ def test__draft_to_question_with_unknown_claim_returns_none() -> None:
     assert result is None
 
 
+def _claim_published_at(published_at: str | None) -> Claim:
+    claim: Claim = _high_claim()
+    return claim.model_copy(
+        update={"source_ref": claim.source_ref.model_copy(update={"published_at": published_at})}
+    )
+
+
+@pytest.mark.parametrize(
+    ("lookback_days", "expected_cutoff"),
+    [
+        (0, "2026-07-24T00:00:00Z"),
+        (1, "2026-07-23T00:00:00Z"),
+        (7, "2026-07-17T00:00:00Z"),
+        (30, "2026-06-24T00:00:00Z"),
+    ],
+)
+def test__evidence_cutoff_text_with_lookback_days(lookback_days: int, expected_cutoff: str) -> None:
+    assert _evidence_cutoff_text(_PUBLISHED_AT, lookback_days) == expected_cutoff
+
+
+@pytest.mark.parametrize(
+    ("published_at", "expected_cutoff"),
+    [
+        ("2026-07-24T00:00:00+00:00", "2026-07-21T00:00:00Z"),
+        ("2026-07-24T00:00:00-05:00", "2026-07-21T05:00:00Z"),
+    ],
+)
+def test__evidence_cutoff_text_with_offset_bearing_published_at(
+    published_at: str, expected_cutoff: str
+) -> None:
+    assert _evidence_cutoff_text(published_at, _LOOKBACK_DAYS) == expected_cutoff
+
+
+@pytest.mark.parametrize(
+    ("published_at", "expected_cutoff"),
+    [
+        (_NAIVE_DATE_ONLY_PUBLISHED_AT, "2026-07-21T00:00:00Z"),
+        ("2026-07-24T06:30:00", "2026-07-21T06:30:00Z"),
+    ],
+)
+def test__evidence_cutoff_text_with_naive_published_at_is_read_as_utc(
+    published_at: str, expected_cutoff: str
+) -> None:
+    assert _evidence_cutoff_text(published_at, _LOOKBACK_DAYS) == expected_cutoff
+
+
+def test__evidence_cutoff_text_with_missing_published_at() -> None:
+    assert _evidence_cutoff_text(None, _LOOKBACK_DAYS) == _MISSING_PUBLISHED_AT_TEXT
+
+
+def test__evidence_cutoff_text_with_unparseable_published_at() -> None:
+    assert _evidence_cutoff_text(_UNPARSEABLE_PUBLISHED_AT, _LOOKBACK_DAYS) == _MISSING_PUBLISHED_AT_TEXT
+
+
+def test__make_current_events_questions_with_published_at_backdates_question_text() -> None:
+    questions = _make_current_events_questions([_claim_published_at(_PUBLISHED_AT)], _LOOKBACK_DAYS)
+
+    assert len(questions) == 1
+    assert "since 2026-07-21T00:00:00Z" in questions[0].question
+
+
+def test__make_current_events_questions_with_naive_published_at_backdates_question_text() -> None:
+    questions = _make_current_events_questions(
+        [_claim_published_at(_NAIVE_DATE_ONLY_PUBLISHED_AT)], _LOOKBACK_DAYS
+    )
+
+    assert len(questions) == 1
+    assert "since 2026-07-21T00:00:00Z" in questions[0].question
+
+
+def test__make_current_events_questions_with_missing_published_at() -> None:
+    questions = _make_current_events_questions([_claim_published_at(None)], _LOOKBACK_DAYS)
+
+    assert len(questions) == 1
+    assert f"since {_MISSING_PUBLISHED_AT_TEXT}" in questions[0].question
+
+
+def test__make_current_events_questions_with_unparseable_published_at_fails_soft(
+    loguru_records: list[CapturedLog],
+) -> None:
+    questions = _make_current_events_questions(
+        [_claim_published_at(_UNPARSEABLE_PUBLISHED_AT)], _LOOKBACK_DAYS
+    )
+
+    assert any(
+        record.level == "WARNING"
+        and record.message == _UNPARSEABLE_PUBLISHED_AT_LOG.format(published_at=_UNPARSEABLE_PUBLISHED_AT)
+        for record in loguru_records
+    )
+    assert len(questions) == 1
+    assert f"since {_MISSING_PUBLISHED_AT_TEXT}?" in questions[0].question
+
+
 @pytest.fixture
 def questions_working_dir__claims(request: FixtureRequest) -> list[Claim]:
     return getattr(request, "param", [_high_claim()])
@@ -167,7 +276,7 @@ def initial_questions(
     questions_working_dir: Path,
     stub_claim_questions_agent: Callable[[list[Claim]], list[DraftQuestion]],
 ) -> InitialQuestions:
-    node = make_questions_node(stub_claim_questions_agent)
+    node = make_questions_node(stub_claim_questions_agent, current_events_lookback_days=_LOOKBACK_DAYS)
     state: PipelineState = {"slug": _SLUG, "working_dir": str(questions_working_dir)}
     _ = node(state)
     return InitialQuestions.model_validate_json(
@@ -193,6 +302,17 @@ def test_make_questions_node_converts_known_claim_draft_signal_tier(
     assert thesis_qs[0].signal_tier == SignalTier.HIGH
 
 
+def test_make_questions_node_forwards_current_events_lookback_days_into_question_text(
+    initial_questions: InitialQuestions,
+) -> None:
+    current_events_qs = [
+        q for q in initial_questions.questions if q.category == QuestionCategory.CURRENT_EVENTS
+    ]
+
+    assert len(current_events_qs) == 1
+    assert f"since {_CLAIM_CUTOFF_AT_LOOKBACK_DAYS}?" in current_events_qs[0].question
+
+
 def test_make_questions_node_drops_unknown_claim_draft(
     initial_questions: InitialQuestions,
 ) -> None:
@@ -214,7 +334,7 @@ def test_make_questions_node_with_failing_agent_logs_failure_loudly(
     raising_claim_questions_agent: Callable[[list[Claim]], list[DraftQuestion]],
     loguru_records: list[CapturedLog],
 ) -> None:
-    node = make_questions_node(raising_claim_questions_agent)
+    node = make_questions_node(raising_claim_questions_agent, current_events_lookback_days=_LOOKBACK_DAYS)
 
     _ = node({"slug": _SLUG, "working_dir": str(questions_working_dir)})
 

@@ -213,6 +213,28 @@ def test_load_config_with_env_override(tmp_path: Path, monkeypatch: MonkeyPatch)
 
 
 @pytest.mark.parametrize(
+    "env_file__content",
+    [f"{_REQUIRED_ENV}MONEY_PIT__CURRENT_EVENTS_LOOKBACK_DAYS=21\n"],
+    indirect=True,
+)
+def test_load_config_with_current_events_lookback_days_override(env_file: Path) -> None:
+    config: Config = load_config(env_file)
+
+    assert config.current_events_lookback_days == 21
+
+
+@pytest.mark.parametrize(
+    "env_file__content",
+    [f"{_REQUIRED_ENV}MONEY_PIT__CURRENT_EVENTS_LOOKBACK_DAYS=-1\n"],
+    indirect=True,
+)
+def test_load_config_with_negative_current_events_lookback_days(env_file: Path) -> None:
+    """A negative lookback moves the evidence cutoff forward of publication, so it must be rejected at load."""
+    with pytest.raises(ValidationError):
+        _ = load_config(env_file)
+
+
+@pytest.mark.parametrize(
     ("field_name", "expected_default"),
     [
         ("llm_model", "gpt-5"),
@@ -222,6 +244,7 @@ def test_load_config_with_env_override(tmp_path: Path, monkeypatch: MonkeyPatch)
         ("smtp_host", DEFAULT_SMTP_HOST),
         ("smtp_port", DEFAULT_SMTP_PORT),
         ("regime_lookback", 60),
+        ("current_events_lookback_days", 7),
         ("kelly_fraction", 0.25),
         ("fred_api_key", None),
         ("brave_api_key", None),

@@ -11,6 +11,7 @@ from platformdirs import user_state_path
 
 
 FILE_SAFE_DATETIME_FORMAT: str = "%Y-%m-%d_%H-%M-%S"
+ISO_UTC_FORMAT: str = "%Y-%m-%dT%H:%M:%SZ"
 
 APP_NAME: str = "money_pit"
 APP_AUTHOR: str = "56kyle"

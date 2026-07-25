@@ -7,6 +7,7 @@ from datetime import timezone
 from pathlib import Path
 from typing import TypeAlias
 
+from money_pit.constants import ISO_UTC_FORMAT
 from money_pit.ingestion.artifacts import VideoArtifacts
 from money_pit.schemas.enums import SourceType
 from money_pit.schemas.provenance import SourceRef
@@ -15,7 +16,6 @@ from money_pit.schemas.provenance import SourceRef
 Downloader: TypeAlias = Callable[[str, Path], VideoArtifacts]
 
 _UPLOAD_DATE_FORMAT: str = "%Y%m%d"
-_ISO_UTC_FORMAT: str = "%Y-%m-%dT%H:%M:%SZ"
 _SOURCE_ID_PREFIX: str = "yt"
 
 _METADATA_FILENAME: str = "metadata.json"
@@ -36,7 +36,7 @@ def _upload_date_to_iso(upload_date: str | None) -> str | None:
     if not upload_date:
         return None
     parsed: datetime = datetime.strptime(upload_date, _UPLOAD_DATE_FORMAT).replace(tzinfo=timezone.utc)
-    return parsed.strftime(_ISO_UTC_FORMAT)
+    return parsed.strftime(ISO_UTC_FORMAT)
 
 
 def _build_source_ref(info: dict[str, object], url: str, retrieved_at: str) -> SourceRef:
@@ -87,7 +87,7 @@ def make_ytdlp_downloader() -> Downloader:
         metadata_subset: dict[str, object] = {key: info.get(key) for key in _METADATA_KEYS}
         metadata_path.write_text(json.dumps(metadata_subset, indent=2), encoding="utf-8")
 
-        retrieved_at: str = datetime.now(timezone.utc).strftime(_ISO_UTC_FORMAT)
+        retrieved_at: str = datetime.now(timezone.utc).strftime(ISO_UTC_FORMAT)
         audio_path: Path | None = _first_match(out_dir, _AUDIO_GLOB) or _first_match(out_dir, _AUDIO_FALLBACK_GLOB)
         auto_caption_path: Path | None = _first_match(out_dir, _AUTO_CAPTION_GLOB)
         uploader_caption_path: Path | None = next(

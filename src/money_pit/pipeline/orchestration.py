@@ -41,6 +41,7 @@ from money_pit.email_sender import make_gmail_email_sender
 from money_pit.email_sender import make_unconfigured_email_sender
 from money_pit.email_sender import with_undelivered_record
 from money_pit.graph.graph import build_graph
+from money_pit.graph.graph import thread_config
 from money_pit.graph.state import PipelineState
 from money_pit.market_data import make_yfinance_instrument_resolver
 from money_pit.mcp.clients import make_alpaca_write_deps
@@ -436,8 +437,9 @@ def run_pipeline(
     *,
     run_dir: Path | None = None,
     overrides: PipelineOverrides | None = None,
+    stop_before_execution: bool = False,
 ) -> PipelineState:
-    """Execute the full pipeline on the signals in signals_dir and return the final state."""
+    """Execute the pipeline on the signals in signals_dir and return the final state, pausing before execution when asked."""
     ov: PipelineOverrides = overrides or PipelineOverrides()
     capital_deps: _CapitalCriticalDeps = _require_capital_critical_deps(ov)
 
@@ -477,6 +479,7 @@ def run_pipeline(
         observe_fill=capital_deps.observe_fill,
         send_email=with_undelivered_record(capital_deps.send_email, working_dir),
         manifest=ov.manifest,
+        stop_before_execution=stop_before_execution,
     )
 
     initial_state: PipelineState = {
@@ -485,4 +488,4 @@ def run_pipeline(
         "completed_steps": [],
     }
 
-    return graph.invoke(initial_state)
+    return graph.invoke(initial_state, config=thread_config(slug))

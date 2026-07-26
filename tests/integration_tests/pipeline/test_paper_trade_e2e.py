@@ -9,9 +9,14 @@ from pydantic import BaseModel
 from pydantic import TypeAdapter
 
 from money_pit.compute.fills import build_fill_observation
+from money_pit.constants import ACTION_STEPS_JSON_FILENAME
+from money_pit.constants import ACTION_STEPS_VALIDATION_JSON_FILENAME
+from money_pit.constants import DETERMINATION_JSON_FILENAME
 from money_pit.constants import EXECUTION_JOURNAL_FILENAME
 from money_pit.constants import UNDELIVERED_EMAIL_FILENAME_TEMPLATE
+from money_pit.constants import VALIDATION_STATUS_FILENAME
 from money_pit.email_sender import make_unconfigured_email_sender
+from money_pit.graph.graph import EXECUTION_NODE
 from money_pit.graph.state import PipelineState
 from money_pit.mcp.manifest import pinned_manifest
 from money_pit.schemas.fills import FillObservation
@@ -34,6 +39,7 @@ from money_pit.schemas.recovery import PriorRunReconciliation
 from money_pit.schemas.questions import InitialQuestions
 from money_pit.schemas.signals import AggregatedSignals
 from money_pit.schemas.validation_results import ActionStepsValidation
+from money_pit.schemas.validation_results import ValidationStatusReport
 from tests.conftest import UNCONFIGURED_EMAIL_REASON
 
 
@@ -48,9 +54,21 @@ _EXECUTE_PATH_STEPS: list[str] = [
     "analysis",
     "validator",
     "determination",
-    "execution",
+    EXECUTION_NODE,
     "finalizer",
 ]
+
+_PLAN_ONLY_PATH_STEPS: list[str] = [
+    "recovery",
+    "snapshot",
+    "aggregator",
+    "questions",
+    "retrieval",
+    "analysis",
+    "validator",
+    "determination",
+]
+"""Declared independently of _EXECUTE_PATH_STEPS so a node added before the pause fails this pin deliberately."""
 
 _action_steps_adapter: TypeAdapter[list[ActionStep]] = TypeAdapter(list[ActionStep])
 
@@ -103,7 +121,7 @@ def test_paper_trade_execute_path_determination_spawns_execution(
 ) -> None:
     run_dir, _ = execute_run
     report = _assert_file_valid(run_dir, "determination.json", DeterminationReport)
-    assert report.sub_agent_spawned == "execution"
+    assert report.sub_agent_spawned == EXECUTION_NODE
 
 
 def test_paper_trade_execute_path_determination_outcome_success(
@@ -413,6 +431,86 @@ def test_paper_trade_fully_default_schema_builds_and_proceeds(tmp_path: Path, pi
     assert final_state.get("terminal_state") is None
     report = _assert_file_valid(run_dir, "determination.json", DeterminationReport)
     assert report.determination == Determination.PROCEED
+
+
+_PLAN_ONLY_PRESENT_ARTIFACTS: list[tuple[str, type[BaseModel]]] = [
+    (ACTION_STEPS_VALIDATION_JSON_FILENAME, ActionStepsValidation),
+    (VALIDATION_STATUS_FILENAME, ValidationStatusReport),
+]
+
+
+@pytest.fixture(scope="module")
+def plan_only_run(
+    tmp_path_factory: pytest.TempPathFactory, pipeline_signals_dir: Path
+) -> tuple[Path, PipelineState]:
+    run_dir = tmp_path_factory.mktemp("plan_only_determination")
+    overrides = phase4_overrides()
+    overrides.manifest = pinned_manifest()
+    final_state = run_pipeline(
+        signals_dir=pipeline_signals_dir, run_dir=run_dir, overrides=overrides, stop_before_execution=True
+    )
+    return run_dir, final_state
+
+
+def test_paper_trade_plan_only_completes_planning_steps_only(
+    plan_only_run: tuple[Path, PipelineState],
+) -> None:
+    """The run pauses at the execution interrupt, completing exactly the independently-declared planning steps."""
+    _, final_state = plan_only_run
+    assert final_state.get("completed_steps") == _PLAN_ONLY_PATH_STEPS
+
+
+def test_paper_trade_plan_only_terminal_state_none(
+    plan_only_run: tuple[Path, PipelineState],
+) -> None:
+    _, final_state = plan_only_run
+    assert final_state.get("terminal_state") is None
+
+
+def test_paper_trade_plan_only_determination_proceeds(
+    plan_only_run: tuple[Path, PipelineState],
+) -> None:
+    """The paused state still carries PROCEED — the run is mid-flight, not abandoned."""
+    _, final_state = plan_only_run
+    assert final_state.get("determination") == Determination.PROCEED
+
+
+def test_paper_trade_plan_only_writes_no_execution_journal(
+    plan_only_run: tuple[Path, PipelineState],
+) -> None:
+    """The capital-critical pin: no execution journal means no order was ever placed.
+
+    The in-memory state does carry determination PROCEED and sub_agent_spawned == EXECUTION_NODE because
+    the run is genuinely paused at the interrupt; absence of this file is what proves nothing executed.
+    """
+    run_dir, _ = plan_only_run
+    assert not (run_dir / EXECUTION_JOURNAL_FILENAME).exists()
+
+
+def test_paper_trade_plan_only_writes_no_determination(
+    plan_only_run: tuple[Path, PipelineState],
+) -> None:
+    """determination.json is the finalizer's record; its absence proves the run was never concluded."""
+    run_dir, _ = plan_only_run
+    assert not (run_dir / DETERMINATION_JSON_FILENAME).exists()
+
+
+@pytest.mark.parametrize(("filename", "model_class"), _PLAN_ONLY_PRESENT_ARTIFACTS)
+def test_paper_trade_plan_only_writes_valid_planning_artifact(
+    plan_only_run: tuple[Path, PipelineState], filename: str, model_class: type[BaseModel]
+) -> None:
+    run_dir, _ = plan_only_run
+    _ = _assert_file_valid(run_dir, filename, model_class)
+
+
+def test_paper_trade_plan_only_writes_action_steps(
+    plan_only_run: tuple[Path, PipelineState],
+) -> None:
+    run_dir, _ = plan_only_run
+    action_steps = _action_steps_adapter.validate_json(
+        (run_dir / ACTION_STEPS_JSON_FILENAME).read_text(encoding="utf-8")
+    )
+    assert len(action_steps) >= 1
 
 
 _RECOVERY_PRIOR_SLUG: str = "2000-01-01"

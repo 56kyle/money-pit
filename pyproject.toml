@@ -28,6 +28,7 @@ dependencies = [
     "fastmcp>=3.4.0",
     "keyring>=25.7.0",
     "langchain[openai]>=0.3.30",
+    "langchain-core>=0.3.0",
     "lightning>=2.6.0",
     "loguru>=0.7.3",
     "numpy>=2.0.2",

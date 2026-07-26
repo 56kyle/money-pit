@@ -1,5 +1,9 @@
 """Module containing the StateGraph assembly (add_node / add_edge / add_conditional_edges) for the money_pit package."""
 
+from typing import Literal
+
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.memory import InMemorySaver  # pyright: ignore[reportMissingTypeStubs]
 from langgraph.graph import END  # pyright: ignore[reportMissingTypeStubs]
 from langgraph.graph import START  # pyright: ignore[reportMissingTypeStubs]
 from langgraph.graph import StateGraph  # pyright: ignore[reportMissingTypeStubs]
@@ -46,6 +50,16 @@ from money_pit.pipeline.validator import make_validator_node
 from money_pit.schemas.enums import TerminalState
 
 
+EXECUTION_NODE: Literal["execution"] = "execution"
+
+_THREAD_ID_CONFIG_KEY: str = "thread_id"
+
+
+def thread_config(slug: str) -> RunnableConfig:
+    """Address the checkpointed thread for one pipeline run by its slug."""
+    return RunnableConfig(configurable={_THREAD_ID_CONFIG_KEY: slug})
+
+
 def _no_action_terminal(state: PipelineState) -> PipelineState:
     result: PipelineState = {
         "terminal_state": TerminalState.NO_ACTION,
@@ -68,8 +82,9 @@ def build_graph(
     observe_fill: FillObserver,
     send_email: EmailSender,
     manifest: ToolManifest | None = None,
+    stop_before_execution: bool = False,
 ) -> CompiledStateGraph[PipelineState]:
-    """Assemble and compile the full money-pit LangGraph pipeline."""
+    """Assemble and compile the full money-pit LangGraph pipeline, optionally pausing before execution (see ADR 0035)."""
     builder: StateGraph[PipelineState] = StateGraph(state_schema=PipelineState)
 
     builder.add_node("recovery", make_recovery_node(observe_fill=observe_fill, send_email=send_email))
@@ -96,7 +111,7 @@ def build_graph(
     builder.add_node("validator", make_validator_node(manifest=manifest))
     builder.add_node("determination", make_determination_node())
     builder.add_node(
-        "execution",
+        EXECUTION_NODE,
         make_execution_node(
             place_order=place_order,
             observe_fill=observe_fill,
@@ -123,10 +138,10 @@ def build_graph(
     builder.add_conditional_edges(
         "determination",
         determination_router,
-        {EXECUTE: "execution", NOTIFY: "notification", FINALIZE: "finalizer"},
+        {EXECUTE: EXECUTION_NODE, NOTIFY: "notification", FINALIZE: "finalizer"},
     )
     builder.add_conditional_edges(
-        "execution",
+        EXECUTION_NODE,
         execution_outcome_router,
         {NOTIFY: "notification", FINALIZE: "finalizer"},
     )
@@ -137,4 +152,6 @@ def build_graph(
     )
     builder.add_edge("finalizer", END)
 
+    if stop_before_execution:
+        return builder.compile(checkpointer=InMemorySaver(), interrupt_before=[EXECUTION_NODE])
     return builder.compile()

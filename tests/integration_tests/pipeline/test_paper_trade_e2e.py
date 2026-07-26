@@ -12,6 +12,7 @@ from money_pit.compute.fills import build_fill_observation
 from money_pit.constants import ACTION_STEPS_JSON_FILENAME
 from money_pit.constants import ACTION_STEPS_VALIDATION_JSON_FILENAME
 from money_pit.constants import DETERMINATION_JSON_FILENAME
+from money_pit.constants import DETERMINATION_VERDICT_JSON_FILENAME
 from money_pit.constants import EXECUTION_JOURNAL_FILENAME
 from money_pit.constants import UNDELIVERED_EMAIL_FILENAME_TEMPLATE
 from money_pit.constants import VALIDATION_STATUS_FILENAME
@@ -27,6 +28,7 @@ from money_pit.schemas.action_steps import ActionStep
 from money_pit.schemas.analysis_draft import AnalysisJudgment
 from money_pit.schemas.answers import InitialAnswers
 from money_pit.schemas.determination import DeterminationReport
+from money_pit.schemas.determination import DeterminationVerdict
 from money_pit.schemas.enums import Determination
 from money_pit.schemas.enums import ExecutionOutcome
 from money_pit.schemas.enums import ExecutionPhase
@@ -493,6 +495,19 @@ def test_paper_trade_plan_only_writes_no_determination(
     """determination.json is the finalizer's record; its absence proves the run was never concluded."""
     run_dir, _ = plan_only_run
     assert not (run_dir / DETERMINATION_JSON_FILENAME).exists()
+
+
+def test_paper_trade_plan_only_writes_verdict(
+    plan_only_run: tuple[Path, PipelineState],
+) -> None:
+    """Paired with the absent determination.json, the verdict artifact distinguishes paused from concluded.
+
+    determination_verdict.json present means the gate decided; determination.json absent means the
+    run never concluded — exactly the artifact pairing an ADR 0035 plan-only run leaves on disk.
+    """
+    run_dir, _ = plan_only_run
+    verdict = _assert_file_valid(run_dir, DETERMINATION_VERDICT_JSON_FILENAME, DeterminationVerdict)
+    assert verdict.determination == Determination.PROCEED
 
 
 @pytest.mark.parametrize(("filename", "model_class"), _PLAN_ONLY_PRESENT_ARTIFACTS)

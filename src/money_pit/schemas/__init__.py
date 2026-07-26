@@ -15,6 +15,7 @@ from money_pit.schemas.answer_draft import AnswerDraft
 from money_pit.schemas.answers import Answer
 from money_pit.schemas.answers import InitialAnswers
 from money_pit.schemas.determination import DeterminationReport
+from money_pit.schemas.determination import DeterminationVerdict
 from money_pit.schemas.enums import ActionType
 from money_pit.schemas.enums import ClaimCategory
 from money_pit.schemas.enums import ClaimRelationType
@@ -79,6 +80,7 @@ __all__ = [
     "DataSourceToken",
     "Determination",
     "DeterminationReport",
+    "DeterminationVerdict",
     "DraftQuestion",
     "DroppedClaim",
     "ExecutionJournal",

@@ -59,6 +59,6 @@ def test_analyze_text_end_to_end_paper(
     signal_path: Path = signals_dir / f"{source_id_to_dirname(signal_set.source_ref.source_id)}.json"
     _ = signal_path.write_text(signal_set.model_dump_json(indent=2), encoding="utf-8")
 
-    state: PipelineState = money_pit.__main__._run_signals_dir(signals_dir, live_config)
+    state: PipelineState = money_pit.__main__._run_signals_dir(signals_dir, live_config, through=None)
 
     assert isinstance(state.get("terminal_state"), TerminalState)

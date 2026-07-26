@@ -23,6 +23,8 @@ _DEFAULT_LLM_MODEL: str = "gpt-5"
 
 DEFAULT_OWNER_RECIPIENT: str = "56kyleoliver@gmail.com"
 
+_BLANK_KEYRING_FIELD_MESSAGE: str = "Blank {field} configured; cannot resolve {credential}."
+
 
 class CredentialResolutionError(Exception):
     """Raised when a required secret or required credential config cannot be resolved."""
@@ -114,8 +116,18 @@ def load_config(path: Path | None = None) -> Config:
         ) from error
 
 
+def _require_non_blank_keyring_field(field: str, value: str, credential: str) -> None:
+    """Raise CredentialResolutionError when a keyring lookup key is empty or whitespace-only."""
+    if not value.strip():
+        raise CredentialResolutionError(
+            _BLANK_KEYRING_FIELD_MESSAGE.format(field=field, credential=credential)
+        )
+
+
 def resolve_alpaca_credentials(config: Config) -> AlpacaCredentials:
-    """Resolve Alpaca credentials from config plus keyring, failing closed on a missing secret."""
+    """Resolve Alpaca credentials from config plus keyring, failing closed on a blank lookup key or a missing secret."""
+    _require_non_blank_keyring_field("alpaca_service", config.alpaca_service, "Alpaca credentials")
+    _require_non_blank_keyring_field("alpaca_username", config.alpaca_username, "Alpaca credentials")
     secret_key: str | None = keyring.get_password(config.alpaca_service, config.alpaca_username)
     if secret_key is None:
         raise CredentialResolutionError(
@@ -129,9 +141,11 @@ def resolve_alpaca_credentials(config: Config) -> AlpacaCredentials:
 
 
 def resolve_gmail_app_password(config: Config) -> SecretStr:
-    """Resolve the Gmail app password from keyring, failing closed if the address or stored secret is unset."""
+    """Resolve the Gmail app password from keyring, failing closed if the address is unset or blank, the service is blank, or the stored secret is absent."""
     if config.gmail_address is None:
         raise CredentialResolutionError("No gmail_address configured; cannot resolve a Gmail app password.")
+    _require_non_blank_keyring_field("gmail_service", config.gmail_service, "a Gmail app password")
+    _require_non_blank_keyring_field("gmail_address", config.gmail_address, "a Gmail app password")
     app_password: str | None = keyring.get_password(config.gmail_service, config.gmail_address)
     if app_password is None:
         raise CredentialResolutionError(

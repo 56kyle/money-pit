@@ -5,9 +5,12 @@ resolve_gmail_app_password's fail-closed behavior. A real in-memory keyring back
 keyring (no mocks). Assertions target the CredentialResolutionError TYPE and enum/field values, never text.
 """
 
+from collections.abc import Iterator
 from pathlib import Path
 
+import keyring
 import pytest
+from keyring.backend import KeyringBackend
 from pydantic import SecretStr
 from pydantic import ValidationError
 from pytest import FixtureRequest
@@ -15,6 +18,7 @@ from pytest import MonkeyPatch
 
 from money_pit.config import DEFAULT_OWNER_RECIPIENT
 from money_pit.config import ENV_PREFIX
+from money_pit.config import _BLANK_KEYRING_FIELD_MESSAGE
 from money_pit.config import AlpacaCredentials
 from money_pit.config import Config
 from money_pit.config import CredentialResolutionError
@@ -141,6 +145,128 @@ def test_resolve_gmail_app_password_with_no_address(config: Config, in_memory_ke
 def test_resolve_gmail_app_password_with_missing_secret(config: Config, in_memory_keyring: InMemoryKeyring) -> None:
     with pytest.raises(CredentialResolutionError):
         _ = resolve_gmail_app_password(config)
+
+
+class KeyringWasConsultedError(Exception):
+    """Raised by refusing_keyring to turn any keyring lookup into a test failure rather than a silent pass."""
+
+
+class _RefusingKeyring(KeyringBackend):
+    """A real KeyringBackend that refuses every lookup, so 'fails before touching keyring' is directly observable."""
+
+    priority = 1  # pyright: ignore[reportAssignmentType]
+
+    def get_password(self, service: str, username: str) -> str | None:
+        raise KeyringWasConsultedError(f"keyring was consulted for service {service!r}, username {username!r}")
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        raise KeyringWasConsultedError(f"keyring was written for service {service!r}, username {username!r}")
+
+    def delete_password(self, service: str, username: str) -> None:
+        raise KeyringWasConsultedError(f"keyring was cleared for service {service!r}, username {username!r}")
+
+
+@pytest.fixture
+def refusing_keyring() -> Iterator[_RefusingKeyring]:
+    """Install a keyring backend that raises on any access, restoring the prior backend on teardown."""
+    previous: KeyringBackend = keyring.get_keyring()
+    backend: _RefusingKeyring = _RefusingKeyring()
+    keyring.set_keyring(backend)
+    try:
+        yield backend
+    finally:
+        keyring.set_keyring(previous)
+
+
+_BLANK_VALUES: list[str] = ["", " ", "\t", "   \n  "]
+
+
+def _blank_field_message(field: str, credential: str) -> str:
+    return _BLANK_KEYRING_FIELD_MESSAGE.format(field=field, credential=credential)
+
+
+_ALPACA_CREDENTIAL_LABEL: str = "Alpaca credentials"
+_GMAIL_CREDENTIAL_LABEL: str = "a Gmail app password"
+
+
+@pytest.mark.parametrize("config__alpaca_service", _BLANK_VALUES, indirect=True)
+def test_resolve_alpaca_credentials_with_blank_service(config: Config, refusing_keyring: _RefusingKeyring) -> None:
+    """A blank lookup key cannot name a stored secret, so it is refused before the keyring is consulted.
+
+    refusing_keyring is what makes the 'before' load-bearing: were the guard to fall through, the lookup would
+    raise KeyringWasConsultedError and this test would error rather than pass on the missing-secret path.
+    """
+    with pytest.raises(CredentialResolutionError) as exc_info:
+        _ = resolve_alpaca_credentials(config)
+
+    assert str(exc_info.value) == _blank_field_message("alpaca_service", _ALPACA_CREDENTIAL_LABEL)
+
+
+@pytest.mark.parametrize("config__alpaca_username", _BLANK_VALUES, indirect=True)
+def test_resolve_alpaca_credentials_with_blank_username(config: Config, refusing_keyring: _RefusingKeyring) -> None:
+    with pytest.raises(CredentialResolutionError) as exc_info:
+        _ = resolve_alpaca_credentials(config)
+
+    assert str(exc_info.value) == _blank_field_message("alpaca_username", _ALPACA_CREDENTIAL_LABEL)
+
+
+@pytest.fixture
+def config__gmail_service(request: FixtureRequest) -> str:
+    return getattr(request, "param", GMAIL_KEYRING_SERVICE)
+
+
+@pytest.fixture
+def config_with_gmail_service(
+    config__alpaca_service: str,
+    config__alpaca_username: str,
+    config__alpaca_paper: bool,
+    config__gmail_address: str | None,
+    config__gmail_service: str,
+) -> Config:
+    return Config(
+        alpaca_service=config__alpaca_service,
+        alpaca_username=config__alpaca_username,
+        alpaca_paper=config__alpaca_paper,
+        gmail_address=config__gmail_address,
+        gmail_service=config__gmail_service,
+    )
+
+
+@pytest.mark.parametrize("config__gmail_service", _BLANK_VALUES, indirect=True)
+def test_resolve_gmail_app_password_with_blank_service(
+    config_with_gmail_service: Config, refusing_keyring: _RefusingKeyring
+) -> None:
+    with pytest.raises(CredentialResolutionError) as exc_info:
+        _ = resolve_gmail_app_password(config_with_gmail_service)
+
+    assert str(exc_info.value) == _blank_field_message("gmail_service", _GMAIL_CREDENTIAL_LABEL)
+
+
+@pytest.mark.parametrize("config__gmail_address", _BLANK_VALUES, indirect=True)
+def test_resolve_gmail_app_password_with_blank_address(
+    config_with_gmail_service: Config, refusing_keyring: _RefusingKeyring
+) -> None:
+    """A blank address is distinct from an unset one: it is configuration that looks present and is not."""
+    with pytest.raises(CredentialResolutionError) as exc_info:
+        _ = resolve_gmail_app_password(config_with_gmail_service)
+
+    assert str(exc_info.value) == _blank_field_message("gmail_address", _GMAIL_CREDENTIAL_LABEL)
+
+
+@pytest.mark.parametrize("config__gmail_address", [None], indirect=True)
+def test_resolve_gmail_app_password_with_no_address_keeps_its_own_message(
+    config: Config, refusing_keyring: _RefusingKeyring
+) -> None:
+    """The pre-existing unset-address refusal is unchanged by the blank-field guards added alongside it.
+
+    An operator who never configured Gmail and one who configured it to whitespace need different messages,
+    so the blank-field phrasing must not have absorbed the None case.
+    """
+    with pytest.raises(CredentialResolutionError) as exc_info:
+        _ = resolve_gmail_app_password(config)
+
+    assert str(exc_info.value) != _blank_field_message("gmail_address", _GMAIL_CREDENTIAL_LABEL)
+    assert "gmail_address" in str(exc_info.value)
 
 
 @pytest.fixture

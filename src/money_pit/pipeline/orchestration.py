@@ -400,6 +400,57 @@ def production_deps(config: Config) -> PipelineOverrides:
     )
 
 
+def deterministic_research_tools_or_default(
+    overrides: PipelineOverrides, config: Config
+) -> DeterministicResearchTools:
+    """Return the overridden deterministic tools, else direct FRED and yfinance fetches keyed from config."""
+    if overrides.deterministic_tools is not None:
+        return overrides.deterministic_tools
+    return _DirectDeterministicTools(config.fred_api_key)
+
+
+def open_ended_research_tools_or_default(overrides: PipelineOverrides, config: Config) -> OpenEndedResearchTools:
+    """Return the overridden open-ended tools, else direct Brave and EDGAR searches keyed from config."""
+    if overrides.open_ended_tools is not None:
+        return overrides.open_ended_tools
+    return _DirectOpenEndedTools(config.brave_api_key, config.owner_recipient)
+
+
+def thesis_agent_or_default(overrides: PipelineOverrides, config: Config) -> ThesisAgent:
+    """Return the overridden thesis agent, else the LLM thesis-judgment agent built from config, raising openai.OpenAIError when no override is supplied and OPENAI_API_KEY is absent from the environment."""
+    if overrides.thesis_agent is not None:
+        return overrides.thesis_agent
+    return make_thesis_judgment_agent(config)
+
+
+def instrument_facts_resolver_or_default(overrides: PipelineOverrides) -> ResolveInstrumentFacts:
+    """Return the overridden instrument-facts resolver, else the yfinance resolver."""
+    if overrides.resolve_instrument_facts is not None:
+        return overrides.resolve_instrument_facts
+    return make_yfinance_instrument_resolver()
+
+
+def claim_questions_agent_or_default(overrides: PipelineOverrides, config: Config) -> ClaimQuestionsAgent:
+    """Return the overridden claim-questions agent, else the LLM claim-questions agent built from config, raising openai.OpenAIError when no override is supplied and OPENAI_API_KEY is absent from the environment."""
+    if overrides.claim_questions_agent is not None:
+        return overrides.claim_questions_agent
+    return make_claim_questions_agent(config)
+
+
+def answer_synthesis_agent_or_default(overrides: PipelineOverrides, config: Config) -> AnswerSynthesisAgent:
+    """Return the overridden answer-synthesis agent, else the LLM agent over the open-ended research tools, raising openai.OpenAIError when no override is supplied and OPENAI_API_KEY is absent from the environment."""
+    if overrides.answer_synthesis_agent is not None:
+        return overrides.answer_synthesis_agent
+    return make_answer_synthesis_agent(open_ended_research_tools_or_default(overrides, config), config)
+
+
+def corroboration_agent_or_default(overrides: PipelineOverrides) -> CorroborationAgent:
+    """Return the overridden corroboration agent, else the LLM corroboration agent."""
+    if overrides.corroboration_agent is not None:
+        return overrides.corroboration_agent
+    return corroborate
+
+
 @dataclass(frozen=True)
 class _CapitalCriticalDeps:
     """The three dependencies that move real capital, resolved and guaranteed non-None."""
@@ -455,26 +506,15 @@ def run_pipeline(
 
     config = load_config()
 
-    det_tools: DeterministicResearchTools = ov.deterministic_tools or _DirectDeterministicTools(config.fred_api_key)
-    open_tools: OpenEndedResearchTools = ov.open_ended_tools or _DirectOpenEndedTools(
-        config.brave_api_key, config.owner_recipient
-    )
-
-    thesis = ov.thesis_agent or make_thesis_judgment_agent(config)
-    resolver = ov.resolve_instrument_facts or make_yfinance_instrument_resolver()
-    claim_qs = ov.claim_questions_agent or make_claim_questions_agent(config)
-    answer_synth = ov.answer_synthesis_agent or make_answer_synthesis_agent(open_tools, config)
-    corr = ov.corroboration_agent or corroborate
-
     graph = build_graph(
         fetch_portfolio=capital_deps.fetch_portfolio,
-        corroboration_agent=corr,
-        claim_questions_agent=claim_qs,
-        answer_synthesis_agent=answer_synth,
-        deterministic_tools=det_tools,
+        corroboration_agent=corroboration_agent_or_default(ov),
+        claim_questions_agent=claim_questions_agent_or_default(ov, config),
+        answer_synthesis_agent=answer_synthesis_agent_or_default(ov, config),
+        deterministic_tools=deterministic_research_tools_or_default(ov, config),
         config=config,
-        thesis_agent=thesis,
-        resolve_instrument_facts=resolver,
+        thesis_agent=thesis_agent_or_default(ov, config),
+        resolve_instrument_facts=instrument_facts_resolver_or_default(ov),
         place_order=capital_deps.place_order,
         observe_fill=capital_deps.observe_fill,
         send_email=with_undelivered_record(capital_deps.send_email, working_dir),

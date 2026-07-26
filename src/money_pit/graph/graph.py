@@ -1,7 +1,5 @@
 """Module containing the StateGraph assembly (add_node / add_edge / add_conditional_edges) for the money_pit package."""
 
-from typing import Literal
-
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver  # pyright: ignore[reportMissingTypeStubs]
 from langgraph.graph import END  # pyright: ignore[reportMissingTypeStubs]
@@ -38,6 +36,10 @@ from money_pit.graph.edges import terminal_state_router
 from money_pit.graph.state import PipelineState
 from money_pit.pipeline.aggregator import make_aggregator_node
 from money_pit.pipeline.analysis import make_analysis_node
+from money_pit.pipeline.chain import EXECUTION_NODE
+from money_pit.pipeline.chain import RECOVERY_NODE
+from money_pit.pipeline.chain import Stage
+from money_pit.pipeline.chain import interrupt_before_successor_of
 from money_pit.pipeline.determination import make_determination_node
 from money_pit.pipeline.determination import make_finalizer_node
 from money_pit.pipeline.execution import make_execution_node
@@ -49,8 +51,6 @@ from money_pit.pipeline.snapshot import make_snapshot_node
 from money_pit.pipeline.validator import make_validator_node
 from money_pit.schemas.enums import TerminalState
 
-
-EXECUTION_NODE: Literal["execution"] = "execution"
 
 _THREAD_ID_CONFIG_KEY: str = "thread_id"
 
@@ -82,12 +82,12 @@ def build_graph(
     observe_fill: FillObserver,
     send_email: EmailSender,
     manifest: ToolManifest | None = None,
-    stop_before_execution: bool = False,
+    through: Stage | None = None,
 ) -> CompiledStateGraph[PipelineState]:
-    """Assemble and compile the full money-pit LangGraph pipeline, optionally pausing before execution (see ADR 0035)."""
+    """Assemble and compile the full money-pit LangGraph pipeline, pausing after `through` when one is named and raising PlanningChainError when `through` has no successor (see ADR 0035 and ADR 0038)."""
     builder: StateGraph[PipelineState] = StateGraph(state_schema=PipelineState)
 
-    builder.add_node("recovery", make_recovery_node(observe_fill=observe_fill, send_email=send_email))
+    builder.add_node(RECOVERY_NODE, make_recovery_node(observe_fill=observe_fill, send_email=send_email))
     builder.add_node("snapshot", make_snapshot_node(fetch_portfolio=fetch_portfolio))
     builder.add_node("aggregator", make_aggregator_node(corroboration_agent=corroboration_agent))
     builder.add_node("no_action_terminal", _no_action_terminal)
@@ -122,8 +122,8 @@ def build_graph(
     builder.add_node("notification", make_notification_node(send_email=send_email))
     builder.add_node("finalizer", make_finalizer_node())
 
-    builder.add_edge(START, "recovery")
-    builder.add_conditional_edges("recovery", recovery_router, {PROCEED: "snapshot", HALT: END})
+    builder.add_edge(START, RECOVERY_NODE)
+    builder.add_conditional_edges(RECOVERY_NODE, recovery_router, {PROCEED: "snapshot", HALT: END})
     builder.add_edge("snapshot", "aggregator")
     builder.add_conditional_edges("aggregator", signal_gate, {PROCEED: "questions", NO_ACTION: "no_action_terminal"})
     builder.add_edge("no_action_terminal", END)
@@ -152,6 +152,7 @@ def build_graph(
     )
     builder.add_edge("finalizer", END)
 
-    if stop_before_execution:
-        return builder.compile(checkpointer=InMemorySaver(), interrupt_before=[EXECUTION_NODE])
+    interrupt_before: list[str] = interrupt_before_successor_of(through)
+    if interrupt_before:
+        return builder.compile(checkpointer=InMemorySaver(), interrupt_before=interrupt_before)
     return builder.compile()

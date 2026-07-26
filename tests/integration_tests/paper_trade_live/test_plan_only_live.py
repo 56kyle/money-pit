@@ -26,6 +26,7 @@ from money_pit.constants import ACTION_STEPS_JSON_FILENAME
 from money_pit.constants import EXECUTION_JOURNAL_FILENAME
 from money_pit.constants import source_id_to_dirname
 from money_pit.graph.state import PipelineState
+from money_pit.pipeline.chain import Stage
 from money_pit.pipeline.orchestration import production_deps
 from money_pit.pipeline.orchestration import run_pipeline
 from money_pit.schemas.signals import SignalSet
@@ -55,7 +56,7 @@ def test_plan_only_live_run_plans_then_places_no_order(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Run a minimal thesis through the real production deps with stop_before_execution, and pin that no order ran.
+    """Run a minimal thesis through the real production deps stopping after determination, and pin that no order ran.
 
     The absence of an execution journal is only meaningful once the run has demonstrably produced a plan: a
     recovery HALT against a real prior run, a NO_ACTION terminal, or an ANALYSIS_HALT would all leave the journal
@@ -86,7 +87,7 @@ def test_plan_only_live_run_plans_then_places_no_order(
     _ = signal_path.write_text(signal_set.model_dump_json(indent=2), encoding="utf-8")
 
     state: PipelineState = run_pipeline(
-        signals_dir, overrides=production_deps(live_config), stop_before_execution=True
+        signals_dir, overrides=production_deps(live_config), through=Stage.DETERMINATION
     )
 
     working_dir: str | None = state.get("working_dir")

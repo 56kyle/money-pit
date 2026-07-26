@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, amended by 0038
 date: 2026-07-26
 decision-makers: [Kyle Oliver]
 consulted: []
@@ -7,6 +7,14 @@ informed: []
 ---
 
 # Plan-Only Runs Pause Before Execution Rather Than Terminating
+
+> **Amended by [ADR 0038](0038-through-stage-bounds-a-run-at-the-single-chain-successor.md).** The
+> `stop_before_execution: bool` parameter described below **no longer exists**. It was generalized
+> into `through: Stage | None`, and `through=Stage.DETERMINATION` is the exact equivalent of the old
+> `stop_before_execution=True` — the same single interrupt before `execution`, with the notification
+> and terminal branches still reachable. Every decision recorded here (pause rather than reroute, no
+> new `TerminalState`, emails not suppressed) stands unchanged; only the parameter's name and type
+> moved.
 
 ## Context and Problem Statement
 

@@ -3,7 +3,6 @@
 from collections.abc import Callable
 from collections.abc import Mapping
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 
 from money_pit.config import Config
@@ -18,6 +17,7 @@ from money_pit.graph.state import PipelineNode
 from money_pit.graph.state import PipelineState
 from money_pit.pipeline.aggregator import make_aggregator_node
 from money_pit.pipeline.analysis import make_analysis_node
+from money_pit.pipeline.chain import Stage
 from money_pit.pipeline.determination import make_determination_node
 from money_pit.pipeline.orchestration import PipelineOverrides
 from money_pit.pipeline.orchestration import answer_synthesis_agent_or_default
@@ -52,23 +52,6 @@ class StageRunDirectoryError(StageError):
 
 class StagePrerequisiteError(StageError):
     """Raised when the run directory lacks an input artifact the stage reads."""
-
-
-class Stage(str, Enum):
-    """A pipeline node that may be run standalone against an existing run directory.
-
-    The set is deliberately confined to nodes that neither move capital nor contact the
-    owner: `recovery` and `notification` send email and `execution` places orders, so
-    those stay reachable only through a full run (see ADR 0036).
-    """
-
-    SNAPSHOT = "snapshot"
-    AGGREGATOR = "aggregator"
-    QUESTIONS = "questions"
-    RETRIEVAL = "retrieval"
-    ANALYSIS = "analysis"
-    VALIDATOR = "validator"
-    DETERMINATION = "determination"
 
 
 @dataclass(frozen=True)

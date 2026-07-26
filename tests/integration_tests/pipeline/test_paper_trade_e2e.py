@@ -17,10 +17,11 @@ from money_pit.constants import EXECUTION_JOURNAL_FILENAME
 from money_pit.constants import UNDELIVERED_EMAIL_FILENAME_TEMPLATE
 from money_pit.constants import VALIDATION_STATUS_FILENAME
 from money_pit.email_sender import make_unconfigured_email_sender
-from money_pit.graph.graph import EXECUTION_NODE
 from money_pit.graph.state import PipelineState
 from money_pit.mcp.manifest import pinned_manifest
 from money_pit.schemas.fills import FillObservation
+from money_pit.pipeline.chain import EXECUTION_NODE
+from money_pit.pipeline.chain import Stage
 from money_pit.pipeline.orchestration import PipelineOverrides
 from money_pit.pipeline.orchestration import phase4_overrides
 from money_pit.pipeline.orchestration import run_pipeline
@@ -449,7 +450,7 @@ def plan_only_run(
     overrides = phase4_overrides()
     overrides.manifest = pinned_manifest()
     final_state = run_pipeline(
-        signals_dir=pipeline_signals_dir, run_dir=run_dir, overrides=overrides, stop_before_execution=True
+        signals_dir=pipeline_signals_dir, run_dir=run_dir, overrides=overrides, through=Stage.DETERMINATION
     )
     return run_dir, final_state
 

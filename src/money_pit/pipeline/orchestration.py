@@ -46,6 +46,7 @@ from money_pit.graph.state import PipelineState
 from money_pit.market_data import make_yfinance_instrument_resolver
 from money_pit.mcp.clients import make_alpaca_write_deps
 from money_pit.mcp.manifest import live_manifest
+from money_pit.pipeline.chain import Stage
 from money_pit.schemas.action_steps import ExecutionParameters
 from money_pit.schemas.aggregation_draft import ClaimRelations
 from money_pit.schemas.analysis_draft import AnalysisJudgment
@@ -495,9 +496,9 @@ def run_pipeline(
     *,
     run_dir: Path | None = None,
     overrides: PipelineOverrides | None = None,
-    stop_before_execution: bool = False,
+    through: Stage | None = None,
 ) -> PipelineState:
-    """Execute the pipeline on the signals in signals_dir and return the final state, pausing before execution when asked."""
+    """Execute the pipeline on the signals in signals_dir and return the final state, pausing after `through` when one is named and propagating PlanningChainError when `through` has no successor."""
     ov: PipelineOverrides = overrides or PipelineOverrides()
     capital_deps: _CapitalCriticalDeps = _require_capital_critical_deps(ov)
 
@@ -526,7 +527,7 @@ def run_pipeline(
         observe_fill=capital_deps.observe_fill,
         send_email=with_undelivered_record(capital_deps.send_email, working_dir),
         manifest=ov.manifest,
-        stop_before_execution=stop_before_execution,
+        through=through,
     )
 
     initial_state: PipelineState = {

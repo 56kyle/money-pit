@@ -27,6 +27,7 @@ from money_pit.agents.research_tools import DeterministicResearchTools
 from money_pit.agents.research_tools import OpenEndedResearchTools
 from money_pit.config import AlpacaCredentials
 from money_pit.config import Config
+from money_pit.config import CredentialResolutionError
 from money_pit.email_sender import EmailNotConfiguredError
 from money_pit.pipeline import orchestration
 from money_pit.pipeline.orchestration import MissingPipelineDependencyError
@@ -38,6 +39,7 @@ from money_pit.pipeline.orchestration import deterministic_research_tools_or_def
 from money_pit.pipeline.orchestration import instrument_facts_resolver_or_default
 from money_pit.pipeline.orchestration import open_ended_research_tools_or_default
 from money_pit.pipeline.orchestration import phase4_overrides
+from money_pit.pipeline.orchestration import portfolio_fetcher_or_default
 from money_pit.pipeline.orchestration import production_deps
 from money_pit.pipeline.orchestration import run_pipeline
 from money_pit.pipeline.orchestration import thesis_agent_or_default
@@ -143,7 +145,15 @@ def empty_overrides() -> PipelineOverrides:
     return PipelineOverrides()
 
 
+@pytest.fixture
+def secret_backed_keyring(config: Config, in_memory_keyring: InMemoryKeyring) -> InMemoryKeyring:
+    """Return a real in-memory keyring already holding config's Alpaca secret, so a default fetcher can be built."""
+    in_memory_keyring.set_password(config.alpaca_service, config.alpaca_username, "the-secret")
+    return in_memory_keyring
+
+
 _CONFIG_TAKING_BUILDERS: list[tuple[Callable[[PipelineOverrides, Config], object], str]] = [
+    (portfolio_fetcher_or_default, "fetch_portfolio"),
     (deterministic_research_tools_or_default, "deterministic_tools"),
     (open_ended_research_tools_or_default, "open_ended_tools"),
     (thesis_agent_or_default, "thesis_agent"),
@@ -200,6 +210,21 @@ def test_builders_without_config_with_override_return_the_override(
     fully_overridden: PipelineOverrides,
 ) -> None:
     assert builder(fully_overridden) is getattr(fully_overridden, field_name)
+
+
+def test_portfolio_fetcher_or_default_with_empty_overrides(
+    empty_overrides: PipelineOverrides, config: Config, secret_backed_keyring: InMemoryKeyring
+) -> None:
+    """The default fetcher constructs offline once the Alpaca secret resolves: nothing is fetched until it is called."""
+    assert callable(portfolio_fetcher_or_default(empty_overrides, config))
+
+
+def test_portfolio_fetcher_or_default_with_empty_overrides_and_no_alpaca_secret(
+    empty_overrides: PipelineOverrides, config: Config, in_memory_keyring: InMemoryKeyring
+) -> None:
+    """The default fetcher fails closed at construction rather than deferring a credential failure into a run."""
+    with pytest.raises(CredentialResolutionError):
+        _ = portfolio_fetcher_or_default(empty_overrides, config)
 
 
 def test_deterministic_research_tools_or_default_with_empty_overrides(

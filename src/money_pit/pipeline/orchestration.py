@@ -392,12 +392,19 @@ def production_deps(config: Config) -> PipelineOverrides:
     """
     credentials = resolve_alpaca_credentials(config)
     return PipelineOverrides(
-        fetch_portfolio=make_alpaca_portfolio_fetcher(credentials, config),
+        fetch_portfolio=portfolio_fetcher_or_default(PipelineOverrides(), config),
         place_order=make_alpaca_write_deps(credentials),
         observe_fill=make_alpaca_fill_observer(credentials),
         send_email=_gmail_or_unconfigured_email_sender(config),
         manifest=live_manifest(credentials),
     )
+
+
+def portfolio_fetcher_or_default(overrides: PipelineOverrides, config: Config) -> PortfolioFetcher:
+    """Return the overridden portfolio fetcher, else the read-only Alpaca fetcher, raising CredentialResolutionError when no override is supplied and the Alpaca secret cannot be resolved."""
+    if overrides.fetch_portfolio is not None:
+        return overrides.fetch_portfolio
+    return make_alpaca_portfolio_fetcher(resolve_alpaca_credentials(config), config)
 
 
 def deterministic_research_tools_or_default(

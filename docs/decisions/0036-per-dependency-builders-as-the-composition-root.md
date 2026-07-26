@@ -178,5 +178,30 @@ the nodes — a peer of `orchestration`, or in `__main__.py`. If that boundary b
 the fix is a `pipeline/dependencies.py` holding `PipelineOverrides` plus the builders, which needs
 only `agents/*`, `market_data`, `contracts`, and `config` — never `graph`.
 
+### Two constraints found while building the stage runner
+
+**Build-time and invocation-time credential-freedom are different properties.** `validator` and
+`determination` are credential-free in both senses — they build and run with no secrets at all, which
+is what "runs without credentials" means to an operator. `aggregator` *builds* credential-free
+(`corroboration_agent_or_default` returns the pure `corroborate` stub) but its node may call an LLM
+when invoked. Only the former pair is claimed as credential-free; the tests pin exactly those two,
+with `snapshot`, `questions`, `retrieval` and `analysis` as the negative control that keeps the
+positive assertion from passing for the wrong reason.
+
+**A run directory is identified by its name.** `run_stage` takes the slug from `run_dir.name`, which
+is the pipeline's own convention (`run_pipeline` writes to `DAILY_SHOW_ROOT / slug`). But
+`run_pipeline(run_dir=...)` with an explicit directory derives its slug from the clock and does *not*
+rename the directory, so the two diverge. A stage then run against that directory sees a different
+slug, which surfaces as validator UNMATCHED (the `client_order_id == f"{slug}:{step_id}"` check) and
+would trip ADR 0037's staleness guard.
+
+This does not arise from the CLI, whose commands use the slug-named default path. It is confined to
+programmatic callers passing `run_dir`, and the integration fixture works around it by renaming the
+produced directory. The convention is therefore load-bearing but only enforced by habit. The two
+candidate fixes — have `run_pipeline` derive its slug from an explicit `run_dir.name`, or have
+`run_stage` read the slug from an artifact rather than the path — both change a capital-path
+function, so neither is taken here; this paragraph records the constraint until that decision is
+made deliberately.
+
 Plan-only runs are [ADR 0035](0035-plan-only-runs-pause-before-execution.md); the stage runner is
 the granular counterpart to that mode's whole-chain pause.

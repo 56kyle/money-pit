@@ -276,6 +276,44 @@ members.
 
 ## More Information
 
+**Open observation (2026-07-26): the local log holds more than decision #2 relocates there.**
+No decision is recorded here and nothing was changed — this is a measurement, kept so a future
+reader of decision #2 knows what the "trusted, local" log actually contains.
+
+Decision #2 deliberately moves detail into the local log, including the FRED URL carrying
+`api_key=<KEY>`. That is a chosen trade. Separately, and not chosen by anyone, the sink itself
+widens what lands there: `log.py` registers `logger.add(path, serialize=True)`, taking loguru's
+default `diagnose=True`, which renders **identifier values** into the traceback of anything logged
+via `logger.exception`. There are three such sites, all on the LLM call path
+(`pipeline/analysis.py`, `pipeline/questions.py`, `pipeline/retrieval.py`).
+
+Measured, not inferred:
+
+- The value lands in the serialized record's `text` field, **not** `record.exception`, and the file
+  persists under the user state directory.
+- diagnose annotates the identifiers appearing on each frame's *rendered source line*, not every
+  local — so a credential assigned to an unrelated local does not appear, but one named on a raising
+  line does.
+- A plain `str` credential in that position is written verbatim. A `SecretStr` is not
+  (`SecretStr('**********')`). Every credential in decision #1's table is therefore already
+  unaffected in *our* frames.
+- Of the OpenAI objects, `client.api_key` (a bare `str`) and `client.auth_headers` (the `Bearer`
+  dict) leak on repr; `openai.OpenAI`, the pydantic-ai `Agent`, its model, the provider, and the
+  `httpx` Request and Headers do not.
+- `diagnose=False` removes the class — including third-party frames, which `SecretStr` on our side
+  cannot reach since the OpenAI client stores a bare `str` internally regardless — and the traceback
+  remains useful (frames and message preserved).
+
+The OpenAI key is the one credential exposed here, because it is the only one the system does not
+hold as `SecretStr`: it is read from ambient `OPENAI_API_KEY` by pydantic-ai rather than resolved
+through this ADR's scheme, which is why it is absent from decision #1's table. See
+[ADR 0036](0036-per-dependency-builders-as-the-composition-root.md) for that asymmetry.
+
+**What is not established:** no concrete OpenAI failure has been shown whose traceback lands on a
+frame naming `api_key` or `auth_headers`. The mechanism is demonstrated; the reachability is not.
+Nothing in the logs has been observed to contain a key. Revisit if that changes — the fix is one
+keyword on the sink.
+
 **Filename divergence.** This file is named `0032-secretstr-held-to-point-of-use-and-redacted-in-errors.md`,
 but the 2026-07-22 amendment *rejects* redaction (decision #2a); the title above is the accurate one. The
 file is deliberately not renamed — inbound links from code comments, other ADRs, and commit messages point

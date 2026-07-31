@@ -3,11 +3,21 @@
 from collections.abc import Callable
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Protocol
 from typing import TypeAlias
 
 from money_pit.adapters.video_llm import TranscriptSource
 from money_pit.config import Config
+from money_pit.ingestion.artifacts import CaptionSegment
 from money_pit.ingestion.artifacts import TranscriptResult
+
+
+class WhisperSegment(Protocol):
+    """Structural boundary for faster-whisper segment values."""
+
+    text: str
+    start: float
+    end: float
 
 
 Transcriber: TypeAlias = Callable[[Path], TranscriptResult]
@@ -15,9 +25,21 @@ Transcriber: TypeAlias = Callable[[Path], TranscriptResult]
 _SEGMENT_JOINER: str = " "
 
 
-def _whisper_segments_to_transcript(segments: Iterable[object]) -> str:
+def _whisper_segments_to_transcript(segments: Iterable[WhisperSegment]) -> str:
     """Join non-empty, stripped `.text` of each whisper segment into a single-space-separated transcript."""
     return _SEGMENT_JOINER.join(seg.text.strip() for seg in segments if seg.text.strip())
+
+
+def _whisper_segment(segment: WhisperSegment) -> CaptionSegment | None:
+    """Convert one faster-whisper segment into timestamped evidence."""
+    text: str = segment.text.strip()
+    if not text:
+        return None
+    return CaptionSegment(
+        start=float(segment.start),
+        end=float(segment.end),
+        text=text,
+    )
 
 
 def make_faster_whisper_transcriber(config: Config) -> Transcriber:
@@ -31,11 +53,17 @@ def make_faster_whisper_transcriber(config: Config) -> Transcriber:
             device=config.whisper_device,
             compute_type=config.whisper_compute_type,
         )
-        segments, _info = model.transcribe(str(audio_path), word_timestamps=True)
+        segment_stream, _info = model.transcribe(str(audio_path), word_timestamps=True)
+        raw_segments: list[WhisperSegment] = list(segment_stream)
+        timestamped_segments: tuple[CaptionSegment, ...] = tuple(
+            converted for segment in raw_segments if (converted := _whisper_segment(segment)) is not None
+        )
         return TranscriptResult(
-            text=_whisper_segments_to_transcript(segments),
+            text=_whisper_segments_to_transcript(raw_segments),
             source=TranscriptSource.WHISPER,
             has_word_timestamps=True,
+            segments=timestamped_segments,
+            artifact_path=audio_path,
         )
 
     return transcribe

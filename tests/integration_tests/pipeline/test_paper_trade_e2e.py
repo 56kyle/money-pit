@@ -19,7 +19,6 @@ from money_pit.constants import VALIDATION_STATUS_FILENAME
 from money_pit.email_sender import make_unconfigured_email_sender
 from money_pit.graph.state import PipelineState
 from money_pit.mcp.manifest import pinned_manifest
-from money_pit.schemas.fills import FillObservation
 from money_pit.pipeline.chain import EXECUTION_NODE
 from money_pit.pipeline.chain import Stage
 from money_pit.pipeline.orchestration import PipelineOverrides
@@ -35,11 +34,12 @@ from money_pit.schemas.enums import ExecutionOutcome
 from money_pit.schemas.enums import ExecutionPhase
 from money_pit.schemas.enums import RecoveryDecision
 from money_pit.schemas.enums import TerminalState
+from money_pit.schemas.fills import FillObservation
 from money_pit.schemas.journal import ExecutionJournal
 from money_pit.schemas.journal import ExecutionJournalEntry
 from money_pit.schemas.portfolio import PortfolioSnapshot
-from money_pit.schemas.recovery import PriorRunReconciliation
 from money_pit.schemas.questions import InitialQuestions
+from money_pit.schemas.recovery import PriorRunReconciliation
 from money_pit.schemas.signals import AggregatedSignals
 from money_pit.schemas.validation_results import ActionStepsValidation
 from money_pit.schemas.validation_results import ValidationStatusReport
@@ -101,9 +101,7 @@ _EXECUTE_PATH_MARKDOWN_FILES: list[str] = [
 
 
 @pytest.fixture(scope="module")
-def execute_run(
-    tmp_path_factory: pytest.TempPathFactory, pipeline_signals_dir: Path
-) -> tuple[Path, PipelineState]:
+def execute_run(tmp_path_factory: pytest.TempPathFactory, pipeline_signals_dir: Path) -> tuple[Path, PipelineState]:
     run_dir = tmp_path_factory.mktemp("execute_determination")
     overrides = phase4_overrides()
     overrides.manifest = pinned_manifest()
@@ -143,9 +141,7 @@ def test_paper_trade_execute_path_terminal_state_none(
 
 
 @pytest.mark.parametrize("step", _EXECUTE_PATH_STEPS)
-def test_paper_trade_execute_path_completes_step(
-    execute_run: tuple[Path, PipelineState], step: str
-) -> None:
+def test_paper_trade_execute_path_completes_step(execute_run: tuple[Path, PipelineState], step: str) -> None:
     _, final_state = execute_run
     assert step in final_state.get("completed_steps", [])
 
@@ -202,9 +198,7 @@ def test_paper_trade_execute_path_journal_outcome_clean(
 
 
 @pytest.mark.parametrize("md_filename", _EXECUTE_PATH_MARKDOWN_FILES)
-def test_paper_trade_execute_path_renders_markdown(
-    execute_run: tuple[Path, PipelineState], md_filename: str
-) -> None:
+def test_paper_trade_execute_path_renders_markdown(execute_run: tuple[Path, PipelineState], md_filename: str) -> None:
     run_dir, _ = execute_run
     md_path = run_dir / md_filename
     assert md_path.exists()
@@ -212,9 +206,7 @@ def test_paper_trade_execute_path_renders_markdown(
 
 
 @pytest.fixture(scope="module")
-def no_action_run(
-    tmp_path_factory: pytest.TempPathFactory, pipeline_signals_dir: Path
-) -> tuple[Path, PipelineState]:
+def no_action_run(tmp_path_factory: pytest.TempPathFactory, pipeline_signals_dir: Path) -> tuple[Path, PipelineState]:
     signals_dir = tmp_path_factory.mktemp("no_action_signals_in")
     _ = shutil.copy2(pipeline_signals_dir / "no_action_signal.json", signals_dir / "no_action_signal.json")
     run_dir = tmp_path_factory.mktemp("no_action_run")
@@ -427,9 +419,7 @@ def test_paper_trade_fully_default_schema_builds_and_proceeds(tmp_path: Path, pi
     """
     run_dir = tmp_path / "run"
 
-    final_state = run_pipeline(
-        signals_dir=pipeline_signals_dir, run_dir=run_dir, overrides=phase4_overrides()
-    )
+    final_state = run_pipeline(signals_dir=pipeline_signals_dir, run_dir=run_dir, overrides=phase4_overrides())
 
     assert final_state.get("terminal_state") is None
     report = _assert_file_valid(run_dir, "determination.json", DeterminationReport)
@@ -443,9 +433,7 @@ _PLAN_ONLY_PRESENT_ARTIFACTS: list[tuple[str, type[BaseModel]]] = [
 
 
 @pytest.fixture(scope="module")
-def plan_only_run(
-    tmp_path_factory: pytest.TempPathFactory, pipeline_signals_dir: Path
-) -> tuple[Path, PipelineState]:
+def plan_only_run(tmp_path_factory: pytest.TempPathFactory, pipeline_signals_dir: Path) -> tuple[Path, PipelineState]:
     run_dir = tmp_path_factory.mktemp("plan_only_determination")
     overrides = phase4_overrides()
     overrides.manifest = pinned_manifest()
@@ -576,9 +564,7 @@ def _write_prior_journal(daily_show_root: Path, phase: ExecutionPhase) -> None:
 
 
 @pytest.fixture
-def recovery_halt_run(
-    tmp_path: Path, pipeline_signals_dir: Path
-) -> tuple[Path, PipelineState, _RecordingEmail]:
+def recovery_halt_run(tmp_path: Path, pipeline_signals_dir: Path) -> tuple[Path, PipelineState, _RecordingEmail]:
     daily_show_root = tmp_path
     _write_prior_journal(daily_show_root, ExecutionPhase.SUBMITTED)
     run_dir = daily_show_root / "current_run"
@@ -664,9 +650,7 @@ def test_paper_trade_undeliverable_halt_email_records_artifact(
 
 
 @pytest.fixture
-def recovery_notice_run(
-    tmp_path: Path, pipeline_signals_dir: Path
-) -> tuple[Path, PipelineState, _RecordingEmail]:
+def recovery_notice_run(tmp_path: Path, pipeline_signals_dir: Path) -> tuple[Path, PipelineState, _RecordingEmail]:
     daily_show_root = tmp_path
     _write_prior_journal(daily_show_root, ExecutionPhase.SUBMITTED)
     run_dir = daily_show_root / "current_run"

@@ -121,9 +121,7 @@ def test_build_fill_observation_phase_matches_map_order_status() -> None:
         ([ExecutionPhase.FILLED, ExecutionPhase.FAILED], ExecutionOutcome.EXECUTION_FAILED),
     ],
 )
-def test_derive_execution_outcome(
-    phases: list[ExecutionPhase], expected_outcome: ExecutionOutcome
-) -> None:
+def test_derive_execution_outcome(phases: list[ExecutionPhase], expected_outcome: ExecutionOutcome) -> None:
     assert derive_execution_outcome(phases) is expected_outcome
 
 

@@ -15,6 +15,7 @@ from pytest import FixtureRequest
 from money_pit.alpaca_orders import FillObservationError
 from money_pit.alpaca_orders import OrderNotYetVisibleError
 from money_pit.compute.fills import build_fill_observation
+from money_pit.graph.state import PipelineNode
 from money_pit.pipeline.execution import AtomicGroupNotSupportedError
 from money_pit.pipeline.execution import OrderSubmissionError
 from money_pit.pipeline.execution import _apply_fill
@@ -35,7 +36,6 @@ from money_pit.schemas.enums import RegimeTag
 from money_pit.schemas.fills import FillObservation
 from money_pit.schemas.journal import ExecutionJournal
 from money_pit.schemas.journal import ExecutionJournalEntry
-from money_pit.graph.state import PipelineNode
 
 
 _SLUG = "test-run"
@@ -343,9 +343,7 @@ def test_make_execution_node_with_retries_polls_until_terminal(
 
 @pytest.fixture
 def not_yet_visible_observer() -> _ScriptedObserver:
-    return _ScriptedObserver(
-        [OrderNotYetVisibleError("not yet indexed"), build_fill_observation("filled", 8.0, 100.0)]
-    )
+    return _ScriptedObserver([OrderNotYetVisibleError("not yet indexed"), build_fill_observation("filled", 8.0, 100.0)])
 
 
 @pytest.fixture

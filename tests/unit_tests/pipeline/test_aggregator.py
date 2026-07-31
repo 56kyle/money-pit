@@ -116,9 +116,7 @@ def test__corroborate_claims_with_agree_and_disagree_splits_entries() -> None:
 
     _, corroboration_entries, conflict_entries = _corroborate_claims(agent, claims)
 
-    assert [(e.relation, e.claim_ids) for e in corroboration_entries] == [
-        (ClaimRelationType.AGREE, ["c-1", "c-2"])
-    ]
+    assert [(e.relation, e.claim_ids) for e in corroboration_entries] == [(ClaimRelationType.AGREE, ["c-1", "c-2"])]
     assert [(e.relation, e.claim_ids) for e in conflict_entries] == [(ClaimRelationType.DISAGREE, ["c-3"])]
 
 
@@ -148,8 +146,12 @@ def test__corroborate_claims_with_relations_applies_tier_max() -> None:
 
 def test_make_aggregator_node_with_signal_sets_writes_aggregated_json(tmp_path: Path) -> None:
     signal_sets = [
-        _make_signal_set("src-a", [_make_claim("c-1", SignalTier.HIGH, source_id="src-a")], has_actionable_content=True),
-        _make_signal_set("src-b", [_make_claim("c-2", SignalTier.LOW, source_id="src-b")], has_actionable_content=False),
+        _make_signal_set(
+            "src-a", [_make_claim("c-1", SignalTier.HIGH, source_id="src-a")], has_actionable_content=True
+        ),
+        _make_signal_set(
+            "src-b", [_make_claim("c-2", SignalTier.LOW, source_id="src-b")], has_actionable_content=False
+        ),
     ]
     _write_signal_sets(tmp_path, signal_sets)
     node = make_aggregator_node(_stub_agent(ClaimRelations(agree=[], disagree=[])))

@@ -4,6 +4,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import Field
 
 from money_pit.schemas.enums import ClaimCategory
 from money_pit.schemas.enums import ClaimRelationType
@@ -24,6 +25,7 @@ class Claim(BaseModel):
     requires_validation: bool
     source_ref: SourceRef
     cited_sources: list[str]
+    evidence_fragment_ids: list[str] = Field(default_factory=list)
 
 
 class SignalSet(BaseModel):

@@ -37,9 +37,7 @@ _POTENTIALLY_OPEN_PHASES: frozenset[ExecutionPhase] = frozenset(
     {ExecutionPhase.SUBMITTED, ExecutionPhase.PARTIALLY_FILLED}
 )
 
-_ABNORMAL_PRIOR_OUTCOMES: frozenset[ExecutionOutcome | None] = frozenset(
-    {ExecutionOutcome.EXECUTED_INCOMPLETE, None}
-)
+_ABNORMAL_PRIOR_OUTCOMES: frozenset[ExecutionOutcome | None] = frozenset({ExecutionOutcome.EXECUTED_INCOMPLETE, None})
 
 _NOT_FOUND_STATUS: str = "not_found"
 _UNOBSERVABLE_STATUS: str = "unobservable"
@@ -53,9 +51,7 @@ def _prior_slug_candidates(daily_show_root: Path, current_slug: str) -> Iterator
         (
             run_dir
             for run_dir in daily_show_root.iterdir()
-            if run_dir.is_dir()
-            and run_dir.name < current_slug
-            and (run_dir / EXECUTION_JOURNAL_FILENAME).is_file()
+            if run_dir.is_dir() and run_dir.name < current_slug and (run_dir / EXECUTION_JOURNAL_FILENAME).is_file()
         ),
         key=lambda run_dir: run_dir.name,
         reverse=True,
@@ -124,9 +120,7 @@ def reconcile_prior_run(
             settled_orders=[],
         )
 
-    journal: ExecutionJournal = ExecutionJournal.model_validate_json(
-        journal_path.read_text(encoding="utf-8")
-    )
+    journal: ExecutionJournal = ExecutionJournal.model_validate_json(journal_path.read_text(encoding="utf-8"))
 
     open_orders: list[ReconciledOrder] = []
     settled_orders: list[ReconciledOrder] = []

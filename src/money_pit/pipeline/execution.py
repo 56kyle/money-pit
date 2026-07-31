@@ -64,17 +64,36 @@ def _write_journal(
     _ = (working_dir / EXECUTION_JOURNAL_FILENAME).write_text(journal.model_dump_json(indent=2), encoding="utf-8")
 
 
+def _planned_entry(step: ActionStep) -> ExecutionJournalEntry:
+    """Build the durable intent record written before broker submission."""
+    return ExecutionJournalEntry(
+        step_id=step.step_id,
+        group_id=step.group_id,
+        client_order_id=step.execution_parameters.client_order_id,
+        phase=ExecutionPhase.PLANNED,
+        intended=step.execution_parameters.to_order_payload(),
+        broker_order_id=None,
+        status=None,
+        filled_qty=None,
+        filled_avg_price=None,
+        realized_notional=None,
+        compensation_of=None,
+        error=None,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+class ExecutionAuthorityUnavailableError(Exception):
+    """Raised if a graph reaches execution without an injected capital-write authority."""
+
+
 def _reject_atomic_groups(steps: list[ActionStep]) -> None:
     """Fail closed before placing any order when a step carries a non-null group_id (ADR 0003)."""
     if any(step.group_id is not None for step in steps):
-        raise AtomicGroupNotSupportedError(
-            "Atomic-group execution (non-null group_id) is not supported (ADR 0003)."
-        )
+        raise AtomicGroupNotSupportedError("Atomic-group execution (non-null group_id) is not supported (ADR 0003).")
 
 
-def _submit_step(
-    step: ActionStep, place_order: Callable[[ExecutionParameters], str]
-) -> ExecutionJournalEntry:
+def _submit_step(step: ActionStep, place_order: Callable[[ExecutionParameters], str]) -> ExecutionJournalEntry:
     """Submit one independent leg, failing it closed on OrderSubmissionError and letting any other error propagate."""
     intended: dict[str, object] = step.execution_parameters.to_order_payload()
     phase: ExecutionPhase = ExecutionPhase.SUBMITTED
@@ -153,7 +172,7 @@ def _apply_fill(entry: ExecutionJournalEntry, obs: FillObservation) -> Execution
 
 
 def make_execution_node(
-    place_order: OrderPlacer,
+    place_order: OrderPlacer | None,
     observe_fill: FillObserver,
     *,
     poll_interval: float,
@@ -186,8 +205,13 @@ def make_execution_node(
 
         entries: list[ExecutionJournalEntry] = []
         for step in steps:
+            intent: ExecutionJournalEntry = _planned_entry(step)
+            entries.append(intent)
+            _write_journal(working_dir, slug, entries, outcome=None)
+            if place_order is None:
+                raise ExecutionAuthorityUnavailableError("No order placer was authorized for this run.")
             entry: ExecutionJournalEntry = _submit_step(step, place_order)
-            entries.append(entry)
+            entries[-1] = entry
             _write_journal(working_dir, slug, entries, outcome=None)
             if entry.phase == ExecutionPhase.SUBMITTED:
                 obs: FillObservation = _poll_fill(

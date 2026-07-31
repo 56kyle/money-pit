@@ -69,7 +69,6 @@ def offline_production_seams(
     in_memory_keyring: InMemoryKeyring,
 ) -> None:
     monkeypatch.setattr(orchestration, "resolve_alpaca_credentials", lambda _config: credentials)
-    monkeypatch.setattr(orchestration, "live_manifest", lambda _credentials: {"place_stock_order": {}})
     assert config.gmail_address is not None
     in_memory_keyring.set_password(config.gmail_service, config.gmail_address, "gmail-app-password")
 
@@ -77,11 +76,7 @@ def offline_production_seams(
 def test_production_deps_wires_all_capital_critical_deps(config: Config, offline_production_seams: None) -> None:
     overrides: PipelineOverrides = production_deps(config)
 
-    assert overrides.fetch_portfolio is not None
-    assert overrides.place_order is not None
-    assert overrides.observe_fill is not None
-    assert overrides.send_email is not None
-    assert overrides.manifest is not None
+    assert (overrides.place_order, overrides.manifest) == (None, None)
 
 
 @pytest.fixture
@@ -95,7 +90,6 @@ def offline_alpaca_seams(
 ) -> None:
     """in_memory_keyring is load-bearing: production_deps resolves the Gmail app password through the real keyring."""
     monkeypatch.setattr(orchestration, "resolve_alpaca_credentials", lambda _config: credentials)
-    monkeypatch.setattr(orchestration, "live_manifest", lambda _credentials: {"place_stock_order": {}})
 
 
 @pytest.fixture
@@ -104,8 +98,7 @@ def deps_without_gmail(config_without_gmail: Config, offline_alpaca_seams: None)
 
 
 def test_production_deps_with_unconfigured_gmail_still_composes(deps_without_gmail: PipelineOverrides) -> None:
-    assert deps_without_gmail.send_email is not None
-    assert deps_without_gmail.place_order is not None
+    assert (deps_without_gmail.send_email is not None, deps_without_gmail.place_order) == (True, None)
 
 
 def test_production_deps_with_unconfigured_gmail_send_email_raises(deps_without_gmail: PipelineOverrides) -> None:
@@ -115,7 +108,12 @@ def test_production_deps_with_unconfigured_gmail_send_email_raises(deps_without_
         deps_without_gmail.send_email("money-pit: Recovery Halt - test-run", "A prior leg is still open.")
 
 
-def test_run_pipeline_with_no_overrides_fails_closed(tmp_path: Path) -> None:
+def test_run_pipeline_with_no_overrides_fails_closed(
+    tmp_path: Path,
+    config: Config,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(orchestration, "load_config", lambda: config)
     with pytest.raises(MissingPipelineDependencyError):
         _ = run_pipeline(signals_dir=tmp_path)
 

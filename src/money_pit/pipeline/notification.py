@@ -37,8 +37,7 @@ def _build_subject(
     if terminal_state is None and execution_outcome is ExecutionOutcome.EXECUTED_INCOMPLETE:
         return f"money-pit: Execution Incomplete - {slug}"
     raise ValueError(
-        f"_build_subject received unexpected terminal state / execution outcome: "
-        f"{terminal_state} / {execution_outcome}"
+        f"_build_subject received unexpected terminal state / execution outcome: {terminal_state} / {execution_outcome}"
     )
 
 
@@ -55,9 +54,7 @@ def _build_execution_incomplete_body(
     if execution_journal is not None and execution_journal.entries:
         lines.append(f"Execution journal ({len(execution_journal.entries)}):")
         for entry in execution_journal.entries:
-            lines.append(
-                f"  {entry.step_id} | {entry.phase.value} | {entry.status} | filled_qty={entry.filled_qty}"
-            )
+            lines.append(f"  {entry.step_id} | {entry.phase.value} | {entry.status} | filled_qty={entry.filled_qty}")
     else:
         lines.append("Execution journal: none")
     return "\n".join(lines)
@@ -139,9 +136,7 @@ def make_notification_node(
         execution_journal: ExecutionJournal | None = _load_execution_journal(working_dir)
 
         subject: str = _build_subject(slug, terminal_state, execution_outcome, validation)
-        body: str = _build_body(
-            slug, terminal_state, execution_outcome, action_steps, validation, execution_journal
-        )
+        body: str = _build_body(slug, terminal_state, execution_outcome, action_steps, validation, execution_journal)
         send_email(subject, body)
 
         return {"completed_steps": with_completed_step(state, "notification")}

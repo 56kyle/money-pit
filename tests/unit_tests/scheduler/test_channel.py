@@ -31,11 +31,7 @@ _FEED_EMPTY_VIDEO_ID: str = (
 )
 
 _FEED_ABSENT_VIDEO_ID: str = (
-    f'<feed xmlns="{_ATOM_NS}" xmlns:yt="{_YT_NS}">'
-    "<entry>"
-    "<title>No Id Episode</title>"
-    "</entry>"
-    "</feed>"
+    f'<feed xmlns="{_ATOM_NS}" xmlns:yt="{_YT_NS}"><entry><title>No Id Episode</title></entry></feed>'
 )
 
 

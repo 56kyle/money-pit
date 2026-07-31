@@ -71,9 +71,7 @@ def make_alpaca_fill_observer(
                 raise OrderNotYetVisibleError(
                     f"Order {client_order_id!r} is not yet visible to the broker (404 on lookup)."
                 ) from err
-            raise FillObservationError(
-                f"Failed to observe order {client_order_id!r}: {err}"
-            ) from err
+            raise FillObservationError(f"Failed to observe order {client_order_id!r}: {err}") from err
         return _order_to_observation(order)
 
     return observe_fill

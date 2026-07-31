@@ -132,9 +132,7 @@ def test__draft_to_question_with_unknown_claim_returns_none() -> None:
 
 def _claim_published_at(published_at: str | None) -> Claim:
     claim: Claim = _high_claim()
-    return claim.model_copy(
-        update={"source_ref": claim.source_ref.model_copy(update={"published_at": published_at})}
-    )
+    return claim.model_copy(update={"source_ref": claim.source_ref.model_copy(update={"published_at": published_at})})
 
 
 @pytest.mark.parametrize(
@@ -157,9 +155,7 @@ def test__evidence_cutoff_text_with_lookback_days(lookback_days: int, expected_c
         ("2026-07-24T00:00:00-05:00", "2026-07-21T05:00:00Z"),
     ],
 )
-def test__evidence_cutoff_text_with_offset_bearing_published_at(
-    published_at: str, expected_cutoff: str
-) -> None:
+def test__evidence_cutoff_text_with_offset_bearing_published_at(published_at: str, expected_cutoff: str) -> None:
     assert _evidence_cutoff_text(published_at, _LOOKBACK_DAYS) == expected_cutoff
 
 
@@ -170,9 +166,7 @@ def test__evidence_cutoff_text_with_offset_bearing_published_at(
         ("2026-07-24T06:30:00", "2026-07-21T06:30:00Z"),
     ],
 )
-def test__evidence_cutoff_text_with_naive_published_at_is_read_as_utc(
-    published_at: str, expected_cutoff: str
-) -> None:
+def test__evidence_cutoff_text_with_naive_published_at_is_read_as_utc(published_at: str, expected_cutoff: str) -> None:
     assert _evidence_cutoff_text(published_at, _LOOKBACK_DAYS) == expected_cutoff
 
 
@@ -192,9 +186,7 @@ def test__make_current_events_questions_with_published_at_backdates_question_tex
 
 
 def test__make_current_events_questions_with_naive_published_at_backdates_question_text() -> None:
-    questions = _make_current_events_questions(
-        [_claim_published_at(_NAIVE_DATE_ONLY_PUBLISHED_AT)], _LOOKBACK_DAYS
-    )
+    questions = _make_current_events_questions([_claim_published_at(_NAIVE_DATE_ONLY_PUBLISHED_AT)], _LOOKBACK_DAYS)
 
     assert len(questions) == 1
     assert "since 2026-07-21T00:00:00Z" in questions[0].question
@@ -210,9 +202,7 @@ def test__make_current_events_questions_with_missing_published_at() -> None:
 def test__make_current_events_questions_with_unparseable_published_at_fails_soft(
     loguru_records: list[CapturedLog],
 ) -> None:
-    questions = _make_current_events_questions(
-        [_claim_published_at(_UNPARSEABLE_PUBLISHED_AT)], _LOOKBACK_DAYS
-    )
+    questions = _make_current_events_questions([_claim_published_at(_UNPARSEABLE_PUBLISHED_AT)], _LOOKBACK_DAYS)
 
     assert any(
         record.level == "WARNING"
@@ -305,9 +295,7 @@ def test_make_questions_node_converts_known_claim_draft_signal_tier(
 def test_make_questions_node_forwards_current_events_lookback_days_into_question_text(
     initial_questions: InitialQuestions,
 ) -> None:
-    current_events_qs = [
-        q for q in initial_questions.questions if q.category == QuestionCategory.CURRENT_EVENTS
-    ]
+    current_events_qs = [q for q in initial_questions.questions if q.category == QuestionCategory.CURRENT_EVENTS]
 
     assert len(current_events_qs) == 1
     assert f"since {_CLAIM_CUTOFF_AT_LOOKBACK_DAYS}?" in current_events_qs[0].question
@@ -338,6 +326,4 @@ def test_make_questions_node_with_failing_agent_logs_failure_loudly(
 
     _ = node({"slug": _SLUG, "working_dir": str(questions_working_dir)})
 
-    assert any(
-        record.level == "ERROR" and record.message == _A2_AGENT_FAILURE_LOG for record in loguru_records
-    )
+    assert any(record.level == "ERROR" and record.message == _A2_AGENT_FAILURE_LOG for record in loguru_records)

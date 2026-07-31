@@ -49,8 +49,8 @@ from money_pit.schemas.enums import RegimeTag
 from money_pit.schemas.enums import Step1Disposition
 from money_pit.schemas.enums import TerminalState
 from money_pit.schemas.instrument import InstrumentFacts
-from money_pit.schemas.portfolio import Position
 from money_pit.schemas.portfolio import PortfolioSnapshot
+from money_pit.schemas.portfolio import Position
 from money_pit.schemas.questions import INDICATOR_PREFIX
 from money_pit.schemas.signals import AggregatedSignals
 
@@ -230,9 +230,7 @@ def _config(**overrides: object) -> Config:
     return Config(**{**defaults, **overrides})
 
 
-def _position(
-    ticker: str, current_value: float, *, sector: str = "technology", quantity: float = 1.0
-) -> Position:
+def _position(ticker: str, current_value: float, *, sector: str = "technology", quantity: float = 1.0) -> Position:
     return Position(
         ticker=ticker,
         quantity=quantity,
@@ -286,9 +284,7 @@ def analysis_working_dir__macro_answers(request: FixtureRequest) -> list[Answer]
 
 @pytest.fixture
 def analysis_working_dir__portfolio(request: FixtureRequest) -> PortfolioSnapshot:
-    return getattr(
-        request, "param", _portfolio(total_account_value=100000.0, available_cash=100000.0)
-    )
+    return getattr(request, "param", _portfolio(total_account_value=100000.0, available_cash=100000.0))
 
 
 @pytest.fixture
@@ -509,9 +505,7 @@ def test__in_run_correlated_dollars_excludes_the_instrument_itself() -> None:
     assert _in_run_correlated_dollars("NVDA", facts, candidate_facts, {"NVDA": 9000.0}) == 0.0
 
 
-def test_make_analysis_node_with_disposition_sizes_supported_larger(
-    config: Config, analysis_working_dir: Path
-) -> None:
+def test_make_analysis_node_with_disposition_sizes_supported_larger(config: Config, analysis_working_dir: Path) -> None:
     container = AnalysisJudgment(
         theses=[
             _thesis("NVDA", Step1Disposition.SUPPORTED, claim_id="c-supported"),
@@ -925,9 +919,7 @@ def test__materialize_action_steps_with_exposure_reducing_thesis_does_not_consum
     assert steps["AMD"].execution_parameters.notional == baseline_amd
 
 
-@pytest.mark.parametrize(
-    "analysis_working_dir__macro_answers", [_GROWTH_ACCELERATING_ANSWERS], indirect=True
-)
+@pytest.mark.parametrize("analysis_working_dir__macro_answers", [_GROWTH_ACCELERATING_ANSWERS], indirect=True)
 @pytest.mark.parametrize(
     "analysis_working_dir__portfolio",
     [

@@ -17,9 +17,9 @@ from money_pit.agents.corroboration import corroborate
 from money_pit.agents.research_tools import DeterministicResearchTools
 from money_pit.agents.research_tools import OpenEndedResearchTools
 from money_pit.agents.thesis_judgment import make_thesis_judgment_agent
-from money_pit.compute.fills import build_fill_observation
 from money_pit.alpaca_orders import make_alpaca_fill_observer
 from money_pit.alpaca_portfolio import make_alpaca_portfolio_fetcher
+from money_pit.compute.fills import build_fill_observation
 from money_pit.config import DEFAULT_OWNER_RECIPIENT
 from money_pit.config import Config
 from money_pit.config import CredentialResolutionError
@@ -44,8 +44,7 @@ from money_pit.graph.graph import build_graph
 from money_pit.graph.graph import thread_config
 from money_pit.graph.state import PipelineState
 from money_pit.market_data import make_yfinance_instrument_resolver
-from money_pit.mcp.clients import make_alpaca_write_deps
-from money_pit.mcp.manifest import live_manifest
+from money_pit.mcp.manifest import live_manifest as _live_manifest
 from money_pit.pipeline.chain import Stage
 from money_pit.schemas.action_steps import ExecutionParameters
 from money_pit.schemas.aggregation_draft import ClaimRelations
@@ -59,6 +58,7 @@ from money_pit.schemas.enums import ActionType
 from money_pit.schemas.enums import ConvictionLevel
 from money_pit.schemas.enums import SignalTier
 from money_pit.schemas.enums import Step1Disposition
+from money_pit.schemas.execution_policy import ExecutionMode
 from money_pit.schemas.fetch_result import FetchError
 from money_pit.schemas.fetch_result import FetchResult
 from money_pit.schemas.fetch_result import FetchValue
@@ -90,6 +90,11 @@ class MissingPipelineDependencyError(Exception):
     """Raised when a capital-critical pipeline dependency is not supplied."""
 
 
+def live_manifest(credentials: object) -> ToolManifest:
+    """Compatibility seam for tests that patch historical manifest introspection."""
+    return _live_manifest(credentials)  # type: ignore[arg-type]
+
+
 @dataclass
 class PipelineOverrides:
     """Injectable agent overrides for testing. All fields default to None (use Phase 5 implementations)."""
@@ -104,6 +109,7 @@ class PipelineOverrides:
     open_ended_tools: OpenEndedResearchTools | None = field(default=None)
     place_order: OrderPlacer | None = field(default=None)
     observe_fill: FillObserver | None = field(default=None)
+    execution_authority: ExecutionMode | None = field(default=None)
     send_email: EmailSender | None = field(default=None)
     manifest: ToolManifest | None = field(default=None)
 
@@ -387,17 +393,15 @@ def _gmail_or_unconfigured_email_sender(config: Config) -> EmailSender:
 
 
 def production_deps(config: Config) -> PipelineOverrides:
-    """Return production PipelineOverrides wiring the real capital-critical deps and live tool manifest.
-
-    Alpaca credentials are resolved eagerly here so composition fails closed before any run begins.
-    """
+    """Return approval-aware production dependencies without constructing a broker writer."""
     credentials = resolve_alpaca_credentials(config)
     return PipelineOverrides(
         fetch_portfolio=portfolio_fetcher_or_default(PipelineOverrides(), config),
-        place_order=make_alpaca_write_deps(credentials),
+        place_order=None,
+        execution_authority=config.execution_mode,
         observe_fill=make_alpaca_fill_observer(credentials),
         send_email=_gmail_or_unconfigured_email_sender(config),
-        manifest=live_manifest(credentials),
+        manifest=None,
     )
 
 
@@ -408,9 +412,7 @@ def portfolio_fetcher_or_default(overrides: PipelineOverrides, config: Config) -
     return make_alpaca_portfolio_fetcher(resolve_alpaca_credentials(config), config)
 
 
-def deterministic_research_tools_or_default(
-    overrides: PipelineOverrides, config: Config
-) -> DeterministicResearchTools:
+def deterministic_research_tools_or_default(overrides: PipelineOverrides, config: Config) -> DeterministicResearchTools:
     """Return the overridden deterministic tools, else direct FRED and yfinance fetches keyed from config."""
     if overrides.deterministic_tools is not None:
         return overrides.deterministic_tools
@@ -464,20 +466,20 @@ class _CapitalCriticalDeps:
     """The three dependencies that move real capital, resolved and guaranteed non-None."""
 
     fetch_portfolio: PortfolioFetcher
-    place_order: OrderPlacer
+    place_order: OrderPlacer | None
     observe_fill: FillObserver
     send_email: EmailSender
 
 
 def _require_capital_critical_deps(overrides: PipelineOverrides) -> _CapitalCriticalDeps:
-    """Return the capital-critical dependencies, raising MissingPipelineDependencyError if any is None."""
+    """Return read dependencies and require a writer only for explicit legacy autonomy."""
     fetch_portfolio = overrides.fetch_portfolio
     place_order = overrides.place_order
     observe_fill = overrides.observe_fill
     send_email = overrides.send_email
     if fetch_portfolio is None:
         raise MissingPipelineDependencyError(_MISSING_DEP_MESSAGE.format(name="fetch_portfolio"))
-    if place_order is None:
+    if place_order is None and overrides.execution_authority is None:
         raise MissingPipelineDependencyError(_MISSING_DEP_MESSAGE.format(name="place_order"))
     if observe_fill is None:
         raise MissingPipelineDependencyError(_MISSING_DEP_MESSAGE.format(name="observe_fill"))
@@ -501,6 +503,7 @@ def run_pipeline(
     """Execute the pipeline on the signals in signals_dir and return the final state, pausing after `through` when one is named and propagating PlanningChainError when `through` has no successor."""
     ov: PipelineOverrides = overrides or PipelineOverrides()
     capital_deps: _CapitalCriticalDeps = _require_capital_critical_deps(ov)
+    config: Config = load_config()
 
     slug: str = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
     working_dir: Path = run_dir if run_dir is not None else DAILY_SHOW_ROOT / slug
@@ -511,8 +514,6 @@ def run_pipeline(
 
     for signal_file in signals_dir.glob("*.json"):
         _ = shutil.copy2(signal_file, signals_out / signal_file.name)
-
-    config = load_config()
 
     graph = build_graph(
         fetch_portfolio=capital_deps.fetch_portfolio,
@@ -525,6 +526,7 @@ def run_pipeline(
         resolve_instrument_facts=instrument_facts_resolver_or_default(ov),
         place_order=capital_deps.place_order,
         observe_fill=capital_deps.observe_fill,
+        legacy_injected_write_authority=capital_deps.place_order is not None,
         send_email=with_undelivered_record(capital_deps.send_email, working_dir),
         manifest=ov.manifest,
         through=through,

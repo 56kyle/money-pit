@@ -101,9 +101,7 @@ def test__factor_metrics_from_info_with_non_finite_value() -> None:
     assert metrics.trailing_return is None
 
 
-def test__to_position_with_equity(
-    raw_position: _RawPosition, equity_info: dict[str, object], config: Config
-) -> None:
+def test__to_position_with_equity(raw_position: _RawPosition, equity_info: dict[str, object], config: Config) -> None:
     position = _to_position(raw_position, equity_info, config)
 
     assert position == Position(

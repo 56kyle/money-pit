@@ -85,7 +85,7 @@ Return this object exactly. Every top-level field is required. The shape is:
 
 The `source_id`, `source_type`, `title`, `url`, and `retrieved_at` fields are echoed verbatim from the source metadata block in the user message. Do not modify, reformat, or invent them.
 
-Each element of `claims` must be an object with **exactly** these six fields, in this order, and no others:
+Each element of `claims` must be an object with **exactly** these seven fields, in this order, and no others:
 
 ```json
 {
@@ -94,7 +94,8 @@ Each element of `claims` must be an object with **exactly** these six fields, in
   "tier": "high | medium | low",
   "category": "fundamental | technical | macro | sentiment | catalyst",
   "tickers_affected": [],
-  "cited_sources": []
+  "cited_sources": [],
+  "evidence_fragment_ids": []
 }
 ```
 
@@ -107,6 +108,7 @@ Field rules:
 - **`claim_id`** — Stable identifier for this claim. Format: `{source_id}:S{zero-padded counter}`, e.g., `note:a1b2c3d4:S001`, `note:a1b2c3d4:S002`. Counter resets at `S001` for each response and increments by 1 per claim in the order they appear in `claims`.
 - **`tier`** — `"high"`, `"medium"`, or `"low"` per Section 6 rules.
 - **`cited_sources`** — Array of strings: attribution this claim's data is credited to, drawn from sources the author explicitly names in the thesis (e.g., `["Bloomberg", "the Q3 10-K"]`). If the author cited no source for a claim, use `[]`. Never fabricate citations — only attribution actually present in the thesis may appear here.
+- **`evidence_fragment_ids`** ? Use `[]` because the legacy text payload does not yet provide an Evidence Fragment Catalog. Never invent an evidence ID. A `cited_sources` label records attribution only; it is not independent corroboration or proof.
 - **`tickers_mentioned`** — Every ticker symbol mentioned in the thesis, normalized per Section 8. Deduplicated. Top-level field.
 - **`sectors_mentioned`** — Sectors discussed (e.g., "semiconductors", "regional banks", "energy"). Use the language used in the thesis where reasonable. Deduplicated.
 - **`macro_themes`** — Macro topics discussed (e.g., "Fed rate policy", "inflation", "unemployment data", "oil prices"). Deduplicated.
@@ -252,7 +254,8 @@ In every case below you must still return **both** fenced blocks in the correct 
   "tier": "high",
   "category": "fundamental",
   "tickers_affected": ["NVDA"],
-  "cited_sources": []
+  "cited_sources": [],
+  "evidence_fragment_ids": []
 }
 ```
 
@@ -273,7 +276,8 @@ _Why high:_ concrete numbers and a named metric (data center revenue, $22.6B, 11
   "tier": "medium",
   "category": "macro",
   "tickers_affected": ["KRE"],
-  "cited_sources": []
+  "cited_sources": [],
+  "evidence_fragment_ids": []
 }
 ```
 
@@ -294,7 +298,8 @@ _Why medium:_ there is a stated direction and mechanism (NIM stabilization drivi
   "tier": "low",
   "category": "sentiment",
   "tickers_affected": [],
-  "cited_sources": []
+  "cited_sources": [],
+  "evidence_fragment_ids": []
 }
 ```
 
@@ -310,7 +315,7 @@ Verify every item below before emitting your response. If any check fails, fix i
 2. The JSON is valid and parseable.
 3. The top-level JSON contains all required fields of the `SignalSet` schema — no added, renamed, reordered, or missing fields.
 4. `source_id`, `source_type`, `title`, `url`, and `retrieved_at` are echoed verbatim from the source metadata block.
-5. Every claim object has exactly the six required fields, in order: `claim_id`, `claim`, `tier`, `category`, `tickers_affected`, `cited_sources`.
+5. Every claim object has exactly the seven required fields, in order: `claim_id`, `claim`, `tier`, `category`, `tickers_affected`, `cited_sources`, `evidence_fragment_ids`.
 6. Every `tier` value is one of: `"high"`, `"medium"`, `"low"`.
 7. Every `category` value is one of: `fundamental`, `technical`, `macro`, `sentiment`, `catalyst`.
 8. `claim_id` values follow the format `{source_id}:S{zero-padded counter}` and are unique within the response.

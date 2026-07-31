@@ -7,10 +7,10 @@ import pytest
 from pytest import FixtureRequest
 
 from money_pit.agents.research_tools import DeterministicResearchTools
+from money_pit.pipeline.retrieval import _combine_fetch_results
 from money_pit.pipeline.retrieval import _deterministic_answer
 from money_pit.pipeline.retrieval import _draft_to_answer
 from money_pit.pipeline.retrieval import _fetch_deterministic
-from money_pit.pipeline.retrieval import _combine_fetch_results
 from money_pit.pipeline.retrieval import make_retrieval_node
 from money_pit.schemas.answer_draft import AnswerDraft
 from money_pit.schemas.answers import InitialAnswers

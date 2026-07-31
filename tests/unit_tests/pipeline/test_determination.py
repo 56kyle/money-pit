@@ -89,9 +89,7 @@ def _make_validation(steps: list[ValidationStep]) -> ActionStepsValidation:
     unmatched = any(step.status == ValidationStatus.UNMATCHED for step in steps)
     return ActionStepsValidation(
         slug=_SLUG,
-        overall_status=(
-            OverallValidationStatus.VALIDATION_FAILED if unmatched else OverallValidationStatus.VALIDATED
-        ),
+        overall_status=(OverallValidationStatus.VALIDATION_FAILED if unmatched else OverallValidationStatus.VALIDATED),
         steps=steps,
     )
 
@@ -206,9 +204,7 @@ def test__read_journal_outcome_with_corrupt_journal_logs_loudly(
 ) -> None:
     _ = (tmp_path / _JOURNAL_FILENAME).write_text('{"unexpected": "shape"}', encoding="utf-8")
     _ = _read_journal_outcome(tmp_path)
-    assert any(
-        record.level == "ERROR" and _JOURNAL_CORRUPT_LOG_FRAGMENT in record.message for record in loguru_records
-    )
+    assert any(record.level == "ERROR" and _JOURNAL_CORRUPT_LOG_FRAGMENT in record.message for record in loguru_records)
 
 
 @pytest.fixture

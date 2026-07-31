@@ -97,17 +97,13 @@ def incomplete_journal_entries() -> list[ExecutionJournalEntry]:
 
 
 @pytest.fixture
-def incomplete_working_dir(
-    tmp_path: Path, incomplete_journal_entries: list[ExecutionJournalEntry]
-) -> Path:
+def incomplete_working_dir(tmp_path: Path, incomplete_journal_entries: list[ExecutionJournalEntry]) -> Path:
     journal = ExecutionJournal(
         slug=_SLUG,
         outcome=ExecutionOutcome.EXECUTED_INCOMPLETE,
         entries=incomplete_journal_entries,
     )
-    _ = (tmp_path / EXECUTION_JOURNAL_FILENAME).write_text(
-        journal.model_dump_json(indent=2), encoding="utf-8"
-    )
+    _ = (tmp_path / EXECUTION_JOURNAL_FILENAME).write_text(journal.model_dump_json(indent=2), encoding="utf-8")
     return tmp_path
 
 
@@ -176,7 +172,5 @@ def test_notification_node_with_execution_incomplete_body_summarizes_entries(
 ) -> None:
     _, body = execution_incomplete_email.calls[0]
     for entry in incomplete_journal_entries:
-        expected_line = (
-            f"  {entry.step_id} | {entry.phase.value} | {entry.status} | filled_qty={entry.filled_qty}"
-        )
+        expected_line = f"  {entry.step_id} | {entry.phase.value} | {entry.status} | filled_qty={entry.filled_qty}"
         assert expected_line in body

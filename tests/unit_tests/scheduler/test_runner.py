@@ -93,9 +93,7 @@ def test_run_latest_once_with_channel_unset(config: Config, ledger_path: Path) -
     run_url: RecordingRunner = RecordingRunner({"slug": "unused"})
 
     with pytest.raises(SchedulerConfigError):
-        _ = run_latest_once(
-            config, read_latest=read_latest, run_url=run_url, ledger_path=ledger_path, now=lambda: _NOW
-        )
+        _ = run_latest_once(config, read_latest=read_latest, run_url=run_url, ledger_path=ledger_path, now=lambda: _NOW)
 
     assert read_latest.calls == []
     assert run_url.calls == []
@@ -141,9 +139,7 @@ def test_run_latest_once_with_raising_run_url(config: Config, ledger_path: Path)
     run_url: RaisingRunner = RaisingRunner()
 
     with pytest.raises(RuntimeError):
-        _ = run_latest_once(
-            config, read_latest=read_latest, run_url=run_url, ledger_path=ledger_path, now=lambda: _NOW
-        )
+        _ = run_latest_once(config, read_latest=read_latest, run_url=run_url, ledger_path=ledger_path, now=lambda: _NOW)
 
     assert run_url.calls == ["https://www.youtube.com/watch?v=vidNEW"]
     assert load_processed_ids(ledger_path) == set()

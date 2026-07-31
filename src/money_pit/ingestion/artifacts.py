@@ -5,6 +5,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import Field
 
 from money_pit.adapters.video_llm import TranscriptSource
 from money_pit.schemas.provenance import SourceRef
@@ -28,6 +29,8 @@ class TranscriptResult(BaseModel):
     text: str
     source: TranscriptSource
     has_word_timestamps: bool
+    segments: tuple[CaptionSegment, ...] = ()
+    artifact_path: Path | None = None
 
 
 class Keyframe(BaseModel):
@@ -48,6 +51,12 @@ class OnScreenExtraction(BaseModel):
     locator: str
     on_screen_text: list[str]
     cited_sources: list[str]
+    timestamp: float | None = Field(default=None, ge=0)
+    image_path: Path | None = None
+    extraction_method: str = "vision_llm"
+    extraction_model: str | None = None
+    bounding_box: tuple[float, float, float, float] | None = None
+    confidence: float | None = Field(default=None, ge=0, le=1)
 
 
 class VideoArtifacts(BaseModel):

@@ -4,6 +4,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import Field
 
 
 class ClaimDraft(BaseModel):
@@ -17,6 +18,7 @@ class ClaimDraft(BaseModel):
     category: str
     tickers_affected: list[str]
     cited_sources: list[str]
+    evidence_fragment_ids: list[str] = Field(default_factory=list)
 
 
 class SignalSetDraft(BaseModel):

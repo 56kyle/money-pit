@@ -50,6 +50,8 @@ The user message contains the plain text of one episode transcript covering US e
 
 When the video carried readable on-screen text, a `## On-Screen Text` block follows the transcript: lines a vision model read from sampled keyframes — chart titles, tickers, on-screen figures, and source attributions like "Source: Bloomberg". Each line may be prefixed with a `[HH:MM:SS]` locator. Treat this block as **supporting evidence**, imperfect like the transcript (mis-reads and omissions are possible) — use it to corroborate claims and to attribute a claim's data to its provider (Section 4, `cited_sources`), never as license to invent content that is not present.
 
+An `## Evidence Fragment Catalog` follows when provenance fragments are available. Every claim must list the exact IDs of the transcript or frame fragments that support it. Never invent, abbreviate, or alter an ID. A `cited_sources` label records attribution only; it is not independent corroboration or proof that the claim is true.
+
 ---
 
 ## 3. Your output contract
@@ -87,7 +89,7 @@ Return this object exactly. Every top-level field is required. The shape is:
 
 The `source_id`, `source_type`, `title`, `url`, and `retrieved_at` fields are echoed verbatim from the source metadata block in the user message. Do not modify, reformat, or invent them.
 
-Each element of `claims` must be an object with **exactly** these six fields, in this order, and no others:
+Each element of `claims` must be an object with **exactly** these seven fields, in this order, and no others:
 
 ```json
 {
@@ -96,7 +98,8 @@ Each element of `claims` must be an object with **exactly** these six fields, in
   "tier": "high | medium | low",
   "category": "fundamental | technical | macro | sentiment | catalyst",
   "tickers_affected": [],
-  "cited_sources": []
+  "cited_sources": [],
+  "evidence_fragment_ids": ["an exact fragment_id from the Evidence Fragment Catalog"]
 }
 ```
 
@@ -109,6 +112,7 @@ Field rules:
 - **`claim_id`** — Stable identifier for this claim. Format: `{source_id}:S{zero-padded counter}`, e.g., `yt:dQw4w9WgXcQ:S001`, `yt:dQw4w9WgXcQ:S002`. Counter resets at `S001` for each response and increments by 1 per claim in the order they appear in `claims`.
 - **`tier`** — `"high"`, `"medium"`, or `"low"` per Section 6 rules.
 - **`cited_sources`** — Array of strings: attribution this claim's data is credited to, drawn from the transcript **or** from the `## On-Screen Text` block (e.g., a chart footer crediting `["Bloomberg", "FactSet"]`, or a source the narrator names). If neither the transcript nor the on-screen text cited a source for a claim, use `[]`. Never fabricate citations — only attribution actually present in the transcript or on-screen text may appear here.
+- **`evidence_fragment_ids`** ? Non-empty array of exact `fragment_id` values from the Evidence Fragment Catalog that directly support this claim. Use the narrowest transcript and frame fragments available. Unknown IDs cause deterministic rejection.
 - **`tickers_mentioned`** — Every ticker symbol mentioned in the episode, normalized per Section 8. Deduplicated. Top-level field.
 - **`sectors_mentioned`** — Sectors discussed (e.g., "semiconductors", "regional banks", "energy"). Use the language used in the transcript where reasonable. Deduplicated.
 - **`macro_themes`** — Macro topics discussed (e.g., "Fed rate policy", "inflation", "unemployment data", "oil prices"). Deduplicated.
@@ -254,7 +258,8 @@ In every case below you must still return **both** fenced blocks in the correct 
   "tier": "high",
   "category": "fundamental",
   "tickers_affected": ["NVDA"],
-  "cited_sources": []
+  "cited_sources": [],
+  "evidence_fragment_ids": ["<exact fragment_id supplied in the Evidence Fragment Catalog>"]
 }
 ```
 
@@ -275,7 +280,8 @@ _Why high:_ concrete numbers and a named metric (data center revenue, $22.6B, 11
   "tier": "medium",
   "category": "macro",
   "tickers_affected": ["KRE"],
-  "cited_sources": []
+  "cited_sources": [],
+  "evidence_fragment_ids": ["<exact fragment_id supplied in the Evidence Fragment Catalog>"]
 }
 ```
 
@@ -296,7 +302,8 @@ _Why medium:_ there is a stated direction and mechanism (NIM stabilization drivi
   "tier": "low",
   "category": "sentiment",
   "tickers_affected": [],
-  "cited_sources": []
+  "cited_sources": [],
+  "evidence_fragment_ids": ["<exact fragment_id supplied in the Evidence Fragment Catalog>"]
 }
 ```
 
@@ -312,11 +319,12 @@ Verify every item below before emitting your response. If any check fails, fix i
 2. The JSON is valid and parseable.
 3. The top-level JSON contains all required fields of the `SignalSet` schema — no added, renamed, reordered, or missing fields.
 4. `source_id`, `source_type`, `title`, `url`, and `retrieved_at` are echoed verbatim from the source metadata block.
-5. Every claim object has exactly the six required fields, in order: `claim_id`, `claim`, `tier`, `category`, `tickers_affected`, `cited_sources`.
+5. Every claim object has exactly the seven required fields, in order: `claim_id`, `claim`, `tier`, `category`, `tickers_affected`, `cited_sources`, `evidence_fragment_ids`.
 6. Every `tier` value is one of: `"high"`, `"medium"`, `"low"`.
 7. Every `category` value is one of: `fundamental`, `technical`, `macro`, `sentiment`, `catalyst`.
 8. `claim_id` values follow the format `{source_id}:S{zero-padded counter}` and are unique within the response.
 9. `claims` is ordered: all high-tier claims first, then medium, then low, in transcript order within each tier.
+10a. Every claim has one or more exact `evidence_fragment_ids` from the catalog; no ID is invented or abbreviated.
 10. `cited_sources` is an array of strings (attribution from the transcript or the on-screen text block) or `[]`; never fabricated.
 11. When I was uncertain between two tiers, I chose the lower tier.
 12. Every ticker is uppercase, punctuation-free, and deduplicated; no ticker was guessed from an ambiguous company name; uncertain tickers were omitted.

@@ -65,6 +65,7 @@ def source_id_to_dirname(source_id: str) -> str:
     """
     return re.sub(r"[^\w.\-]", "_", source_id)
 
+
 OPENAI_MODEL_PREFIX: str = "openai:"
 
 GMAIL_KEYRING_SERVICE: str = "money-pit-gmail"
@@ -73,6 +74,12 @@ DEFAULT_SMTP_HOST: str = "smtp.gmail.com"
 DEFAULT_SMTP_PORT: int = 587
 
 DAILY_SHOW_ROOT: Path = Path("data") / "daily_show"
+DATA_ROOT: Path = Path("data")
+ASSETS_DIRNAME: str = "assets"
+RUNS_DIRNAME: str = "runs"
+REPORTS_DIRNAME: str = "reports"
+STATE_DATABASE_FILENAME: str = "money_pit.sqlite3"
+RUN_MANIFEST_FILENAME: str = "run.json"
 
 SIGNALS_DIRNAME: str = "signals"
 

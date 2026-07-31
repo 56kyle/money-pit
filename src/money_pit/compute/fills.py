@@ -23,12 +23,8 @@ _TERMINAL_STATUSES: frozenset[str] = frozenset(
     }
 )
 
-_INCOMPLETE_PHASES: frozenset[ExecutionPhase] = frozenset(
-    {ExecutionPhase.SUBMITTED, ExecutionPhase.PARTIALLY_FILLED}
-)
-_FAILURE_PHASES: frozenset[ExecutionPhase] = frozenset(
-    {ExecutionPhase.FAILED, ExecutionPhase.REJECTED}
-)
+_INCOMPLETE_PHASES: frozenset[ExecutionPhase] = frozenset({ExecutionPhase.SUBMITTED, ExecutionPhase.PARTIALLY_FILLED})
+_FAILURE_PHASES: frozenset[ExecutionPhase] = frozenset({ExecutionPhase.FAILED, ExecutionPhase.REJECTED})
 
 
 def is_terminal_status(status: str) -> bool:
@@ -51,9 +47,7 @@ def build_fill_observation(
     filled_avg_price: float | None,
 ) -> FillObservation:
     realized_notional: float | None = (
-        filled_qty * filled_avg_price
-        if filled_qty is not None and filled_avg_price is not None
-        else None
+        filled_qty * filled_avg_price if filled_qty is not None and filled_avg_price is not None else None
     )
     return FillObservation(
         phase=map_order_status(status, filled_qty),

@@ -121,6 +121,8 @@ def select_caption_transcript(artifacts: VideoArtifacts) -> TranscriptResult | N
             text=segments_to_transcript(segments),
             source=TranscriptSource.UPLOADER_CAPTIONS,
             has_word_timestamps=False,
+            segments=tuple(segments),
+            artifact_path=uploader_path,
         )
     auto_path = artifacts.auto_caption_path
     if auto_path is not None and auto_path.exists():
@@ -129,5 +131,7 @@ def select_caption_transcript(artifacts: VideoArtifacts) -> TranscriptResult | N
             text=segments_to_transcript(segments),
             source=TranscriptSource.AUTO_CAPTIONS,
             has_word_timestamps=False,
+            segments=tuple(segments),
+            artifact_path=auto_path,
         )
     return None

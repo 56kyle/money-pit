@@ -50,6 +50,7 @@ from money_pit.pipeline.retrieval import make_retrieval_node
 from money_pit.pipeline.snapshot import make_snapshot_node
 from money_pit.pipeline.validator import make_validator_node
 from money_pit.schemas.enums import TerminalState
+from money_pit.schemas.execution_policy import ExecutionMode
 
 
 _THREAD_ID_CONFIG_KEY: str = "thread_id"
@@ -68,6 +69,25 @@ def _no_action_terminal(state: PipelineState) -> PipelineState:
     return result
 
 
+def _authority_aware_determination_router(
+    state: PipelineState,
+    execution_mode: ExecutionMode,
+    *,
+    legacy_injected_write_authority: bool,
+) -> str:
+    """Route legacy runs away from capital writes unless autonomy is explicit."""
+    route: str = determination_router(state)
+    if route != EXECUTE:
+        return route
+    if execution_mode is ExecutionMode.AUTONOMOUS:
+        return FINALIZE
+    if execution_mode is ExecutionMode.APPROVAL_REQUIRED and legacy_injected_write_authority:
+        return EXECUTE
+    if execution_mode in (ExecutionMode.OBSERVE, ExecutionMode.APPROVAL_REQUIRED):
+        return FINALIZE
+    raise AssertionError(f"Unhandled execution mode: {execution_mode!r}")
+
+
 def build_graph(
     *,
     fetch_portfolio: PortfolioFetcher,
@@ -78,14 +98,18 @@ def build_graph(
     config: Config,
     thesis_agent: ThesisAgent,
     resolve_instrument_facts: ResolveInstrumentFacts,
-    place_order: OrderPlacer,
+    place_order: OrderPlacer | None,
     observe_fill: FillObserver,
     send_email: EmailSender,
     manifest: ToolManifest | None = None,
     through: Stage | None = None,
+    legacy_injected_write_authority: bool | None = None,
 ) -> CompiledStateGraph[PipelineState]:
     """Assemble and compile the full money-pit LangGraph pipeline, pausing after `through` when one is named and raising PlanningChainError when `through` has no successor (see ADR 0035 and ADR 0038)."""
     builder: StateGraph[PipelineState] = StateGraph(state_schema=PipelineState)
+    resolved_legacy_authority: bool = (
+        place_order is not None if legacy_injected_write_authority is None else legacy_injected_write_authority
+    )
 
     builder.add_node(RECOVERY_NODE, make_recovery_node(observe_fill=observe_fill, send_email=send_email))
     builder.add_node("snapshot", make_snapshot_node(fetch_portfolio=fetch_portfolio))
@@ -104,9 +128,7 @@ def build_graph(
     )
     builder.add_node(
         "analysis",
-        make_analysis_node(
-            config=config, thesis_agent=thesis_agent, resolve_instrument_facts=resolve_instrument_facts
-        ),
+        make_analysis_node(config=config, thesis_agent=thesis_agent, resolve_instrument_facts=resolve_instrument_facts),
     )
     builder.add_node("validator", make_validator_node(manifest=manifest))
     builder.add_node("determination", make_determination_node())
@@ -137,7 +159,11 @@ def build_graph(
     builder.add_edge("validator", "determination")
     builder.add_conditional_edges(
         "determination",
-        determination_router,
+        lambda state: _authority_aware_determination_router(
+            state,
+            config.execution_mode,
+            legacy_injected_write_authority=resolved_legacy_authority,
+        ),
         {EXECUTE: EXECUTION_NODE, NOTIFY: "notification", FINALIZE: "finalizer"},
     )
     builder.add_conditional_edges(

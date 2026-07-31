@@ -153,9 +153,7 @@ def test_text_adapter_process_computes_has_actionable_content(
 
 
 @pytest.fixture
-def persisted_payload_path(
-    processed_signal_set: tuple[SignalSet, Path], source_ref: SourceRef
-) -> Path:
+def persisted_payload_path(processed_signal_set: tuple[SignalSet, Path], source_ref: SourceRef) -> Path:
     _, cache_dir = processed_signal_set
     return cache_dir / source_id_to_dirname(source_ref.source_id) / "text_payload.json"
 
@@ -164,8 +162,6 @@ def test_text_adapter_persists_payload_before_llm(persisted_payload_path: Path) 
     assert persisted_payload_path.exists()
 
 
-def test_text_adapter_persisted_payload_round_trips(
-    persisted_payload_path: Path, text_payload: TextPayload
-) -> None:
+def test_text_adapter_persisted_payload_round_trips(persisted_payload_path: Path, text_payload: TextPayload) -> None:
     round_tripped = TextPayload.model_validate_json(persisted_payload_path.read_text(encoding="utf-8"))
     assert round_tripped == text_payload

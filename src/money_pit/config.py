@@ -1,4 +1,5 @@
 """Module responsible for handling config used throughout the money_pit package."""
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
@@ -16,6 +17,8 @@ from money_pit.constants import DEFAULT_SMTP_PORT
 from money_pit.constants import GMAIL_KEYRING_SERVICE
 from money_pit.constants import default_config_path
 from money_pit.constants import default_ingest_cache_dir
+from money_pit.schemas.execution_policy import BrokerEnvironment
+from money_pit.schemas.execution_policy import ExecutionMode
 
 
 ENV_PREFIX: str = "MONEY_PIT__"
@@ -30,13 +33,46 @@ class CredentialResolutionError(Exception):
     """Raised when a required secret or required credential config cannot be resolved."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class AlpacaCredentials:
-    """Resolved Alpaca API credentials plus the paper/live routing decision."""
+    """Resolved Alpaca API credentials plus the explicit broker environment."""
 
     api_key: str
     secret_key: SecretStr
-    paper: bool
+    broker_environment: BrokerEnvironment
+
+    def __init__(
+        self,
+        api_key: str,
+        secret_key: SecretStr,
+        broker_environment: BrokerEnvironment | None = None,
+        *,
+        paper: bool | None = None,
+    ) -> None:
+        """Resolve the deprecated paper flag into the typed broker environment.
+
+        Supplying both forms is accepted only when they agree. The compatibility keyword
+        is removed when the stepping-stone terminus in ADR 0046 is reached.
+        """
+        resolved_environment: BrokerEnvironment
+        if broker_environment is None:
+            if paper is None:
+                raise TypeError("broker_environment is required when paper is not supplied.")
+            resolved_environment = BrokerEnvironment.PAPER if paper else BrokerEnvironment.LIVE
+        else:
+            resolved_environment = broker_environment
+            if paper is not None:
+                legacy_environment: BrokerEnvironment = BrokerEnvironment.PAPER if paper else BrokerEnvironment.LIVE
+                if legacy_environment is not resolved_environment:
+                    raise ValueError("paper conflicts with broker_environment.")
+        object.__setattr__(self, "api_key", api_key)
+        object.__setattr__(self, "secret_key", secret_key)
+        object.__setattr__(self, "broker_environment", resolved_environment)
+
+    @property
+    def paper(self) -> bool:
+        """Return the alpaca-py compatibility flag for the explicit environment."""
+        return self.broker_environment is BrokerEnvironment.PAPER
 
 
 class Config(BaseSettings):
@@ -47,6 +83,15 @@ class Config(BaseSettings):
     alpaca_service: str
     alpaca_username: str
     alpaca_paper: bool
+    execution_mode: ExecutionMode = ExecutionMode.APPROVAL_REQUIRED
+    execution_policy_version: str | None = None
+    maximum_order_notional: float | None = Field(default=None, gt=0)
+    maximum_daily_turnover: float | None = Field(default=None, ge=0, le=1)
+
+    @property
+    def broker_environment(self) -> BrokerEnvironment:
+        """Translate the legacy MONEY_PIT__ALPACA_PAPER setting at the config boundary."""
+        return BrokerEnvironment.PAPER if self.alpaca_paper else BrokerEnvironment.LIVE
 
     gmail_address: str | None = None
     gmail_service: str = GMAIL_KEYRING_SERVICE
@@ -119,9 +164,7 @@ def load_config(path: Path | None = None) -> Config:
 def _require_non_blank_keyring_field(field: str, value: str, credential: str) -> None:
     """Raise CredentialResolutionError when a keyring lookup key is empty or whitespace-only."""
     if not value.strip():
-        raise CredentialResolutionError(
-            _BLANK_KEYRING_FIELD_MESSAGE.format(field=field, credential=credential)
-        )
+        raise CredentialResolutionError(_BLANK_KEYRING_FIELD_MESSAGE.format(field=field, credential=credential))
 
 
 def resolve_alpaca_credentials(config: Config) -> AlpacaCredentials:
@@ -136,7 +179,7 @@ def resolve_alpaca_credentials(config: Config) -> AlpacaCredentials:
     return AlpacaCredentials(
         api_key=config.alpaca_username,
         secret_key=SecretStr(secret_key),
-        paper=config.alpaca_paper,
+        broker_environment=config.broker_environment,
     )
 
 

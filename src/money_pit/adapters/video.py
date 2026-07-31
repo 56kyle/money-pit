@@ -44,4 +44,5 @@ class VideoAdapter(SourceAdapter[VideoPayload]):
             self._agent(payload),
             slug=payload.slug,
             source_ref=payload.source_ref,
+            allowed_evidence_fragment_ids=frozenset(fragment.fragment_id for fragment in payload.evidence_fragments),
         )

@@ -14,6 +14,8 @@ class ExecutionJournalEntry(BaseModel):
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
 
+    plan_id: str | None = None
+    plan_hash: str | None = None
     step_id: str
     group_id: str | None
     client_order_id: str
@@ -35,5 +37,7 @@ class ExecutionJournal(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
 
     slug: str
+    plan_id: str | None = None
+    plan_hash: str | None = None
     outcome: ExecutionOutcome | None
     entries: list[ExecutionJournalEntry]

@@ -8,8 +8,8 @@ EmailSendError / CredentialResolutionError TYPES and concrete header values, nev
 import smtplib
 from collections.abc import Iterator
 from email.message import EmailMessage
-from types import CellType
 from pathlib import Path
+from types import CellType
 from typing import TYPE_CHECKING
 
 import pytest

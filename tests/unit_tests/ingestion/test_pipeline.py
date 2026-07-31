@@ -4,6 +4,7 @@ Every stage is driven through an all-fake IngestionSeams so the whole pipeline r
 the only real I/O is the committed uploader caption fixture and the per-test tmp_path cache dir.
 """
 
+import json
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
@@ -36,6 +37,8 @@ _SLUG: str = "2026-06-18_14-30-00"
 _MAX_FRAMES: int = 40
 _GOLDEN_NAME: str = "expected_video_payload.json"
 
+_INVALID_URL_ERROR: str = "No recognizable YouTube video id"
+_EVIDENCE_GOLDEN_NAME: str = "expected_video_evidence_catalog.json"
 _EXPECTED_TRANSCRIPT: str = (
     "Welcome back to the channel, today we cover NVDA. "
     "The data center segment continues to show strong growth. "
@@ -128,7 +131,9 @@ def _make_fake_seams(uploader_caption_path: Path | None) -> _FakeSeams:
         _ = video
         calls.extractor += 1
         return [
-            Keyframe(timestamp=timestamp, image_path=out_dir / f"kf_{index}.png", locator=_seconds_to_locator(timestamp))
+            Keyframe(
+                timestamp=timestamp, image_path=out_dir / f"kf_{index}.png", locator=_seconds_to_locator(timestamp)
+            )
             for index, timestamp in enumerate(timestamps)
         ]
 
@@ -155,7 +160,7 @@ def test__source_id_from_url_with_valid(url: str) -> None:
 
 
 def test__source_id_from_url_with_invalid() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=_INVALID_URL_ERROR):
         _source_id_from_url("https://example.com/not-a-video")
 
 
@@ -212,9 +217,31 @@ def test_ingest_video_matches_golden(tmp_path: Path, uploader_vtt_path: Path, vi
     fake = _make_fake_seams(uploader_vtt_path)
 
     result = ingest_video(_URL, slug=_SLUG, cache_dir=tmp_path, seams=fake.seams, max_frames=_MAX_FRAMES)
-
+    legacy_result = result.model_copy(update={"evidence_assets": (), "evidence_fragments": ()})
     golden = video_data_folder / _GOLDEN_NAME
-    assert VideoPayload.model_validate_json(golden.read_text(encoding="utf-8")) == result
+    assert VideoPayload.model_validate_json(golden.read_text(encoding="utf-8")) == legacy_result
+
+
+def test_ingest_video_evidence_matches_golden(tmp_path: Path, uploader_vtt_path: Path, video_data_folder: Path) -> None:
+    fake = _make_fake_seams(uploader_vtt_path)
+
+    result = ingest_video(_URL, slug=_SLUG, cache_dir=tmp_path, seams=fake.seams, max_frames=_MAX_FRAMES)
+    catalog = {
+        "assets": [[asset.asset_id, asset.media_type, asset.local_path.name] for asset in result.evidence_assets],
+        "fragments": [
+            [
+                fragment.fragment_id,
+                fragment.asset_id,
+                fragment.kind,
+                fragment.locator.model_dump(mode="json"),
+                fragment.extracted_text,
+                fragment.cited_source_text,
+            ]
+            for fragment in result.evidence_fragments
+        ],
+    }
+    golden = video_data_folder / _EVIDENCE_GOLDEN_NAME
+    assert json.loads(golden.read_text(encoding="utf-8")) == catalog
 
 
 def test_ingest_video_second_run_skips_all_seams(tmp_path: Path, uploader_vtt_path: Path) -> None:

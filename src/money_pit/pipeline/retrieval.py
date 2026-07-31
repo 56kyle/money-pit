@@ -86,12 +86,12 @@ def _combine_fetch_results(results: list[FetchResult]) -> FetchResult:
     """Combine per-series fetch results into one, failing closed on any component error."""
     values: list[float] = []
     for result in results:
-        match result:
+        match result:  # pragma: no branch - FetchResult is an exhaustive discriminated union.
             case FetchError():
                 return result
             case FetchValue(value=value):
                 values.append(value)
-            case NoData():
+            case NoData():  # pragma: no branch - loop-back arc is compiler-generated.
                 continue
     if not values:
         return NoData()
@@ -127,7 +127,7 @@ def _deterministic_answer(question: Question, result: FetchResult) -> Answer:
     source_token: DataSourceToken = (
         _MACRO_REGIME_SOURCE if question.category == QuestionCategory.MACRO_REGIME else _PORTFOLIO_GAP_SOURCE
     )
-    match result:
+    match result:  # pragma: no branch - FetchResult is an exhaustive discriminated union.
         case FetchValue(value=value):
             data_retrieved: dict[str, object] | None = {"value": value}
             sources_used: list[DataSourceToken] = [source_token]
@@ -138,7 +138,7 @@ def _deterministic_answer(question: Question, result: FetchResult) -> Answer:
             sources_used = []
             answer = "Data unavailable."
             limitations = "Fetch returned no data."
-        case FetchError(reason=reason):
+        case FetchError(reason=reason):  # pragma: no branch - FetchResult is exhaustive here.
             logger.error(
                 "Deterministic fetch failed for question {question_id}: {reason}",
                 question_id=question.id,

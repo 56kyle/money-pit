@@ -402,9 +402,7 @@ def _materialize_action_steps(
                 step_id, slug, thesis.instrument, action, order_quantity
             )
         else:
-            execution_parameters = build_execution_params(
-                step_id, slug, thesis.instrument, action, order_notional
-            )
+            execution_parameters = build_execution_params(step_id, slug, thesis.instrument, action, order_notional)
         action_steps.append(_build_action_step(step_id, thesis, regime_tag, execution_parameters))
 
     return action_steps
@@ -461,9 +459,7 @@ def make_analysis_node(
             }
 
         candidate_instruments: list[str] = list(
-            dict.fromkeys(
-                thesis.instrument for thesis in container.theses if thesis.action_type in BUY_SIDES
-            )
+            dict.fromkeys(thesis.instrument for thesis in container.theses if thesis.action_type in BUY_SIDES)
         )
         candidate_facts: dict[str, InstrumentFacts] = {
             instrument: resolve_instrument_facts(instrument) for instrument in candidate_instruments

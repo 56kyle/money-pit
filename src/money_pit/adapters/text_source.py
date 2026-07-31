@@ -7,6 +7,7 @@ from money_pit.adapters.text_llm import TextPayload
 from money_pit.schemas.enums import SourceType
 from money_pit.schemas.provenance import SourceRef
 
+
 _SOURCE_ID_PREFIX: str = "note"
 _SOURCE_ID_HASH_LENGTH: int = 8
 

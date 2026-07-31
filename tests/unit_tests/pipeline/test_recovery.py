@@ -153,9 +153,7 @@ def test_reconcile_prior_run_with_open_leg_now_settled(
 ) -> None:
     entry = _make_entry(PRIOR_SLUG, "s1", open_phase)
     _write_journal(tmp_path, PRIOR_SLUG, prior_outcome, [entry])
-    observer = _ScriptedObserver(
-        {entry.client_order_id: build_fill_observation("filled", 8.0, 100.0)}
-    )
+    observer = _ScriptedObserver({entry.client_order_id: build_fill_observation("filled", 8.0, 100.0)})
 
     result = reconcile_prior_run(tmp_path, CURRENT_SLUG, observer)
 
@@ -177,9 +175,7 @@ def test_reconcile_prior_run_with_open_leg_still_open(
 ) -> None:
     entry = _make_entry(PRIOR_SLUG, "s1", ExecutionPhase.SUBMITTED)
     _write_journal(tmp_path, PRIOR_SLUG, prior_outcome, [entry])
-    observer = _ScriptedObserver(
-        {entry.client_order_id: build_fill_observation("accepted", None, None)}
-    )
+    observer = _ScriptedObserver({entry.client_order_id: build_fill_observation("accepted", None, None)})
 
     result = reconcile_prior_run(tmp_path, CURRENT_SLUG, observer)
 
@@ -195,9 +191,7 @@ def test_reconcile_prior_run_with_open_leg_still_open(
 def test_reconcile_prior_run_with_partially_filled_entry_still_open(tmp_path: Path) -> None:
     entry = _make_entry(PRIOR_SLUG, "s1", ExecutionPhase.PARTIALLY_FILLED)
     _write_journal(tmp_path, PRIOR_SLUG, ExecutionOutcome.EXECUTED_INCOMPLETE, [entry])
-    observer = _ScriptedObserver(
-        {entry.client_order_id: build_fill_observation("partially_filled", 3.0, 100.0)}
-    )
+    observer = _ScriptedObserver({entry.client_order_id: build_fill_observation("partially_filled", 3.0, 100.0)})
 
     result = reconcile_prior_run(tmp_path, CURRENT_SLUG, observer)
 

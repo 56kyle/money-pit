@@ -153,9 +153,7 @@ def _write_validation_artifacts(
         unmatched_steps=unmatched_ids,
         error=None,
     )
-    _ = (working_dir / VALIDATION_STATUS_FILENAME).write_text(
-        status_report.model_dump_json(indent=2), encoding="utf-8"
-    )
+    _ = (working_dir / VALIDATION_STATUS_FILENAME).write_text(status_report.model_dump_json(indent=2), encoding="utf-8")
 
 
 def make_validator_node(

@@ -1,5 +1,6 @@
 """Module containing the A1 LLM core (multimodal/text into SignalSetDraft) encapsulated inside the video adapter of the money_pit package."""
 
+import json
 from collections.abc import Callable
 from enum import Enum
 from typing import ClassVar
@@ -11,6 +12,8 @@ from pydantic_ai import Agent
 from money_pit.config import Config
 from money_pit.constants import OPENAI_MODEL_PREFIX
 from money_pit.prompt_loader import system_prompt
+from money_pit.schemas.evidence import EvidenceAsset
+from money_pit.schemas.evidence import EvidenceFragment
 from money_pit.schemas.provenance import SourceRef
 from money_pit.schemas.signal_draft import SignalSetDraft
 
@@ -34,9 +37,15 @@ class VideoPayload(BaseModel):
     transcript_source: TranscriptSource
     has_word_timestamps: bool
     on_screen_text: list[str]
+    evidence_assets: tuple[EvidenceAsset, ...] = ()
+    evidence_fragments: tuple[EvidenceFragment, ...] = ()
 
 
 _PROMPT_NAME: str = "agent_1"
+
+
+def _evidence_catalog_json(payload: VideoPayload) -> str:
+    return json.dumps([fragment.model_dump(mode="json") for fragment in payload.evidence_fragments], indent=2)
 
 
 def _build_user_message(payload: VideoPayload) -> str:
@@ -46,6 +55,7 @@ def _build_user_message(payload: VideoPayload) -> str:
         + "\n\n## Transcript\n"
         + payload.transcript
         + ("\n\n## On-Screen Text\n" + "\n".join(payload.on_screen_text) if payload.on_screen_text else "")
+        + ("\n\n## Evidence Fragment Catalog\n" + _evidence_catalog_json(payload) if payload.evidence_fragments else "")
         + "\n\n## Transcript Provenance\n"
         + f"Source: {payload.transcript_source.value}, word-level timestamps: {payload.has_word_timestamps}"
     )

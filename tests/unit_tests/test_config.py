@@ -16,9 +16,9 @@ from pydantic import ValidationError
 from pytest import FixtureRequest
 from pytest import MonkeyPatch
 
+from money_pit.config import _BLANK_KEYRING_FIELD_MESSAGE
 from money_pit.config import DEFAULT_OWNER_RECIPIENT
 from money_pit.config import ENV_PREFIX
-from money_pit.config import _BLANK_KEYRING_FIELD_MESSAGE
 from money_pit.config import AlpacaCredentials
 from money_pit.config import Config
 from money_pit.config import CredentialResolutionError
@@ -32,9 +32,7 @@ from money_pit.constants import GMAIL_KEYRING_SERVICE
 from tests.unit_tests.conftest import InMemoryKeyring
 
 
-_REQUIRED_ENV_WITHOUT_PAPER: str = (
-    "MONEY_PIT__ALPACA_SERVICE=alpaca-paper\nMONEY_PIT__ALPACA_USERNAME=alpaca-api-key\n"
-)
+_REQUIRED_ENV_WITHOUT_PAPER: str = "MONEY_PIT__ALPACA_SERVICE=alpaca-paper\nMONEY_PIT__ALPACA_USERNAME=alpaca-api-key\n"
 _REQUIRED_ENV: str = f"{_REQUIRED_ENV_WITHOUT_PAPER}MONEY_PIT__ALPACA_PAPER=true\n"
 
 
@@ -321,7 +319,9 @@ def test_load_config_with_alpaca_paper_unset(env_file: Path) -> None:
     assert f"{ENV_PREFIX}ALPACA_PAPER" in str(exc_info.value)
 
 
-@pytest.mark.parametrize("env_file__content", [f"{_REQUIRED_ENV_WITHOUT_PAPER}MONEY_PIT__ALPACA_PAPER=notabool\n"], indirect=True)
+@pytest.mark.parametrize(
+    "env_file__content", [f"{_REQUIRED_ENV_WITHOUT_PAPER}MONEY_PIT__ALPACA_PAPER=notabool\n"], indirect=True
+)
 def test_load_config_with_alpaca_paper_mistyped(env_file: Path) -> None:
     with pytest.raises(ValidationError):
         _ = load_config(env_file)

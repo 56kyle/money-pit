@@ -51,6 +51,22 @@ def test_video_payload_serializes_round_trip(video_payload: VideoPayload) -> Non
     assert round_tripped == video_payload
 
 
+def test_video_payload_loads_legacy_cache_without_evidence(source_ref: SourceRef) -> None:
+    legacy_payload = VideoPayload.model_validate(
+        {
+            "slug": "legacy",
+            "source_ref": source_ref.model_dump(mode="json"),
+            "transcript": "Legacy cached transcript.",
+            "transcript_source": "uploader_captions",
+            "has_word_timestamps": False,
+            "on_screen_text": [],
+        }
+    )
+
+    assert legacy_payload.evidence_assets == ()
+    assert legacy_payload.evidence_fragments == ()
+
+
 @pytest.mark.parametrize(
     "video_payload__on_screen_text",
     [["[00:00:05] NVDA chart", "[00:00:05] Source: Bloomberg"]],

@@ -17,6 +17,7 @@ from money_pit.contracts import OrderPlacer
 from money_pit.mcp.constants import PLACE_STOCK_ORDER_TOOL
 from money_pit.pipeline.execution import OrderSubmissionError
 from money_pit.schemas.action_steps import ExecutionParameters
+from money_pit.schemas.execution_policy import BrokerEnvironment
 
 
 _ALPACA_MCP_COMMAND: str = "alpaca-mcp-server"
@@ -25,9 +26,13 @@ _ALPACA_WRITE_TOOLSET: str = "trading"
 _ORDER_ID_KEYS: tuple[str, ...] = ("id", "order_id", "broker_order_id", "client_order_id")
 
 
-def _paper_flag(paper: bool) -> str:
-    """Return the ALPACA_PAPER_TRADE env value for a paper/live boolean."""
-    return "true" if paper else "false"
+def _paper_flag(environment: BrokerEnvironment) -> str:
+    """Return the ALPACA_PAPER_TRADE value for an explicit broker environment."""
+    if environment is BrokerEnvironment.PAPER:
+        return "true"
+    if environment is BrokerEnvironment.LIVE:
+        return "false"
+    raise AssertionError(f"Unhandled broker environment: {environment!r}")
 
 
 def _write_env(credentials: AlpacaCredentials) -> dict[str, str]:
@@ -35,7 +40,7 @@ def _write_env(credentials: AlpacaCredentials) -> dict[str, str]:
     return {
         "ALPACA_API_KEY": credentials.api_key,
         "ALPACA_SECRET_KEY": credentials.secret_key.get_secret_value(),
-        "ALPACA_PAPER_TRADE": _paper_flag(credentials.paper),
+        "ALPACA_PAPER_TRADE": _paper_flag(credentials.broker_environment),
         "ALPACA_TOOLSETS": _ALPACA_WRITE_TOOLSET,
     }
 

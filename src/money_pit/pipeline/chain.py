@@ -7,7 +7,9 @@ from typing import Literal
 RECOVERY_NODE: Literal["recovery"] = "recovery"
 EXECUTION_NODE: Literal["execution"] = "execution"
 
-_UNCHAINED_STAGE_MESSAGE: str = "Stage '{stage}' is absent from the linear planning chain, so no successor to it exists."
+_UNCHAINED_STAGE_MESSAGE: str = (
+    "Stage '{stage}' is absent from the linear planning chain, so no successor to it exists."
+)
 _TERMINAL_STAGE_MESSAGE: str = "Stage '{stage}' ends the linear planning chain, so no successor to it exists."
 
 

@@ -1,10 +1,18 @@
 """Module containing YouTube-channel new-episode detection over the Atom RSS feed for the money_pit package."""
 
+from __future__ import annotations
+
 from collections.abc import Callable
+from collections.abc import Mapping
+from typing import Protocol
 from typing import TypeAlias
-from xml.etree import ElementTree
+from typing import cast
+from typing import runtime_checkable
 
 import requests
+from defusedxml.common import DefusedXmlException
+from defusedxml.ElementTree import ParseError
+from defusedxml.ElementTree import fromstring
 
 
 _RSS_URL_TEMPLATE: str = "https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
@@ -19,6 +27,22 @@ _VIDEO_ID_PATH: str = f"{{{_YT_NS}}}videoId"
 HttpGet: TypeAlias = Callable[[str], str]
 
 
+@runtime_checkable
+class XmlElement(Protocol):
+    """Structural XML element boundary returned by the hardened parser."""
+
+    text: str | None
+    attrib: Mapping[str, str]
+
+    def find(self, path: str) -> XmlElement | None:
+        """Return the first matching child element."""
+        ...
+
+    def findall(self, path: str) -> list[XmlElement]:
+        """Return all matching child elements."""
+        ...
+
+
 class EpisodeDetectionError(Exception):
     """Raised when the channel feed is empty or malformed so the scheduler fails loudly rather than acting on garbage."""
 
@@ -26,15 +50,18 @@ class EpisodeDetectionError(Exception):
 def _parse_latest_video_id(rss_xml: str) -> str:
     """Return the newest entry's videoId from the Atom feed, raising EpisodeDetectionError when it cannot be parsed."""
     try:
-        root: ElementTree.Element = ElementTree.fromstring(rss_xml)
-    except ElementTree.ParseError as error:
+        parsed_root: object = cast("object", fromstring(rss_xml))
+        if not isinstance(parsed_root, XmlElement):
+            raise EpisodeDetectionError("Channel feed XML has an invalid root.")
+        root: XmlElement = parsed_root
+    except (ParseError, DefusedXmlException) as error:
         raise EpisodeDetectionError(f"Channel feed XML is unparseable: {error}") from error
 
-    entry: ElementTree.Element | None = root.find(_ENTRY_PATH)
+    entry: XmlElement | None = root.find(_ENTRY_PATH)
     if entry is None:
         raise EpisodeDetectionError("Channel feed has no entries; cannot determine the newest video id.")
 
-    video_id_element: ElementTree.Element | None = entry.find(_VIDEO_ID_PATH)
+    video_id_element: XmlElement | None = entry.find(_VIDEO_ID_PATH)
     video_id: str | None = video_id_element.text if video_id_element is not None else None
     if not video_id:
         raise EpisodeDetectionError("Newest channel feed entry has no non-empty videoId.")

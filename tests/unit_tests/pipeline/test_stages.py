@@ -173,9 +173,7 @@ def test_stage_input_is_present_in_with_empty_directory(signals_input: StageInpu
     assert not signals_input.is_present_in(run_dir)
 
 
-def test_stage_input_is_present_in_with_directory_holding_a_json_file(
-    signals_input: StageInput, run_dir: Path
-) -> None:
+def test_stage_input_is_present_in_with_directory_holding_a_json_file(signals_input: StageInput, run_dir: Path) -> None:
     signals_dir: Path = run_dir / SIGNALS_DIRNAME
     signals_dir.mkdir()
     _ = (signals_dir / "a_signal.json").write_text("{}", encoding="utf-8")
@@ -294,7 +292,7 @@ _EXCLUDED_STAGE_VALUES: list[str] = ["recovery", "notification", "execution"]
 
 @pytest.mark.parametrize("excluded", _EXCLUDED_STAGE_VALUES)
 def test_stage_excludes_the_capital_moving_and_owner_contacting_nodes(excluded: str) -> None:
-    """recovery and notification email the owner and execution places orders (ADR 0036).
+    """Recovery and notification email the owner and execution places orders (ADR 0036).
 
     Their absence from Stage is the safety property that keeps them reachable only through a full run, where
     the determination gate decides whether they run at all. Adding one here must be a deliberate act that

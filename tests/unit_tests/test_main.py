@@ -137,9 +137,7 @@ def test_pin_order_schema_with_success_strips_sentinel(
     runner: CliRunner, monkeypatch: MonkeyPatch, stub_credential_resolution: None, tmp_path: Path
 ) -> None:
     schema: dict[str, object] = {"type": "object", ALPACA_ORDER_SCHEMA_STUB_SENTINEL: True}
-    monkeypatch.setattr(
-        __main__, "list_write_tools", lambda _credentials: [_FakeTool("place_stock_order", schema)]
-    )
+    monkeypatch.setattr(__main__, "list_write_tools", lambda _credentials: [_FakeTool("place_stock_order", schema)])
     schema_path: Path = tmp_path / "alpaca_order_schema.json"
     monkeypatch.setattr(__main__, "ALPACA_ORDER_SCHEMA_PATH", schema_path)
 
@@ -196,7 +194,9 @@ def _make_ingest_seams(uploader_caption_path: Path) -> IngestionSeams:
     def fake_extractor(video: Path, timestamps: list[float], out_dir: Path) -> list[Keyframe]:
         _ = video
         return [
-            Keyframe(timestamp=timestamp, image_path=out_dir / f"kf_{index}.png", locator=_seconds_to_locator(timestamp))
+            Keyframe(
+                timestamp=timestamp, image_path=out_dir / f"kf_{index}.png", locator=_seconds_to_locator(timestamp)
+            )
             for index, timestamp in enumerate(timestamps)
         ]
 
@@ -422,9 +422,7 @@ def test_analyze_text_command_registered() -> None:
     assert any(command.name == "analyze-text" for command in __main__.app.registered_commands)
 
 
-def test_analyze_text_with_valid_exits_zero(
-    runner: CliRunner, stub_analyze_text: None, thesis_file: Path
-) -> None:
+def test_analyze_text_with_valid_exits_zero(runner: CliRunner, stub_analyze_text: None, thesis_file: Path) -> None:
     result = runner.invoke(__main__.app, ["analyze-text", str(thesis_file)])
 
     assert result.exit_code == 0
@@ -465,9 +463,7 @@ def empty_thesis_file(tmp_path: Path) -> Path:
     return path
 
 
-def test_analyze_text_with_missing_path_exits_one(
-    runner: CliRunner, stub_analyze_text: None, tmp_path: Path
-) -> None:
+def test_analyze_text_with_missing_path_exits_one(runner: CliRunner, stub_analyze_text: None, tmp_path: Path) -> None:
     result = runner.invoke(__main__.app, ["analyze-text", str(tmp_path / "missing.txt")])
 
     assert result.exit_code == 1
@@ -824,9 +820,7 @@ def test_stage_with_missing_prerequisite_leaves_the_run_directory_untouched(
     assert list(stage_run_dir.iterdir()) == []
 
 
-def test_stage_with_unknown_name_is_rejected_by_typer(
-    runner: CliRunner, stub_stage: None, stage_run_dir: Path
-) -> None:
+def test_stage_with_unknown_name_is_rejected_by_typer(runner: CliRunner, stub_stage: None, stage_run_dir: Path) -> None:
     """`execution` is not a Stage (ADR 0036), and typer's own enum parsing is what refuses it — a usage error."""
     result = runner.invoke(__main__.app, ["stage", "execution", "--run-dir", str(stage_run_dir)])
 

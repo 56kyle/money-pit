@@ -38,5 +38,6 @@ ThesisAgent: TypeAlias = Callable[[AggregatedSignals, PortfolioSnapshot, Initial
 PortfolioFetcher: TypeAlias = Callable[[str], PortfolioSnapshot]
 ResolveInstrumentFacts: TypeAlias = Callable[[str], InstrumentFacts]
 OrderPlacer: TypeAlias = Callable[[ExecutionParameters], str]
+OrderPlacerFactory: TypeAlias = Callable[[], OrderPlacer]
 FillObserver: TypeAlias = Callable[[str], FillObservation]
 EmailSender: TypeAlias = Callable[[str, str], None]

@@ -92,9 +92,7 @@ def test_send_email_sends_one_message(send_result: tuple[str, list[EmailMessage]
     ("header", "expected"),
     [("From", _SENDER_ADDRESS), ("To", _RECIPIENT), ("Subject", _SUBJECT)],
 )
-def test_send_email_composes_header(
-    send_result: tuple[str, list[EmailMessage]], header: str, expected: str
-) -> None:
+def test_send_email_composes_header(send_result: tuple[str, list[EmailMessage]], header: str, expected: str) -> None:
     _, sent = send_result
     assert sent[0][header] == expected
 

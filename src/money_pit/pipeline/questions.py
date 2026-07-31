@@ -247,9 +247,7 @@ def _make_llm_questions(
 
     claims_by_id: dict[str, Claim] = {c.claim_id: c for c in high_medium_claims}
     return [
-        question
-        for question in (_draft_to_question(draft, claims_by_id) for draft in drafts)
-        if question is not None
+        question for question in (_draft_to_question(draft, claims_by_id) for draft in drafts) if question is not None
     ]
 
 

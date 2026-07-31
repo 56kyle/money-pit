@@ -85,9 +85,7 @@ def test_run_stage_with_validator_reproduces_the_in_graph_validation(run_dir: Pa
 def test_run_stage_with_determination_reproduces_the_in_graph_verdict(run_dir: Path, stage_config: Config) -> None:
     """Re-running determination standalone rewrites determination_verdict.json to the graph's go/no-go."""
     artifact: Path = run_dir / DETERMINATION_VERDICT_JSON_FILENAME
-    from_full_run: DeterminationVerdict = DeterminationVerdict.model_validate_json(
-        artifact.read_text(encoding="utf-8")
-    )
+    from_full_run: DeterminationVerdict = DeterminationVerdict.model_validate_json(artifact.read_text(encoding="utf-8"))
     artifact.unlink()
 
     _ = run_stage(Stage.DETERMINATION, run_dir, stage_config)

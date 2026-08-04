@@ -73,10 +73,10 @@ def test_video_payload_loads_legacy_cache_without_evidence(source_ref: SourceRef
     indirect=True,
 )
 def test__build_user_message_with_on_screen_text_present(video_payload: VideoPayload) -> None:
-    """The On-Screen Text block renders its lines and Transcript Provenance follows it."""
+    """Legacy screen text remains available when the payload has no frame evidence."""
     message = _build_user_message(video_payload)
 
-    assert "## On-Screen Text" in message
+    assert "## Legacy On-Screen Text" in message
     assert "[00:00:05] NVDA chart" in message
     assert "[00:00:05] Source: Bloomberg" in message
     assert "## Transcript Provenance" in message
@@ -85,9 +85,10 @@ def test__build_user_message_with_on_screen_text_present(video_payload: VideoPay
 
 
 def test__build_user_message_with_on_screen_text_absent(video_payload: VideoPayload) -> None:
-    """An empty on_screen_text omits the On-Screen Text block but keeps Transcript and Provenance."""
+    """The bounded evidence block replaces the duplicated transcript and catalog blocks."""
     message = _build_user_message(video_payload)
 
-    assert "## On-Screen Text" not in message
-    assert "## Transcript\n" in message
+    assert "## Legacy On-Screen Text" not in message
+    assert "## Evidence\n" in message
+    assert "## Transcript\n" not in message
     assert "## Transcript Provenance" in message

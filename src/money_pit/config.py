@@ -3,12 +3,14 @@
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
+from typing import Self
 
 import keyring
 from dotenv import load_dotenv
 from pydantic import Field
 from pydantic import SecretStr
 from pydantic import ValidationError
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from pydantic_settings import SettingsConfigDict
 
@@ -125,6 +127,8 @@ class Config(BaseSettings):
     threshold_factor_quality_margin: float = 0.15
     threshold_factor_low_vol_beta: float = 0.90
     llm_model: str = _DEFAULT_LLM_MODEL
+    video_llm_context_character_budget: int = Field(default=160_000, ge=64_000)
+    video_llm_response_character_reserve: int = Field(default=32_000, ge=8_000)
     youtube_channel_id: str | None = None
     scene_detect_threshold: float = 27.0
     keyframe_max_frames: int = 40
@@ -134,6 +138,13 @@ class Config(BaseSettings):
     whisper_compute_type: str = "float16"
     fred_api_key: SecretStr | None = None
     brave_api_key: SecretStr | None = None
+
+    @model_validator(mode="after")
+    def validate_video_llm_budget(self) -> Self:
+        """Require the response reserve to leave capacity for video input."""
+        if self.video_llm_response_character_reserve >= self.video_llm_context_character_budget:
+            raise ValueError("video_llm_response_character_reserve must be less than the context budget.")
+        return self
 
 
 def _missing_required_env_vars(error: ValidationError) -> list[str]:

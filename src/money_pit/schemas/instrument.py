@@ -1,5 +1,6 @@
-"""Module containing the InstrumentFacts reference-data model for a candidate instrument in the money_pit package."""
+"""Module containing typed instrument classification contracts."""
 
+from enum import StrEnum
 from typing import ClassVar
 
 from pydantic import BaseModel
@@ -14,3 +15,13 @@ class InstrumentFacts(BaseModel):
     sector: str
     is_etf: bool
     holdings: list[str]
+
+
+class InstrumentExposureClass(StrEnum):
+    """Deterministic exposure category used by portfolio constraints."""
+
+    SINGLE_STOCK = "single_stock"
+    BROAD_MARKET_EQUITY_ETF = "broad_market_equity_etf"
+    THEMATIC_EQUITY_ETF = "thematic_equity_etf"
+    FIXED_INCOME_ETF = "fixed_income_etf"
+    CASH_EQUIVALENT_ETF = "cash_equivalent_etf"

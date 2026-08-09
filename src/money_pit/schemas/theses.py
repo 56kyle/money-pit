@@ -66,6 +66,7 @@ class CandidateThesis(BaseModel):
     candidate_thesis_id: str = Field(min_length=1)
     subject: str = Field(min_length=1)
     direction: ThesisDirection
+    instrument_reference: str | None = Field(default=None, min_length=1)
     instrument: str | None = Field(default=None, min_length=1)
     theme: str | None = Field(default=None, min_length=1)
     horizon_class: HorizonClass

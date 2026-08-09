@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from money_pit.claims.repository import ClaimRepository
+from money_pit.config import Config
 from money_pit.evidence.processors import builtin_evidence_processors
 from money_pit.evidence.repository import EvidenceProcessingAttemptRepository
 from money_pit.evidence.work import EvidenceWorkStore
@@ -40,6 +41,7 @@ def build_research_runtime(
     *,
     claims: ClaimRepository,
     interpreter: InterpretationService,
+    environment: Config,
     clock: Callable[[], datetime] = utc_now,
 ) -> ResearchRuntime:
     """Compose persistent evidence work and bounded research adapters."""
@@ -50,7 +52,7 @@ def build_research_runtime(
         repository,
         SourceRepository(database),
         EvidenceRepository(database),
-        builtin_evidence_processors(),
+        builtin_evidence_processors(environment),
         EvidenceProcessingAttemptRepository(database),
         asset_store,
         clock=clock,

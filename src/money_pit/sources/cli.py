@@ -7,6 +7,9 @@ from typing import TYPE_CHECKING
 
 import typer
 
+from money_pit.config import Config
+from money_pit.config import ConfigurationError
+from money_pit.config import load_config
 from money_pit.constants import ASSETS_DIRNAME
 from money_pit.constants import DATA_ROOT
 from money_pit.constants import STATE_DATABASE_FILENAME
@@ -38,7 +41,8 @@ _DEFAULT_SOURCES_PATH = default_sources_path()
 def _source_runtime(
     sources_path: Path,
 ) -> tuple[SourceSyncService, SourceRepository]:
-    adapters: AdapterRegistry = builtin_adapter_registry()
+    environment: Config = load_config()
+    adapters: AdapterRegistry = builtin_adapter_registry(environment)
     document: SourceRegistryDocument = load_source_registry(sources_path, adapters)
     database = Database(DATA_ROOT / STATE_DATABASE_FILENAME)
     database.initialize()
@@ -50,7 +54,7 @@ def _source_runtime(
         EvidenceRepository(database),
         AssetStore(DATA_ROOT / ASSETS_DIRNAME),
         attempt_repository=EvidenceProcessingAttemptRepository(database),
-        processor_registry=builtin_evidence_processors(),
+        processor_registry=builtin_evidence_processors(environment),
     )
     _ = service.register_definitions()
     return service, repository
@@ -64,7 +68,7 @@ def list_sources(
     try:
         _, repository = _source_runtime(sources_path)
         definitions: tuple[SourceDefinition, ...] = repository.list_definitions()
-    except (SourceError, StorageError, OSError) as error:
+    except (ConfigurationError, SourceError, StorageError, OSError) as error:
         typer.echo(f"Cannot list sources: {error}", err=True)
         raise typer.Exit(code=1) from error
     for definition in definitions:
@@ -81,7 +85,7 @@ def sync(
     try:
         service, _ = _source_runtime(sources_path)
         result: SourceSyncResult = service.sync(source_id)
-    except (SourceError, StorageError, OSError) as error:
+    except (ConfigurationError, SourceError, StorageError, OSError) as error:
         typer.echo(f"Cannot sync source {source_id}: {error}", err=True)
         raise typer.Exit(code=1) from error
     typer.echo(result.model_dump_json(indent=2))
@@ -100,7 +104,7 @@ def backfill(
             source_id,
             maximum_batches=maximum_batches,
         )
-    except (SourceError, StorageError, OSError) as error:
+    except (ConfigurationError, SourceError, StorageError, OSError) as error:
         typer.echo(f"Cannot backfill source {source_id}: {error}", err=True)
         raise typer.Exit(code=1) from error
     for result in results:

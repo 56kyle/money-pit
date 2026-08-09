@@ -143,4 +143,4 @@ def test_constrain_optimization_input_with_material_contradiction_denies_buy(
         liquidity_maximum_weights={"AAPL": 1.0, "SPY": 1.0, "XOM": 1.0},
     )
 
-    assert limited.maximum_weights["AAPL"] == 0.0
+    assert limited.maximum_weights["AAPL"] == optimization_input.current_weights["AAPL"]

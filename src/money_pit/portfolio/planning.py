@@ -254,6 +254,7 @@ class DeterministicPortfolioPlanningService:
             liquidity_maximum_weights=inputs.liquidity_maximum_weights,
         )
         result = self._optimizer.optimize(constrained, self._policy)
+        _require_planning_result_coverage(inputs, result.target_weights)
         decision_id: str = _stable_id("decision", request.run_id, decision_at, self._implementation_version)
         decision = DecisionSnapshot.from_payload(
             decision_id,
@@ -347,7 +348,12 @@ class DeterministicPortfolioPlanningService:
                 turnover_estimate=result.turnover,
                 tax_estimate=_plan_tax_estimate(trades),
                 evidence_gate_results=_evidence_gate_results(trades, decisions_by_instrument),
-                constraint_results=_constraint_results(result.target_weights, result.turnover, self._policy),
+                constraint_results=_constraint_results(
+                    result.target_weights,
+                    result.turnover,
+                    self._policy,
+                    maximum_weights=constrained.maximum_weights,
+                ),
                 historical_non_executable=not request.execution_eligible,
             )
         )
@@ -382,6 +388,25 @@ def _require_point_in_time_inputs(inputs: PortfolioPlanningInputs, *, as_of: dat
     )
     if any(actual != expected for actual, expected in expected_ids):
         raise PlanningInputError("optimization inputs are bound to different snapshots")
+    optimization_instruments = set(inputs.optimization_input.expected_returns)
+    quote_instruments = {quote.instrument for quote in inputs.market_snapshot.payload.quotes}
+    if not optimization_instruments <= quote_instruments:
+        missing = sorted(optimization_instruments - quote_instruments)
+        raise PlanningInputError(f"market snapshot lacks optimization quotes: {missing}")
+
+
+def _require_planning_result_coverage(
+    inputs: PortfolioPlanningInputs,
+    target_weights: dict[str, float],
+) -> None:
+    """Bind optimizer output to its exact instruments and required trade metadata."""
+    optimization_instruments = set(inputs.optimization_input.expected_returns)
+    target_instruments = set(target_weights)
+    if target_instruments != optimization_instruments:
+        raise PlanningInputError("target weights must exactly cover optimization instruments")
+    missing_kinds = sorted(target_instruments - set(inputs.instrument_kinds))
+    if missing_kinds:
+        raise PlanningInputError(f"instrument kinds do not cover target instruments: {missing_kinds}")
 
 
 def _proposed_trades(
@@ -397,8 +422,9 @@ def _proposed_trades(
     positions = {item.instrument: item for item in inputs.portfolio_snapshot.payload.positions}
     quotes = {item.instrument: item for item in inputs.market_snapshot.payload.quotes}
     instruments: set[str] = set(target_weights)
-    if set(quotes) != instruments:
-        raise PlanningInputError("market quotes must exactly cover target instruments")
+    missing_quotes = sorted(instruments - set(quotes))
+    if missing_quotes:
+        raise PlanningInputError(f"market snapshot lacks target quotes: {missing_quotes}")
     total_value: float = inputs.portfolio_snapshot.payload.available_cash + sum(
         item.market_value for item in positions.values()
     )
@@ -555,14 +581,16 @@ def _constraint_results(
     target_weights: dict[str, float],
     turnover: float,
     policy: PortfolioPolicy,
+    *,
+    maximum_weights: dict[str, float],
 ) -> dict[str, bool]:
     return {
         "long_only": all(weight >= 0 for weight in target_weights.values()),
         "cash_minimum": sum(target_weights.values()) <= 1 - policy.minimum_cash_weight + policy.feasibility_tolerance,
         "turnover": turnover <= policy.maximum_turnover + policy.feasibility_tolerance,
         "position_limits": all(
-            weight <= policy.maximum_position_weight + policy.feasibility_tolerance
-            for weight in target_weights.values()
+            weight <= maximum_weights[instrument] + policy.feasibility_tolerance
+            for instrument, weight in target_weights.items()
         ),
     }
 
@@ -585,8 +613,8 @@ def constrain_optimization_input(
     """Prevent ineligible or illiquid candidates from gaining exposure."""
     instruments: set[str] = set(optimization_input.expected_returns)
     decisions: dict[str, EligibilityDecision] = {item.instrument: item for item in eligibility}
-    if len(decisions) != len(eligibility) or set(decisions) != instruments:
-        raise PlanningInputError("eligibility decisions must exactly cover optimization instruments")
+    if len(decisions) != len(eligibility) or not instruments <= set(decisions):
+        raise PlanningInputError("eligibility decisions must cover every optimization instrument")
     if set(liquidity_maximum_weights) != instruments:
         raise PlanningInputError("liquidity limits must exactly cover optimization instruments")
     maximum_weights: dict[str, float] = {}
@@ -605,7 +633,8 @@ def constrain_optimization_input(
         else:
             authority_limit = 0.0
             expected_returns[instrument] = min(0.0, expected_returns[instrument])
-        maximum_weights[instrument] = min(authority_limit, liquidity_limit)
+        configured_limit = optimization_input.maximum_weights.get(instrument, 1.0)
+        maximum_weights[instrument] = max(current_weight, min(authority_limit, liquidity_limit, configured_limit))
     return optimization_input.model_copy(
         update={
             "expected_returns": expected_returns,

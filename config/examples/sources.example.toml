@@ -1,62 +1,39 @@
 version = "0.0.2"
 
+# Credential-dependent sources remain disabled until the matching secret is configured.
 [[sources]]
-source_id = "manual-research"
-adapter_name = "local_text"
-enabled = true
-locator = "manual:research"
-provenance_group = "manual-research"
-allowed_uses = ["interpretation", "thesis_generation", "portfolio_decision"]
-
+source_id = "fx-evolution-youtube"
+adapter_name = "youtube"
+enabled = false
+locator = "UUvJZEG5x-DVYZKTz--pS39w"
+provenance_group = "fx-evolution"
+allowed_uses = ["interpretation", "thesis_generation"]
+tags = ["commentary", "video"]
+adapter_config = { max_results = 25, max_sync_pages = 20, max_media_bytes = 536870912 }
 [[sources.trust_settings]]
 category = "factual"
 level = "commentary"
-
+[[sources.trust_settings]]
+category = "forecast"
+level = "commentary"
 [[sources.trust_settings]]
 category = "opinion"
 level = "commentary"
+[[sources.trust_settings]]
+category = "strategy"
+level = "commentary"
 
-# Enable these provider policies only after configuring their matching .env credentials.
 [[sources]]
 source_id = "research-brave"
 adapter_name = "web"
 enabled = false
 locator = "https://api.search.brave.com/res/v1/web/search"
-provenance_group = "web-search"
+provenance_group = "brave-search"
 allowed_uses = ["interpretation", "thesis_generation", "factual_verification"]
 tags = ["research-provider", "provider:brave"]
-
 [[sources.trust_settings]]
 category = "factual"
 level = "untrusted"
-
-# Brave destinations need explicit publisher policies. Unknown hosts fail closed.
-# Give syndicated copies the same provenance_group as their upstream origin.
-[[sources]]
-source_id = "research-publisher-example"
-adapter_name = "web"
-enabled = false
-locator = "https://investor.example.com/"
-provenance_group = "issuer-example-primary"
-allowed_uses = ["interpretation", "thesis_generation", "factual_verification"]
-tags = ["research-publisher", "provider:brave"]
-
-[[sources.trust_settings]]
-category = "factual"
-level = "authoritative_primary"
-
-[[sources]]
-source_id = "research-syndicated-example"
-adapter_name = "web"
-enabled = false
-locator = "https://syndicated.example.net/"
-provenance_group = "issuer-example-primary"
-allowed_uses = ["interpretation", "thesis_generation", "factual_verification"]
-tags = ["research-publisher", "provider:brave"]
-
-[[sources.trust_settings]]
-category = "factual"
-level = "independent_secondary"
 
 [[sources]]
 source_id = "research-edgar"
@@ -66,7 +43,6 @@ locator = "https://www.sec.gov/edgar/search/"
 provenance_group = "sec-edgar"
 allowed_uses = ["interpretation", "thesis_generation", "factual_verification", "portfolio_decision"]
 tags = ["research-provider", "provider:edgar"]
-
 [[sources.trust_settings]]
 category = "factual"
 level = "authoritative_primary"
@@ -77,9 +53,154 @@ adapter_name = "web"
 enabled = false
 locator = "https://api.stlouisfed.org/fred/series/observations"
 provenance_group = "fred"
-allowed_uses = ["interpretation", "thesis_generation", "factual_verification"]
+allowed_uses = ["interpretation", "thesis_generation", "factual_verification", "portfolio_decision"]
 tags = ["research-provider", "provider:fred"]
-
 [[sources.trust_settings]]
 category = "factual"
 level = "authoritative_primary"
+
+# Brave may fetch only explicitly approved publisher origins. Enable these policies
+# together with research-brave; unknown destinations fail closed.
+[[sources]]
+source_id = "publisher-sec"
+adapter_name = "web"
+enabled = false
+locator = "https://www.sec.gov/"
+provenance_group = "sec-edgar"
+allowed_uses = ["interpretation", "thesis_generation", "factual_verification", "portfolio_decision"]
+tags = ["research-publisher", "provider:brave"]
+[[sources.trust_settings]]
+category = "factual"
+level = "authoritative_primary"
+
+[[sources]]
+source_id = "publisher-federal-reserve"
+adapter_name = "web"
+enabled = false
+locator = "https://www.federalreserve.gov/"
+provenance_group = "federal-reserve"
+allowed_uses = ["interpretation", "thesis_generation", "factual_verification", "portfolio_decision"]
+tags = ["research-publisher", "provider:brave"]
+[[sources.trust_settings]]
+category = "factual"
+level = "authoritative_primary"
+
+[[sources]]
+source_id = "publisher-economic-data"
+adapter_name = "web"
+enabled = false
+locator = "https://fred.stlouisfed.org/"
+provenance_group = "fred"
+allowed_uses = ["interpretation", "thesis_generation", "factual_verification", "portfolio_decision"]
+tags = ["research-publisher", "provider:brave"]
+[[sources.trust_settings]]
+category = "factual"
+level = "authoritative_primary"
+
+[[sources]]
+source_id = "publisher-labor-statistics"
+adapter_name = "web"
+enabled = false
+locator = "https://www.bls.gov/"
+provenance_group = "bls"
+allowed_uses = ["interpretation", "thesis_generation", "factual_verification", "portfolio_decision"]
+tags = ["research-publisher", "provider:brave"]
+[[sources.trust_settings]]
+category = "factual"
+level = "authoritative_primary"
+
+[[sources]]
+source_id = "publisher-economic-analysis"
+adapter_name = "web"
+enabled = false
+locator = "https://www.bea.gov/"
+provenance_group = "bea"
+allowed_uses = ["interpretation", "thesis_generation", "factual_verification", "portfolio_decision"]
+tags = ["research-publisher", "provider:brave"]
+[[sources.trust_settings]]
+category = "factual"
+level = "authoritative_primary"
+
+[[sources]]
+source_id = "publisher-treasury"
+adapter_name = "web"
+enabled = false
+locator = "https://home.treasury.gov/"
+provenance_group = "us-treasury"
+allowed_uses = ["interpretation", "thesis_generation", "factual_verification", "portfolio_decision"]
+tags = ["research-publisher", "provider:brave"]
+[[sources.trust_settings]]
+category = "factual"
+level = "authoritative_primary"
+
+[[sources]]
+source_id = "publisher-alphabet"
+adapter_name = "web"
+enabled = false
+locator = "https://abc.xyz/investor/"
+provenance_group = "alphabet-primary"
+allowed_uses = ["interpretation", "thesis_generation", "factual_verification", "portfolio_decision"]
+tags = ["research-publisher", "provider:brave"]
+[[sources.trust_settings]]
+category = "factual"
+level = "authoritative_primary"
+
+[[sources]]
+source_id = "publisher-intel"
+adapter_name = "web"
+enabled = false
+locator = "https://www.intc.com/"
+provenance_group = "intel-primary"
+allowed_uses = ["interpretation", "thesis_generation", "factual_verification", "portfolio_decision"]
+tags = ["research-publisher", "provider:brave"]
+[[sources.trust_settings]]
+category = "factual"
+level = "authoritative_primary"
+
+[[sources]]
+source_id = "publisher-rivian"
+adapter_name = "web"
+enabled = false
+locator = "https://rivian.com/investors"
+provenance_group = "rivian-primary"
+allowed_uses = ["interpretation", "thesis_generation", "factual_verification", "portfolio_decision"]
+tags = ["research-publisher", "provider:brave"]
+[[sources.trust_settings]]
+category = "factual"
+level = "authoritative_primary"
+
+[[sources]]
+source_id = "publisher-vanguard"
+adapter_name = "web"
+enabled = false
+locator = "https://investor.vanguard.com/"
+provenance_group = "vanguard-primary"
+allowed_uses = ["interpretation", "thesis_generation", "factual_verification", "portfolio_decision"]
+tags = ["research-publisher", "provider:brave"]
+[[sources.trust_settings]]
+category = "factual"
+level = "authoritative_primary"
+
+[[sources]]
+source_id = "publisher-ishares"
+adapter_name = "web"
+enabled = false
+locator = "https://www.ishares.com/"
+provenance_group = "ishares-primary"
+allowed_uses = ["interpretation", "thesis_generation", "factual_verification", "portfolio_decision"]
+tags = ["research-publisher", "provider:brave"]
+[[sources.trust_settings]]
+category = "factual"
+level = "authoritative_primary"
+
+[[sources]]
+source_id = "publisher-reuters"
+adapter_name = "web"
+enabled = false
+locator = "https://www.reuters.com/"
+provenance_group = "reuters"
+allowed_uses = ["interpretation", "thesis_generation", "factual_verification", "portfolio_decision"]
+tags = ["research-publisher", "provider:brave"]
+[[sources.trust_settings]]
+category = "factual"
+level = "independent_secondary"

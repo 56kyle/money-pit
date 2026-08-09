@@ -12,6 +12,7 @@ from money_pit.portfolio.optimizer import OptimizationInput
 from money_pit.portfolio.policy import PortfolioPolicy
 from money_pit.schemas.execution_policy import BrokerEnvironment
 from money_pit.schemas.execution_policy import TradableAssetClass
+from money_pit.schemas.instrument import InstrumentExposureClass
 from money_pit.schemas.portfolio_plan import PlanTaxEstimate
 from money_pit.schemas.portfolio_plan import PortfolioPlan
 from money_pit.schemas.portfolio_plan import PortfolioPlanPayload
@@ -47,9 +48,14 @@ def optimization_input(request: FixtureRequest) -> OptimizationInput:
                 "XOM": {"AAPL": 0.009, "SPY": 0.012, "XOM": 0.06},
             },
             sectors={"AAPL": "technology", "SPY": "broad_market", "XOM": "energy"},
-            satellite_instruments=frozenset({"AAPL", "XOM"}),
+            exposure_classes={
+                "AAPL": InstrumentExposureClass.SINGLE_STOCK,
+                "SPY": InstrumentExposureClass.BROAD_MARKET_EQUITY_ETF,
+                "XOM": InstrumentExposureClass.SINGLE_STOCK,
+            },
             tax_cost_per_sold_weight={"AAPL": 0.0, "SPY": 0.0, "XOM": 0.0},
             tax_cost_known={"AAPL": True, "SPY": True, "XOM": True},
+            maximum_weights={"AAPL": 0.3, "SPY": 0.6, "XOM": 0.25},
         ),
     )
 
@@ -65,12 +71,12 @@ def portfolio_policy(request: FixtureRequest) -> PortfolioPolicy:
             turnover_penalty=0.01,
             tax_penalty=1.0,
             minimum_cash_weight=0.1,
-            maximum_position_weight=0.6,
-            maximum_satellite_weight=0.4,
+            maximum_equity_exposure=0.9,
+            maximum_single_stock_exposure=0.3,
+            maximum_thematic_etf_exposure=0.25,
             maximum_turnover=0.3,
             minimum_trade_weight=0.0,
             maximum_position_change=0.25,
-            minimum_core_weights={"SPY": 0.4},
             maximum_sector_weights={
                 "broad_market": 0.6,
                 "energy": 0.25,

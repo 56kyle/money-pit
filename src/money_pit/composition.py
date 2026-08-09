@@ -228,6 +228,7 @@ def build_application_runtime(
         AssetStore(assets_root),
         claims=claims,
         interpreter=interpreter,
+        environment=config.environment,
         clock=dependencies.clock,
     )
     portfolio: PortfolioRuntime | None = None
@@ -441,9 +442,7 @@ def _research_publisher_definitions(
 
 def _configured_instrument_resolver(config: ApplicationConfig) -> InstrumentResolver:
     intelligence = config.intelligence
-    strategy = config.strategy
     approved = {
-        *({} if strategy is None else strategy.strategic_core_targets),
         *intelligence.watchlist,
         *intelligence.benchmark_constituents,
         *intelligence.explicit_proxies.values(),
@@ -528,11 +527,7 @@ def _universe_loader(
                 resolver.resolve(instrument, layer=UniverseLayer.EXPLICIT_PROXY, proxy_for=reference)
                 for reference, instrument in config.intelligence.explicit_proxies.items()
             ),
-            portfolio_gaps=(
-                resolver.resolve(instrument, layer=UniverseLayer.PORTFOLIO_GAP)
-                for instrument in (() if config.strategy is None else config.strategy.strategic_core_targets)
-                if instrument not in held
-            ),
+            portfolio_gaps=(),
         )
 
     return load

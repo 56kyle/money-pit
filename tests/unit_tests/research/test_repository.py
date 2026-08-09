@@ -63,6 +63,7 @@ def _database_and_repository(tmp_path: Path) -> tuple[Database, ResearchReposito
             candidate_thesis_id="candidate-1",
             subject="Candidate",
             direction=ThesisDirection.LONG,
+            instrument_reference="CANDIDATE",
             horizon_class=HorizonClass.TACTICAL,
             discovery_basis=DiscoveryBasis(source_claim_keys=("claim-1",)),
             created_at=NOW,

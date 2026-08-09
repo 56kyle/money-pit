@@ -1,12 +1,17 @@
-# This template is intentionally not runnable. Execution limits require explicit
-# operator approval and have no production defaults.
-policy_version = "<execution-policy-version>"
+policy_version = "0.0.2-paper-approval-1"
 broker_environment = "paper"
 execution_mode = "approval_required"
-# maximum_order_notional = "<currency-amount>"
-# maximum_daily_turnover = "<fraction>"
-# maximum_market_drift_fraction = "<fraction>"
-# maximum_quote_age_seconds = "<positive-seconds>"
-# poll_interval_seconds = "<positive-seconds>"
-# poll_timeout_seconds = "<positive-seconds>"
-# allowed_asset_classes = ["us_equity", "us_etf"]
+maximum_order_notional = 2000.0
+maximum_daily_turnover = 0.15
+maximum_market_drift_fraction = 0.01
+maximum_quote_age_seconds = 120.0
+poll_interval_seconds = 2.0
+poll_timeout_seconds = 120.0
+allowed_asset_classes = ["us_equity", "us_etf"]
+
+[autonomous_eligibility]
+shadow_trading_days = 60
+executable_shadow_plans = 30
+approved_paper_executions = 30
+approval_required_live_executions = 30
+maximum_critical_control_failures = 0

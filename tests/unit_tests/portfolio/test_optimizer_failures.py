@@ -70,11 +70,15 @@ def test__validated_solver_weights_rejects_malformed_value(
         pytest.param({"covariance": {"AAPL": {"AAPL": 0.1}}}, "covariance rows", id="covariance-map"),
         pytest.param({"sectors": {"AAPL": "technology"}}, "sectors", id="sector-map"),
         pytest.param(
+            {"exposure_classes": {"AAPL": "single_stock"}},
+            "exposure_classes",
+            id="exposure-class-map",
+        ),
+        pytest.param(
             {"tax_cost_per_sold_weight": {"AAPL": 0.0}},
             "tax_cost_per_sold_weight",
             id="tax-map",
         ),
-        pytest.param({"satellite_instruments": {"UNKNOWN"}}, "unknown instrument", id="satellite"),
         pytest.param(
             {
                 "covariance": {
@@ -133,14 +137,18 @@ def test__validate_covariance_rejects_invalid_matrix(
 @pytest.mark.parametrize(
     ("policy_update", "input_update", "message"),
     [
-        pytest.param({"minimum_core_weights": {"QQQ": 0.2}}, {}, "unknown instruments", id="core"),
         pytest.param(
             {"maximum_sector_weights": {"technology": 0.3, "broad_market": 0.6}},
             {},
             "sector policy is incomplete",
             id="sector",
         ),
-        pytest.param({}, {"satellite_instruments": {"XOM"}}, "classified as core or satellite", id="class"),
+        pytest.param(
+            {"maximum_factor_exposures": {"equity": 0.9}},
+            {},
+            "requires factor loadings",
+            id="factor",
+        ),
     ],
 )
 def test__validate_policy_coverage_rejects_incomplete_policy(
@@ -201,13 +209,28 @@ def test__require_acceptable_solution_rejects_invalid_solver_result(
     [
         pytest.param([np.nan, 0.5, 0.1], {}, "invalid target", id="non-finite"),
         pytest.param([0.3, 0.6, 0.1], {}, "cash constraint", id="cash"),
-        pytest.param([0.7, 0.1, 0.1], {}, "name constraint", id="name"),
-        pytest.param([0.36, 0.44, 0.1], {}, "position-change", id="position-change"),
+        pytest.param([0.31, 0.4, 0.1], {}, "candidate or liquidity", id="instrument"),
+        pytest.param([0.1, 0.2, 0.1], {}, "position-change", id="position-change"),
         pytest.param([0.3, 0.25, 0.25], {}, "turnover constraint", id="turnover"),
         pytest.param([0.15, 0.5, 0.1], {"minimum_trade_weight": 0.1}, "minimum-trade", id="trade"),
-        pytest.param([0.31, 0.4, 0.1], {}, "satellite constraint", id="satellite"),
-        pytest.param([0.1, 0.39, 0.1], {}, "core constraint", id="core"),
-        pytest.param([0.31, 0.5, 0.05], {}, "sector constraint", id="sector"),
+        pytest.param(
+            [0.16, 0.5, 0.15],
+            {"maximum_single_stock_exposure": 0.25},
+            "single-stock exposure",
+            id="single-stock",
+        ),
+        pytest.param(
+            [0.2, 0.5, 0.05],
+            {
+                "maximum_sector_weights": {
+                    "broad_market": 0.6,
+                    "energy": 0.25,
+                    "technology": 0.15,
+                }
+            },
+            "sector constraint",
+            id="sector",
+        ),
     ],
 )
 def test__validate_result_rejects_constraint_violation(
@@ -231,14 +254,12 @@ def test__validate_result_rejects_constraint_violation(
         )
 
 
-def test_optimize_without_satellites_or_matching_extra_sector_remains_supported(
+def test_optimize_with_matching_extra_sector_remains_supported(
     optimization_input: OptimizationInput,
     portfolio_policy: PortfolioPolicy,
 ) -> None:
-    inputs = optimization_input.model_copy(update={"satellite_instruments": frozenset()})
     policy = portfolio_policy.model_copy(
         update={
-            "minimum_core_weights": {"AAPL": 0.0, "SPY": 0.4, "XOM": 0.0},
             "maximum_sector_weights": {
                 **portfolio_policy.maximum_sector_weights,
                 "materials": 0.2,
@@ -246,9 +267,9 @@ def test_optimize_without_satellites_or_matching_extra_sector_remains_supported(
         }
     )
 
-    result = ClarabelOptimizer().optimize(inputs, policy)
+    result = ClarabelOptimizer().optimize(optimization_input, policy)
 
-    assert set(result.target_weights) == set(inputs.expected_returns)
+    assert set(result.target_weights) == set(optimization_input.expected_returns)
 
 
 def test_optimize_without_installed_clarabel_fails_closed(

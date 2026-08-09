@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 from money_pit.claims.projection import ClaimFreshnessRule
 from money_pit.claims.projection import ClaimRefreshPolicy
 from money_pit.claims.repository import ClaimRepository
+from money_pit.config import Config
 from money_pit.evidence.media import FrameReading
 from money_pit.evidence.media import MediaAnalysis
 from money_pit.evidence.media import MediaEvidenceProcessor
@@ -289,6 +290,7 @@ def test_run_round_blocks_current_only_provider_before_io_for_historical_run(tmp
         candidate_thesis_id="candidate-1",
         subject="Historical candidate",
         direction=ThesisDirection.LONG,
+        instrument_reference="HISTORICAL",
         horizon_class=HorizonClass.TACTICAL,
         discovery_basis=DiscoveryBasis(source_claim_keys=("claim-1",)),
         created_at=_DECISION_AT,
@@ -303,6 +305,7 @@ def test_run_round_blocks_current_only_provider_before_io_for_historical_run(tmp
         AssetStore(tmp_path / "assets"),
         claims=_claims(database),
         interpreter=_interpreter(),
+        environment=Config(),
     )
     session = ResearchSession(
         session_id="session-1",
@@ -346,6 +349,7 @@ def test_run_round_uses_certified_cutoff_search_and_fetch_methods(tmp_path: Path
         candidate_thesis_id="candidate-certified",
         subject="Historical candidate",
         direction=ThesisDirection.LONG,
+        instrument_reference="HISTORICAL",
         horizon_class=HorizonClass.TACTICAL,
         discovery_basis=DiscoveryBasis(source_claim_keys=("claim-1",)),
         created_at=_DECISION_AT,
@@ -361,6 +365,7 @@ def test_run_round_uses_certified_cutoff_search_and_fetch_methods(tmp_path: Path
         AssetStore(tmp_path / "assets"),
         claims=_claims(database),
         interpreter=_interpreter(),
+        environment=Config(),
     )
     session = ResearchSession(
         session_id="session-certified",
@@ -406,6 +411,7 @@ def test_run_round_returns_primary_and_derived_asset_ids_with_per_asset_attempts
         candidate_thesis_id="candidate-media",
         subject="Media candidate",
         direction=ThesisDirection.LONG,
+        instrument_reference="MEDIA",
         horizon_class=HorizonClass.TACTICAL,
         discovery_basis=DiscoveryBasis(source_claim_keys=("claim-1",)),
         created_at=_DECISION_AT,

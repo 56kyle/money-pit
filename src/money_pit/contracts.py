@@ -102,7 +102,7 @@ class CandidateThesisDraft(BaseModel):
 
     subject: str = Field(min_length=1)
     direction: ThesisDirection
-    instrument: str | None = Field(default=None, min_length=1)
+    instrument_reference: str | None = Field(default=None, min_length=1)
     theme: str | None = Field(default=None, min_length=1)
     horizon_class: HorizonClass
     discovery_basis: DiscoveryBasis

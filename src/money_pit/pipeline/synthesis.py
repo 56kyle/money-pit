@@ -112,6 +112,7 @@ class _RevisionTarget:
     revision_number: int
     promoted_from_candidate_id: str | None
     prior: ThesisRevision | None
+    instrument: str | None
 
 
 def materialize_resolution(
@@ -270,6 +271,11 @@ def materialize_revision(
         canonical_keys_by_observation=canonical_keys_by_observation,
     )
     target = _resolve_revision_target(draft, candidates, prior_revisions)
+    draft_instrument = None if draft.instrument is None else draft.instrument.strip().upper()
+    if draft_instrument != target.instrument:
+        raise InvalidThesisLifecycleError(
+            "A thesis revision cannot infer or change deterministic instrument authority",
+        )
     status = _determine_revision_status(
         draft,
         prior=target.prior,
@@ -290,7 +296,7 @@ def materialize_revision(
         revision_number=target.revision_number,
         promoted_from_candidate_id=target.promoted_from_candidate_id,
         subject=draft.subject,
-        instrument=draft.instrument,
+        instrument=target.instrument,
         theme=draft.theme,
         direction=draft.direction,
         status=status,
@@ -355,7 +361,20 @@ def _resolve_revision_target(
         )
         if any(revision.thesis_id == thesis_id for revision in prior_revisions):
             raise InvalidThesisLifecycleError("A candidate can be promoted only once")
-        return _RevisionTarget(thesis_id, 1, draft.promoted_from_candidate_id, None)
+        candidate = next(
+            candidate for candidate in candidates if candidate.candidate_thesis_id == draft.promoted_from_candidate_id
+        )
+        if candidate.instrument_reference is not None and candidate.instrument is None:
+            raise InvalidThesisLifecycleError(
+                "A candidate with an unresolved instrument reference cannot be promoted",
+            )
+        return _RevisionTarget(
+            thesis_id,
+            1,
+            draft.promoted_from_candidate_id,
+            None,
+            candidate.instrument,
+        )
 
     prior_by_id = {revision.revision_id: revision for revision in prior_revisions}
     try:
@@ -370,7 +389,13 @@ def _resolve_revision_target(
         raise InvalidThesisLifecycleError("Revision must extend the latest visible thesis revision")
     if prior.status in {ThesisStatus.INVALIDATED, ThesisStatus.CLOSED}:
         raise InvalidThesisLifecycleError("Terminal theses cannot be revived by a later revision")
-    return _RevisionTarget(prior.thesis_id, prior.revision_number + 1, None, prior)
+    return _RevisionTarget(
+        prior.thesis_id,
+        prior.revision_number + 1,
+        None,
+        prior,
+        prior.instrument,
+    )
 
 
 def _determine_revision_status(

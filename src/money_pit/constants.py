@@ -26,8 +26,6 @@ STRATEGY_CONFIG_FILENAME: Final[str] = "strategy.toml"
 EXECUTION_CONFIG_FILENAME: Final[str] = "execution.toml"
 ENV_CONFIG_FILENAME: Final[str] = ".env"
 
-OPENAI_MODEL_PREFIX: Final[str] = "openai:"
-
 
 def user_config_folder() -> Path:
     """Return the per-user configuration folder."""
@@ -41,7 +39,7 @@ def user_log_folder() -> Path:
 
 def default_config_path() -> Path:
     """Return the default secrets-only environment file."""
-    return user_config_folder() / ENV_CONFIG_FILENAME
+    return Path(ENV_CONFIG_FILENAME)
 
 
 def default_sources_config_path() -> Path:

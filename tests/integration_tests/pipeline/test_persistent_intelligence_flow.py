@@ -76,6 +76,7 @@ from money_pit.schemas.execution_policy import BrokerEnvironment
 from money_pit.schemas.execution_policy import ExecutionMode
 from money_pit.schemas.execution_policy import ExecutionPolicy
 from money_pit.schemas.execution_policy import TradableAssetClass
+from money_pit.schemas.instrument import InstrumentExposureClass
 from money_pit.schemas.outcomes import OutcomeBoundary
 from money_pit.schemas.portfolio_plan import PortfolioPlan
 from money_pit.schemas.research import ResearchStopReason
@@ -275,7 +276,7 @@ def _discover(request: DiscoveryRequest) -> DiscoveryDraft:
             CandidateThesisDraft(
                 subject="NEW backlog conversion",
                 direction=ThesisDirection.LONG,
-                instrument="NEW",
+                instrument_reference="NEW",
                 horizon_class=HorizonClass.TACTICAL,
                 discovery_basis=DiscoveryBasis(
                     universe_layer=UniverseLayer.WATCHLIST,
@@ -363,20 +364,26 @@ def _strategy(tmp_path: Path) -> StrategyConfig:
         version="strategy-test",
         portfolio_environment=BrokerEnvironment.PAPER,
         plan_ttl_seconds=1_800,
-        strategic_core_targets={"SPY": 0.5},
         watchlist=("NEW",),
         benchmark_constituents=("SPY",),
         benchmark_id="configured-benchmark",
         benchmark_provider="offline-market",
         benchmark_weights={"SPY": 1.0},
         sector_taxonomy={"SPY": "broad_market", "NEW": "technology"},
+        instrument_asset_classes={"SPY": TradableAssetClass.US_ETF, "NEW": TradableAssetClass.US_EQUITY},
+        instrument_exposure_classes={
+            "SPY": InstrumentExposureClass.BROAD_MARKET_EQUITY_ETF,
+            "NEW": InstrumentExposureClass.SINGLE_STOCK,
+        },
         factor_loadings={"SPY": {"market": 1.0}, "NEW": {"market": 1.1}},
-        name_weight_limit=0.5,
+        default_position_weight_limit=0.5,
+        maximum_equity_exposure=0.9,
+        maximum_single_stock_exposure=0.5,
+        maximum_thematic_etf_exposure=0.4,
         sector_weight_limit=0.7,
         factor_weight_limit=1.0,
         correlated_exposure_limit=0.7,
         cash_minimum=0.1,
-        satellite_weight_limit=0.4,
         turnover_limit=0.3,
         position_change_limit=0.25,
         minimum_trade_notional=10.0,
@@ -619,7 +626,7 @@ def test_execute_harness_run_composes_persistent_research_plan_and_execution(tmp
         2,
         "NEW",
         True,
-        ("NEW",),
+        ("NEW", "SPY"),
         plan.plan_hash,
         receipt.submitted_trade_identities,
         (OutcomeBoundary.REVIEW, OutcomeBoundary.HORIZON),

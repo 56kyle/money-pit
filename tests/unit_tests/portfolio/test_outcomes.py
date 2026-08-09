@@ -313,6 +313,7 @@ def test_plan_outcome_scheduler_persists_each_exact_economic_boundary(database: 
         candidate_thesis_id="candidate-new",
         subject="NEW backlog conversion",
         direction=ThesisDirection.LONG,
+        instrument_reference="NEW",
         instrument="NEW",
         horizon_class=HorizonClass.TACTICAL,
         discovery_basis=DiscoveryBasis(

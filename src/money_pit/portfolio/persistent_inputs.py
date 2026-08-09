@@ -26,6 +26,7 @@ from money_pit.portfolio.calibration import ReturnCalibration
 from money_pit.portfolio.calibration import ScenarioDistribution
 from money_pit.portfolio.calibration import ScenarioEstimate
 from money_pit.portfolio.calibration import calibrate_expected_return
+from money_pit.portfolio.eligibility import ActionTier
 from money_pit.portfolio.eligibility import CandidateAdmissionInput
 from money_pit.portfolio.eligibility import EligibilityDecision
 from money_pit.portfolio.eligibility import MaterialEvidenceAnchor
@@ -224,14 +225,33 @@ class PersistentPortfolioPlanningInputProvider:
                 bound_policy=self._strategy.return_bound_policy,
                 as_of=input_known_at,
             )
-        maximum_weights = {
+        held_instruments = set(positions)
+        optimization_instruments = tuple(
+            instrument
+            for instrument in instruments
+            if instrument in held_instruments
+            or next(item for item in eligibility if item.instrument == instrument).action_tier
+            is ActionTier.NEW_EXPOSURE
+        )
+        liquidity_maximum_weights = {
             instrument: min(
-                self._strategy.name_weight_limit,
+                1.0,
                 liquidity_by_instrument[instrument].average_daily_notional
                 * liquidity_by_instrument[instrument].maximum_participation_rate
                 / total_value,
             )
-            for instrument in instruments
+            for instrument in optimization_instruments
+        }
+        maximum_weights = {
+            instrument: max(
+                current_weights[instrument],
+                min(
+                    self._strategy.default_position_weight_limit,
+                    self._strategy.instrument_weight_limits.get(instrument, 1.0),
+                    liquidity_maximum_weights[instrument],
+                ),
+            )
+            for instrument in optimization_instruments
         }
         tax_cost_per_sold_weight, tax_cost_known = _tax_cost_inputs(
             tax,
@@ -242,17 +262,30 @@ class PersistentPortfolioPlanningInputProvider:
         optimization = OptimizationInput(
             portfolio_snapshot_id=portfolio.snapshot_id,
             market_snapshot_id=market.snapshot_id,
-            current_weights=current_weights,
-            expected_returns=expected_returns,
-            covariance={item.instrument: item.covariance for item in risk.payload.observations},
-            sectors={item.instrument: item.sector for item in risk.payload.observations},
-            satellite_instruments=frozenset(set(instruments) - set(self._strategy.strategic_core_targets)),
-            tax_cost_per_sold_weight=tax_cost_per_sold_weight,
-            tax_cost_known=tax_cost_known,
+            current_weights={instrument: current_weights[instrument] for instrument in optimization_instruments},
+            expected_returns={instrument: expected_returns[instrument] for instrument in optimization_instruments},
+            covariance={
+                instrument: {
+                    other: risk_by_instrument[instrument].covariance[other] for other in optimization_instruments
+                }
+                for instrument in optimization_instruments
+            },
+            sectors={instrument: risk_by_instrument[instrument].sector for instrument in optimization_instruments},
+            exposure_classes={
+                instrument: self._strategy.instrument_exposure_classes[instrument]
+                for instrument in optimization_instruments
+            },
+            tax_cost_per_sold_weight={
+                instrument: tax_cost_per_sold_weight[instrument] for instrument in optimization_instruments
+            },
+            tax_cost_known={instrument: tax_cost_known[instrument] for instrument in optimization_instruments},
             maximum_weights=maximum_weights,
-            factor_loadings={item.instrument: item.factor_loadings for item in risk.payload.observations},
+            factor_loadings={
+                instrument: risk_by_instrument[instrument].factor_loadings for instrument in optimization_instruments
+            },
             correlated_groups={
-                name: frozenset(instruments) for name, instruments in self._strategy.correlated_exposure_groups.items()
+                name: frozenset(set(group_instruments) & set(optimization_instruments))
+                for name, group_instruments in self._strategy.correlated_exposure_groups.items()
             },
         )
         evidence_ids = tuple(
@@ -282,7 +315,7 @@ class PersistentPortfolioPlanningInputProvider:
                 for revision in revisions
             ),
             report_evidence=self._report_evidence(observations),
-            liquidity_maximum_weights=maximum_weights,
+            liquidity_maximum_weights=liquidity_maximum_weights,
             evidence_fragment_ids=evidence_ids,
             claim_observation_ids=tuple(item.observation_id for item in observations),
             verification_result_ids=verification_ids,
@@ -382,7 +415,6 @@ class PersistentPortfolioPlanningInputProvider:
     ) -> tuple[str, ...]:
         held: set[str] = {item.instrument for item in portfolio.payload.positions}
         configured = {
-            *self._strategy.strategic_core_targets,
             *self._strategy.watchlist,
             *self._strategy.benchmark_constituents,
             *self._strategy.explicit_proxies.values(),

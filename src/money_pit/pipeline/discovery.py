@@ -96,8 +96,9 @@ def materialize_candidate(
     draft: CandidateThesisDraft,
     *,
     visible_claim_keys: frozenset[str],
-    universe_instruments: frozenset[str],
+    universe: LayeredUniverse,
     universe_origins: frozenset[tuple[UniverseLayer, str]],
+    source_grounded_references: frozenset[str],
     known_at: datetime,
 ) -> CandidateThesis:
     """Assign deterministic candidate identity and enforce discovery authority."""
@@ -108,14 +109,29 @@ def materialize_candidate(
         origin = (draft.discovery_basis.universe_layer, draft.discovery_basis.universe_reference or "")
         if origin not in universe_origins:
             raise UnknownDiscoveryInstrumentError(f"Candidate cites an unknown universe origin: {origin}")
-    instrument: str | None = draft.instrument.strip().upper() if draft.instrument is not None else None
-    if instrument is not None and instrument not in universe_instruments:
-        raise UnknownDiscoveryInstrumentError(f"Candidate instrument is outside the layered universe: {instrument}")
+        if draft.instrument_reference is not None and _normalized_reference(
+            draft.instrument_reference
+        ) != _normalized_reference(origin[1]):
+            raise UnknownDiscoveryInstrumentError(
+                "Candidate reference does not match its authorized universe origin",
+            )
+    instrument_reference = None if draft.instrument_reference is None else draft.instrument_reference.strip()
+    instrument = (
+        None
+        if instrument_reference is None
+        else _resolve_candidate_instrument(
+            instrument_reference,
+            universe=universe,
+            source_grounded_references=source_grounded_references,
+            source_grounded=bool(draft.discovery_basis.source_claim_keys),
+        )
+    )
     candidate_id: str = stable_identifier(
         "candidate",
         {
             "subject": draft.subject.strip().casefold(),
             "direction": draft.direction.value,
+            "instrument_reference": (None if instrument_reference is None else instrument_reference.casefold()),
             "instrument": instrument,
             "theme": draft.theme,
             "horizon_class": draft.horizon_class.value,
@@ -126,6 +142,7 @@ def materialize_candidate(
         candidate_thesis_id=candidate_id,
         subject=draft.subject,
         direction=draft.direction,
+        instrument_reference=instrument_reference,
         instrument=instrument,
         theme=draft.theme,
         horizon_class=draft.horizon_class,
@@ -134,6 +151,68 @@ def materialize_candidate(
         regime_assumptions=draft.regime_assumptions,
         created_at=known_at,
         known_at=known_at,
+    )
+
+
+def _resolve_candidate_instrument(
+    instrument_reference: str,
+    *,
+    universe: LayeredUniverse,
+    source_grounded_references: frozenset[str],
+    source_grounded: bool,
+) -> str | None:
+    """Resolve capital authority without treating ticker-shaped research text as tradable."""
+    normalized = _normalized_reference(instrument_reference)
+    if source_grounded and normalized not in source_grounded_references:
+        raise UnknownDiscoveryInstrumentError(
+            f"Candidate reference is not grounded by its cited source claims: {instrument_reference!r}",
+        )
+    resolved = {
+        candidate.instrument
+        for candidate in universe.candidates
+        if normalized
+        in {
+            _normalized_reference(candidate.instrument),
+            *(_normalized_reference(reference) for reference in candidate.references),
+        }
+    }
+    if len(resolved) > 1:
+        raise UnknownDiscoveryInstrumentError(
+            f"Candidate reference resolves ambiguously in the layered universe: {instrument_reference!r}",
+        )
+    if resolved:
+        return next(iter(resolved))
+    observation_only = {_normalized_reference(candidate.reference) for candidate in universe.observation_only}
+    if normalized in observation_only:
+        return None
+    if source_grounded:
+        return None
+    raise UnknownDiscoveryInstrumentError(
+        f"Candidate reference is neither configured nor source-grounded: {instrument_reference!r}",
+    )
+
+
+def _normalized_reference(reference: str) -> str:
+    """Return a comparison-only form while preserving original research text durably."""
+    return " ".join(reference.split()).casefold()
+
+
+def _source_grounded_references(
+    draft: CandidateThesisDraft,
+    request: DiscoveryRequest,
+) -> frozenset[str]:
+    """Return structured references carried by the exact claims cited by a candidate."""
+    observation_ids = {
+        observation_id
+        for claim in request.claims
+        if claim.canonical_claim_key in draft.discovery_basis.source_claim_keys
+        for observation_id in claim.active_observation_ids
+    }
+    return frozenset(
+        _normalized_reference(reference)
+        for observation in request.observations
+        if observation.observation_id in observation_ids
+        for reference in (*observation.instruments, *observation.themes)
     )
 
 
@@ -237,8 +316,9 @@ def make_discovery_node(
                 materialize_candidate(
                     candidate,
                     visible_claim_keys=frozenset(claim.canonical_claim_key for claim in bounded_request.claims),
-                    universe_instruments=frozenset(bounded_request.universe.instruments),
+                    universe=bounded_request.universe,
                     universe_origins=_universe_origins(bounded_request.universe),
+                    source_grounded_references=_source_grounded_references(candidate, bounded_request),
                     known_at=clock(),
                 )
                 for candidate in draft.candidates

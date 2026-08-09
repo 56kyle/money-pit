@@ -1,7 +1,6 @@
 """Module containing YouTube uploads-playlist discovery contracts."""
 
 import hashlib
-import os
 import tempfile
 from pathlib import Path
 from time import monotonic
@@ -16,6 +15,7 @@ from pydantic import Field
 from pydantic import SecretStr
 from pydantic import ValidationError
 
+from money_pit.evidence.media import MediaAnalyzer
 from money_pit.schemas.evidence import EvidenceDocument
 from money_pit.schemas.sources import DiscoveryBatch
 from money_pit.schemas.sources import RawArtifact
@@ -44,7 +44,6 @@ class YouTubeConnectorConfig(BoundedConnectorConfig):
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
 
-    api_key_env: str = Field(min_length=1)
     max_results: int = Field(default=25, ge=1, le=50)
     max_sync_pages: int = Field(default=20, ge=2, le=100)
     max_media_bytes: int = Field(default=512 * 1024 * 1024, ge=1)
@@ -166,6 +165,8 @@ class YouTubeConnector:
     def __init__(
         self,
         definition: SourceDefinition,
+        api_key: SecretStr,
+        analyzer: MediaAnalyzer,
         transport: HttpTransport | None = None,
         media_transport: YouTubeMediaTransport | None = None,
     ) -> None:
@@ -174,12 +175,10 @@ class YouTubeConnector:
         self._config: YouTubeConnectorConfig = YouTubeConnectorConfig.model_validate(
             parse_config(definition, YouTubeConnectorConfig).model_dump(),
         )
-        api_key_value: str | None = os.environ.get(self._config.api_key_env)
-        if not api_key_value:
-            raise ConnectorConfigurationError(
-                f"Environment variable {self._config.api_key_env!r} is not configured",
-            )
-        self._api_key: SecretStr = SecretStr(api_key_value)
+        if not api_key.get_secret_value().strip():
+            raise ConnectorConfigurationError("YouTube API credential cannot be blank")
+        self._api_key: SecretStr = api_key
+        self._analyzer: MediaAnalyzer = analyzer
         self._transport: HttpTransport = transport or AddressPinnedHttpTransport()
         self._media_transport: YouTubeMediaTransport = media_transport or YtDlpMediaTransport()
 
@@ -328,4 +327,4 @@ class YouTubeConnector:
         """Extract timestamped media evidence when used outside a processor registry."""
         from money_pit.evidence.media import MediaEvidenceProcessor
 
-        return MediaEvidenceProcessor().process(artifact)
+        return MediaEvidenceProcessor(self._analyzer).process(artifact)

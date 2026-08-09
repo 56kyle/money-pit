@@ -19,6 +19,7 @@ from pydantic import Field
 from pydantic_ai import Agent
 from pydantic_ai import BinaryContent
 
+from money_pit.agents.models import openai_chat_model
 from money_pit.evidence.results import DerivedEvidenceDocument
 from money_pit.evidence.results import EvidenceProcessingBundle
 from money_pit.schemas.evidence import EvidenceDocument
@@ -29,6 +30,7 @@ from money_pit.sources.errors import SourceExtractionError
 
 
 if TYPE_CHECKING:
+    from money_pit.config import Config
     from money_pit.schemas.sources import RawArtifact
 
 
@@ -85,11 +87,17 @@ class _VisionDraft(BaseModel):
 class OpenAIVisionFrameReader:
     """Read keyframe text, source labels, and evidence bounds with a vision model."""
 
-    def __init__(self, model: str = "gpt-5-mini") -> None:
-        """Create the bounded structured vision reader."""
-        self._model: str = model
-        self._agent: Agent[None, _VisionDraft] = Agent(
-            f"openai:{model}",
+    def __init__(self, config: Config) -> None:
+        """Bind the configured image-capable model without resolving it eagerly."""
+        self._config: Config = config
+        self._model: str = config.llm_model
+        self._agent: Agent[None, _VisionDraft] | None = None
+
+    def _inference_agent(self) -> Agent[None, _VisionDraft]:
+        if self._agent is not None:
+            return self._agent
+        self._agent = Agent(
+            openai_chat_model(self._config),
             output_type=_VisionDraft,
             system_prompt=(
                 "Extract visible financial text and explicit source attribution from the image. "
@@ -97,11 +105,12 @@ class OpenAIVisionFrameReader:
                 "relevant content occupies a bounded region."
             ),
         )
+        return self._agent
 
     def read(self, image: bytes, *, timestamp_seconds: float) -> FrameReading:
         """Read one PNG keyframe into typed evidence."""
         try:
-            result = self._agent.run_sync(
+            result = self._inference_agent().run_sync(
                 [
                     "Extract the on-screen text and cited source labels.",
                     BinaryContent(data=image, media_type="image/png"),
@@ -130,7 +139,7 @@ class DefaultMediaAnalyzer:
         whisper_model: str = "small",
         maximum_frames: int = 24,
         scene_threshold: float = 27.0,
-        frame_reader: OpenAIVisionFrameReader | None = None,
+        frame_reader: OpenAIVisionFrameReader,
     ) -> None:
         """Bind explicit transcription and frame-analysis limits."""
         if maximum_frames < 0:
@@ -138,7 +147,7 @@ class DefaultMediaAnalyzer:
         self._whisper_model: str = whisper_model
         self._maximum_frames: int = maximum_frames
         self._scene_threshold: float = scene_threshold
-        self._frame_reader: OpenAIVisionFrameReader = frame_reader or OpenAIVisionFrameReader()
+        self._frame_reader: OpenAIVisionFrameReader = frame_reader
 
     def analyze(self, path: Path, *, media_type: str) -> MediaAnalysis:
         """Run timestamped transcription and bounded video-frame analysis."""
@@ -201,9 +210,9 @@ class MediaEvidenceProcessor:
     name: str = "timestamped-media"
     version: str = "1"
 
-    def __init__(self, analyzer: MediaAnalyzer | None = None) -> None:
-        """Bind an injected analyzer or the production optional-dependency analyzer."""
-        self._analyzer: MediaAnalyzer = analyzer or DefaultMediaAnalyzer()
+    def __init__(self, analyzer: MediaAnalyzer) -> None:
+        """Bind an explicit analyzer so credentials never resolve ambiently."""
+        self._analyzer: MediaAnalyzer = analyzer
 
     def supports(self, media_type: str) -> bool:
         """Accept general audio and video acquisitions."""

@@ -13,7 +13,9 @@ from typing_extensions import override
 
 from money_pit.evidence.errors import EvidenceProcessorAlreadyRegisteredError
 from money_pit.evidence.errors import EvidenceProcessorNotFoundError
+from money_pit.evidence.media import DefaultMediaAnalyzer
 from money_pit.evidence.media import MediaEvidenceProcessor
+from money_pit.evidence.media import OpenAIVisionFrameReader
 from money_pit.evidence.pdf import PdfEvidenceProcessor
 from money_pit.evidence.results import EvidenceProcessingBundle
 from money_pit.schemas.evidence import EvidenceDocument
@@ -27,6 +29,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
     from email.message import Message
 
+    from money_pit.config import Config
     from money_pit.schemas.sources import RawArtifact
 
 
@@ -254,7 +257,7 @@ def _normalized_media_type(media_type: str) -> str:
     return media_type.partition(";")[0].strip().casefold()
 
 
-def builtin_evidence_processors() -> EvidenceProcessorRegistry:
+def builtin_evidence_processors(config: Config) -> EvidenceProcessorRegistry:
     """Return processors whose extraction semantics are media-generic."""
     registry = EvidenceProcessorRegistry()
     registry.register(TextEvidenceProcessor())
@@ -262,5 +265,5 @@ def builtin_evidence_processors() -> EvidenceProcessorRegistry:
     registry.register(HtmlEvidenceProcessor())
     registry.register(JsonEvidenceProcessor())
     registry.register(PdfEvidenceProcessor())
-    registry.register(MediaEvidenceProcessor())
+    registry.register(MediaEvidenceProcessor(DefaultMediaAnalyzer(frame_reader=OpenAIVisionFrameReader(config))))
     return registry

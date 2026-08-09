@@ -15,6 +15,7 @@ from money_pit.portfolio.snapshots import MarketStateSnapshot
 from money_pit.portfolio.snapshots import PortfolioStatePayload
 from money_pit.portfolio.snapshots import PortfolioStatePosition
 from money_pit.portfolio.snapshots import PortfolioStateSnapshot
+from money_pit.schemas.execution_policy import BrokerEnvironment
 from money_pit.storage.database import Database
 from money_pit.storage.database import TransactionMode
 
@@ -129,6 +130,26 @@ def test_snapshot_repository_round_trips_market(
     snapshot: MarketStateSnapshot = MarketStateSnapshot.from_payload(market_state_payload)
     snapshot_repository.append_market(snapshot)
     assert snapshot_repository.get_market(snapshot.snapshot_id) == snapshot
+
+
+def test_snapshot_repository_keeps_paper_and_live_portfolio_state_distinct(
+    snapshot_repository: SnapshotRepository,
+    portfolio_state_payload: PortfolioStatePayload,
+) -> None:
+    paper = PortfolioStateSnapshot.from_payload(
+        portfolio_state_payload.model_copy(update={"broker_environment": BrokerEnvironment.PAPER})
+    )
+    live = PortfolioStateSnapshot.from_payload(
+        portfolio_state_payload.model_copy(update={"broker_environment": BrokerEnvironment.LIVE})
+    )
+    snapshot_repository.append_portfolio(paper)
+    snapshot_repository.append_portfolio(live)
+
+    assert (
+        paper.snapshot_id != live.snapshot_id,
+        snapshot_repository.get_portfolio(paper.snapshot_id).payload.broker_environment,
+        snapshot_repository.get_portfolio(live.snapshot_id).payload.broker_environment,
+    ) == (True, BrokerEnvironment.PAPER, BrokerEnvironment.LIVE)
 
 
 def test_snapshot_repository_append_is_idempotent(

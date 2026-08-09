@@ -35,6 +35,9 @@ from money_pit.schemas.claims import HorizonClass
 from money_pit.schemas.execution_policy import BrokerEnvironment
 from money_pit.schemas.execution_policy import ExecutionMode
 from money_pit.schemas.execution_policy import TradableAssetClass
+from money_pit.schemas.instrument import (
+    InstrumentExposureClass,  # noqa: TC001 - Pydantic resolves this runtime field type.
+)
 from money_pit.schemas.sources import SourceRegistryDocument
 
 
@@ -171,7 +174,6 @@ class StrategyConfig(BaseModel):
     version: str = Field(min_length=1)
     portfolio_environment: BrokerEnvironment
     plan_ttl_seconds: int = Field(gt=0)
-    strategic_core_targets: dict[str, float] = Field(min_length=1)
     watchlist: tuple[str, ...] = ()
     benchmark_constituents: tuple[str, ...] = ()
     benchmark_id: str = Field(min_length=1)
@@ -181,13 +183,17 @@ class StrategyConfig(BaseModel):
     quantitative_screens: tuple[QuantitativeScreenConfig, ...] = ()
     sector_taxonomy: dict[str, str] = Field(min_length=1)
     instrument_asset_classes: dict[str, TradableAssetClass] = Field(default_factory=dict)
+    instrument_exposure_classes: dict[str, InstrumentExposureClass] = Field(default_factory=dict)
     factor_loadings: dict[str, dict[str, float]] = Field(min_length=1)
-    name_weight_limit: float = Field(gt=0, le=1)
+    default_position_weight_limit: float = Field(gt=0, le=1)
+    instrument_weight_limits: dict[str, float] = Field(default_factory=dict)
+    maximum_equity_exposure: float = Field(gt=0, le=1)
+    maximum_single_stock_exposure: float = Field(gt=0, le=1)
+    maximum_thematic_etf_exposure: float = Field(gt=0, le=1)
     sector_weight_limit: float = Field(gt=0, le=1)
     factor_weight_limit: float = Field(gt=0, le=1)
     correlated_exposure_limit: float = Field(gt=0, le=1)
     cash_minimum: float = Field(ge=0, le=1)
-    satellite_weight_limit: float = Field(ge=0, le=1)
     turnover_limit: float = Field(ge=0, le=1)
     position_change_limit: float = Field(gt=0, le=1)
     minimum_trade_notional: float = Field(gt=0)
@@ -217,14 +223,30 @@ class StrategyConfig(BaseModel):
     claim_freshness: ClaimFreshnessPolicyConfig
 
     @model_validator(mode="after")
-    def validate_horizons_and_core(self) -> Self:
-        """Require the canonical horizons and a normalized feasible core."""
+    def validate_horizons_and_universe(self) -> Self:
+        """Require canonical horizons and complete capital-universe metadata."""
         expected_horizons: set[str] = {"event", "tactical", "medium_term", "structural"}
         if set(self.horizons) != expected_horizons:
             raise ValueError("horizons must define event, tactical, medium_term, and structural exactly.")
-        core_total: float = sum(self.strategic_core_targets.values())
-        if any(weight < 0 or weight > 1 for weight in self.strategic_core_targets.values()) or core_total > 1:
-            raise ValueError("strategic_core_targets weights must be in [0, 1] and total no more than 1.")
+        capital_universe: set[str] = {
+            *self.watchlist,
+            *self.benchmark_constituents,
+            *self.explicit_proxies.values(),
+            *(instrument for screen in self.quantitative_screens for instrument in screen.instruments),
+        }
+        metadata_maps: tuple[tuple[str, set[str]], ...] = (
+            ("sector_taxonomy", set(self.sector_taxonomy)),
+            ("instrument_asset_classes", set(self.instrument_asset_classes)),
+            ("instrument_exposure_classes", set(self.instrument_exposure_classes)),
+            ("factor_loadings", set(self.factor_loadings)),
+        )
+        for name, instruments in metadata_maps:
+            if instruments != capital_universe:
+                raise ValueError(f"{name} must exactly cover the configured capital universe")
+        if not set(self.instrument_weight_limits) <= capital_universe:
+            raise ValueError("instrument_weight_limits contains an instrument outside the capital universe")
+        if any(weight <= 0 or weight > 1 for weight in self.instrument_weight_limits.values()):
+            raise ValueError("instrument_weight_limits values must be in (0, 1]")
         if self.tax_lot_policy == "specific_id" and not self.specific_tax_lot_ids:
             raise ValueError("specific-ID tax policy requires configured ordered lot IDs")
         if set(self.benchmark_weights) != set(self.benchmark_constituents):

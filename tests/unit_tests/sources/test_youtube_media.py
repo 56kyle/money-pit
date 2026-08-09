@@ -14,8 +14,10 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 import pytest
+from pydantic import SecretStr
 from pytest import MonkeyPatch
 
+from money_pit.evidence.media import MediaAnalysis
 from money_pit.schemas.sources import AllowedUse
 from money_pit.schemas.sources import SourceCursor
 from money_pit.schemas.sources import SourceCursorPurpose
@@ -28,6 +30,7 @@ from money_pit.sources._shared import source_definition_hash
 from money_pit.sources.errors import SourceDiscoveryError
 from money_pit.sources.errors import SourceFetchError
 from money_pit.sources.http import HttpResponse
+from money_pit.sources.http import HttpTransport
 from money_pit.sources.youtube import YouTubeConnector
 from money_pit.sources.youtube import YtDlpMediaTransport
 
@@ -72,6 +75,11 @@ class _MediaTransport:
         return VIDEO, "video/mp4", "video.mp4"
 
 
+class _UnusedMediaAnalyzer:
+    def analyze(self, path: Path, *, media_type: str) -> MediaAnalysis:
+        raise AssertionError((path, media_type))
+
+
 def _definition() -> SourceDefinition:
     return SourceDefinition(
         source_id="youtube",
@@ -81,10 +89,23 @@ def _definition() -> SourceDefinition:
         allowed_uses=(AllowedUse.INTERPRETATION,),
         trust_settings=(SourceTrustSetting(category=TrustCategory.FACTUAL, level=TrustLevel.COMMENTARY),),
         adapter_config={
-            "api_key_env": "TEST_YOUTUBE_KEY",
             "max_media_bytes": 1_024,
             "timeout_seconds": 7,
         },
+    )
+
+
+def _connector(
+    definition: SourceDefinition,
+    transport: HttpTransport,
+    media_transport: _MediaTransport,
+) -> YouTubeConnector:
+    return YouTubeConnector(
+        definition,
+        SecretStr("configured-key"),
+        _UnusedMediaAnalyzer(),
+        transport,
+        media_transport,
     )
 
 
@@ -104,13 +125,10 @@ def _item(
     )
 
 
-def test_youtube_connector_fetch_returns_injected_video_media_not_watch_html(
-    monkeypatch: MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("TEST_YOUTUBE_KEY", "configured-key")
+def test_youtube_connector_fetch_returns_injected_video_media_not_watch_html() -> None:
     definition = _definition()
     media_transport = _MediaTransport()
-    connector = YouTubeConnector(definition, _UnusedHttpTransport(), media_transport)
+    connector = _connector(definition, _UnusedHttpTransport(), media_transport)
 
     artifact = connector.fetch(_item(definition))
 
@@ -131,14 +149,12 @@ def test_youtube_connector_fetch_returns_injected_video_media_not_watch_html(
     [("other-source", None), ("youtube", "f" * 64)],
 )
 def test_youtube_connector_fetch_rejects_an_item_outside_its_source_identity(
-    monkeypatch: MonkeyPatch,
     source_id: str,
     definition_hash: str | None,
 ) -> None:
-    monkeypatch.setenv("TEST_YOUTUBE_KEY", "configured-key")
     definition = _definition()
     media_transport = _MediaTransport()
-    connector = YouTubeConnector(definition, _UnusedHttpTransport(), media_transport)
+    connector = _connector(definition, _UnusedHttpTransport(), media_transport)
 
     with pytest.raises(SourceFetchError):
         _ = connector.fetch(
@@ -152,10 +168,7 @@ def test_youtube_connector_fetch_rejects_an_item_outside_its_source_identity(
     assert media_transport.calls == []
 
 
-def test_youtube_discovery_uses_the_stable_video_id_not_playlist_item_identity(
-    monkeypatch: MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("TEST_YOUTUBE_KEY", "configured-key")
+def test_youtube_discovery_uses_the_stable_video_id_not_playlist_item_identity() -> None:
     definition = _definition()
     response = {
         "items": [
@@ -168,7 +181,7 @@ def test_youtube_discovery_uses_the_stable_video_id_not_playlist_item_identity(
             },
         ],
     }
-    connector = YouTubeConnector(
+    connector = _connector(
         definition,
         _StaticHttpTransport(
             HttpResponse(
@@ -188,10 +201,7 @@ def test_youtube_discovery_uses_the_stable_video_id_not_playlist_item_identity(
     )
 
 
-def test_youtube_discovery_uses_page_tokens_only_for_backfill(
-    monkeypatch: MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("TEST_YOUTUBE_KEY", "configured-key")
+def test_youtube_discovery_uses_page_tokens_only_for_backfill() -> None:
     transport = _SequenceHttpTransport(
         (
             HttpResponse(b'{"items":[]}', "application/json", "https://example.test"),
@@ -202,7 +212,7 @@ def test_youtube_discovery_uses_page_tokens_only_for_backfill(
             ),
         )
     )
-    connector = YouTubeConnector(_definition(), transport, _MediaTransport())
+    connector = _connector(_definition(), transport, _MediaTransport())
     sync_cursor = SourceCursor(
         value=json.dumps({"high_water_video_id": "saved-watermark", "pending_ranges": []}),
     )
@@ -219,21 +229,15 @@ def test_youtube_discovery_uses_page_tokens_only_for_backfill(
 
 @pytest.mark.parametrize("cursor_value", ["plain-watermark", '{"high_water_video_id":1}'])
 def test_youtube_sync_rejects_a_plain_or_corrupt_cursor(
-    monkeypatch: MonkeyPatch,
     cursor_value: str,
 ) -> None:
-    monkeypatch.setenv("TEST_YOUTUBE_KEY", "configured-key")
-    connector = YouTubeConnector(_definition(), _SequenceHttpTransport(()), _MediaTransport())
+    connector = _connector(_definition(), _SequenceHttpTransport(()), _MediaTransport())
 
     with pytest.raises(SourceDiscoveryError):
         _ = connector.discover(SourceCursor(value=cursor_value), purpose=SourceCursorPurpose.SYNC)
 
 
-def test_youtube_sync_pages_until_the_previous_high_water_after_an_upload_burst(
-    monkeypatch: MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("TEST_YOUTUBE_KEY", "configured-key")
-
+def test_youtube_sync_pages_until_the_previous_high_water_after_an_upload_burst() -> None:
     def page(video_ids: tuple[str, ...], *, next_page: str | None = None) -> HttpResponse:
         payload: dict[str, object] = {
             "items": [
@@ -258,7 +262,7 @@ def test_youtube_sync_pages_until_the_previous_high_water_after_an_upload_burst(
             page(("new-1", "old-watermark")),
         )
     )
-    connector = YouTubeConnector(_definition(), transport, _MediaTransport())
+    connector = _connector(_definition(), transport, _MediaTransport())
     initial = connector.discover(None, purpose=SourceCursorPurpose.SYNC)
     assert initial.next_cursor is not None
 

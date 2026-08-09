@@ -4,8 +4,8 @@ from pydantic_ai import Agent
 
 from money_pit.agents.budget import BoundedInferenceAgent
 from money_pit.agents.budget import InferenceBudgetLimits
+from money_pit.agents.models import openai_chat_model
 from money_pit.config import Config
-from money_pit.constants import OPENAI_MODEL_PREFIX
 from money_pit.contracts import DiscoveryAgent
 from money_pit.contracts import DiscoveryDraft
 from money_pit.contracts import DiscoveryRequest
@@ -19,9 +19,9 @@ def make_discovery_agent(
     budget: InferenceBudgetLimits | None = None,
 ) -> DiscoveryAgent:
     """Return the typed A2 agent; deterministic code owns universe and weight authority."""
-    model_name = f"{OPENAI_MODEL_PREFIX}{model or config.llm_model}"
+    model_name = model or config.llm_model
     prompt = system_prompt("discovery")
-    core: Agent[None, str] = Agent(model=model_name, output_type=str)
+    core: Agent[None, str] = Agent(model=openai_chat_model(config, model_name=model), output_type=str)
     return BoundedInferenceAgent[DiscoveryRequest, DiscoveryDraft].create(
         invoke=lambda message: DiscoveryDraft.model_validate_json(core.run_sync(message).output),
         system_prompt=prompt,

@@ -20,6 +20,7 @@ from money_pit.schemas.evidence import TextLocator
 from money_pit.schemas.sources import DiscoveryBatch
 from money_pit.schemas.sources import RawArtifact
 from money_pit.schemas.sources import SourceCursor
+from money_pit.schemas.sources import SourceCursorPurpose
 from money_pit.schemas.sources import SourceDefinition
 from money_pit.schemas.sources import SourceItem
 from money_pit.sources._shared import BoundedConnectorConfig
@@ -29,6 +30,7 @@ from money_pit.sources._shared import parse_config
 from money_pit.sources._shared import read_bounded
 from money_pit.sources._shared import require_media_type
 from money_pit.sources._shared import sha256_bytes
+from money_pit.sources._shared import source_definition_hash
 from money_pit.sources._shared import utc_now
 from money_pit.sources.errors import SourceExtractionError
 from money_pit.sources.errors import SourceFetchError
@@ -60,8 +62,14 @@ class LocalFileConnector:
         self._fallback_media_type: str = fallback_media_type
         self._extraction_kind: Literal["text", "email", "binary"] = extraction_kind
 
-    def discover(self, cursor: SourceCursor | None) -> DiscoveryBatch:
+    def discover(
+        self,
+        cursor: SourceCursor | None,
+        *,
+        purpose: SourceCursorPurpose = SourceCursorPurpose.SYNC,
+    ) -> DiscoveryBatch:
         """Discover the configured file when its content version is new."""
+        del purpose
         content: bytes = read_bounded(self._path, self._config.max_content_bytes)
         digest: str = sha256_bytes(content)
         now: datetime = utc_now()
@@ -71,6 +79,7 @@ class LocalFileConnector:
         item: SourceItem = SourceItem(
             source_item_id=f"{self._definition.source_id}:{digest}",
             source_id=self._definition.source_id,
+            source_definition_hash=source_definition_hash(self._definition),
             canonical_uri=self._path.as_uri(),
             published_at=modified_at,
             updated_at=modified_at,

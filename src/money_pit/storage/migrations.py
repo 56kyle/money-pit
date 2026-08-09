@@ -1,124 +1,136 @@
-"""Module containing ordered SQLite migrations for the money_pit package."""
+"""Module containing the single release schema baseline and identity checks."""
+
 # pyright: reportAny=false
 
 import hashlib
 import importlib.resources
-import re
+import json
 import sqlite3
-from dataclasses import dataclass
 from datetime import datetime
 from datetime import timezone
 from typing import Final
 
-from money_pit.storage.errors import MigrationApplyError
-from money_pit.storage.errors import MigrationChecksumError
-from money_pit.storage.errors import MigrationDiscoveryError
-from money_pit.storage.errors import MigrationHistoryError
+from money_pit.constants import APP_NAME
+from money_pit.constants import APP_VERSION
+from money_pit.storage.errors import BaselineApplyError
+from money_pit.storage.errors import BaselineDiscoveryError
+from money_pit.storage.errors import UnknownDatabaseSchemaError
 
 
-_MIGRATION_PACKAGE: Final[str] = "money_pit.storage.sql"
-_MIGRATION_NAME_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?P<version>[0-9]{4})_(?P<name>[a-z0-9_]+)\.sql")
+_SCHEMA_PACKAGE: Final[str] = "money_pit.storage.sql"
+_BASELINE_FILENAME: Final[str] = "schema_0_0_2.sql"
 
 
-@dataclass(frozen=True)
-class Migration:
-    """One immutable, checksummed schema migration."""
-
-    version: int
-    name: str
-    sql: str
-    checksum: str
-
-
-def discover_migrations() -> tuple[Migration, ...]:
-    """Return packaged migrations in validated version order."""
-    resources = importlib.resources.files(_MIGRATION_PACKAGE)
-    migrations: list[Migration] = []
-    for resource in resources.iterdir():
-        match: re.Match[str] | None = _MIGRATION_NAME_PATTERN.fullmatch(resource.name)
-        if match is None:
-            continue
-        sql: str = resource.read_text(encoding="utf-8")
-        migrations.append(
-            Migration(
-                version=int(match.group("version")),
-                name=match.group("name"),
-                sql=sql,
-                checksum=hashlib.sha256(sql.encode("utf-8")).hexdigest(),
-            )
-        )
-    migrations.sort(key=lambda migration: migration.version)
-    versions: tuple[int, ...] = tuple(migration.version for migration in migrations)
-    expected_versions: tuple[int, ...] = tuple(range(1, len(migrations) + 1))
-    if not migrations or versions != expected_versions:
-        raise MigrationDiscoveryError(
-            f"Packaged migrations must be a non-empty contiguous sequence starting at 0001; found {versions}."
-        )
-    return tuple(migrations)
+def load_baseline_sql() -> str:
+    """Return the packaged 0.0.2 schema baseline."""
+    try:
+        return importlib.resources.files(_SCHEMA_PACKAGE).joinpath(_BASELINE_FILENAME).read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError) as error:
+        raise BaselineDiscoveryError("The packaged 0.0.2 schema baseline is unavailable.") from error
 
 
 def _sql_statements(script: str) -> tuple[str, ...]:
-    """Split a migration script using SQLite's own completeness parser."""
+    """Split a baseline using SQLite's statement completeness parser."""
     statements: list[str] = []
     pending: list[str] = []
     for line in script.splitlines(keepends=True):
         pending.append(line)
         candidate: str = "".join(pending)
         if sqlite3.complete_statement(candidate):
-            if candidate.strip():  # pragma: no branch - complete SQLite statements are non-empty here.
+            if candidate.strip():
                 statements.append(candidate)
             pending.clear()
     if "".join(pending).strip():
-        raise MigrationDiscoveryError("Packaged migration ends with an incomplete SQL statement.")
+        raise BaselineDiscoveryError("The packaged baseline ends with an incomplete SQL statement.")
     return tuple(statements)
 
 
-def _applied_migrations(connection: sqlite3.Connection) -> tuple[tuple[int, str, str], ...]:
+def _catalog_rows(connection: sqlite3.Connection) -> tuple[tuple[str, str, str, str], ...]:
     rows: list[sqlite3.Row] = connection.execute(
-        "SELECT version, name, checksum FROM schema_migrations ORDER BY version"
+        """
+        SELECT type, name, tbl_name, sql
+        FROM sqlite_schema
+        WHERE name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
+        ORDER BY type, name, tbl_name, sql
+        """
     ).fetchall()
-    return tuple((int(row["version"]), str(row["name"]), str(row["checksum"])) for row in rows)
+    return tuple((str(row["type"]), str(row["name"]), str(row["tbl_name"]), str(row["sql"])) for row in rows)
 
 
-def apply_pending_migrations(
-    connection: sqlite3.Connection,
-    migrations: tuple[Migration, ...] | None = None,
-) -> None:
-    """Apply the unapplied suffix after verifying immutable migration history."""
-    selected: tuple[Migration, ...] = migrations if migrations is not None else discover_migrations()
-    connection.execute(
-        """
-        CREATE TABLE IF NOT EXISTS schema_migrations (
-            version INTEGER PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE,
-            checksum TEXT NOT NULL,
-            applied_at TEXT NOT NULL
+def catalog_fingerprint(connection: sqlite3.Connection) -> str:
+    """Return a deterministic digest of the complete application schema catalog."""
+    encoded: bytes = json.dumps(_catalog_rows(connection), separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def expected_schema_fingerprint() -> str:
+    """Build the packaged baseline in memory and return its catalog digest."""
+    connection: sqlite3.Connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    try:
+        for statement in _sql_statements(load_baseline_sql()):
+            _ = connection.execute(statement)
+        return catalog_fingerprint(connection)
+    except sqlite3.Error as error:
+        raise BaselineDiscoveryError("The packaged 0.0.2 baseline is not valid SQLite.") from error
+    finally:
+        connection.close()
+
+
+def is_logically_empty(connection: sqlite3.Connection) -> bool:
+    """Return whether the database has no application schema objects."""
+    return not _catalog_rows(connection)
+
+
+def apply_baseline(connection: sqlite3.Connection) -> None:
+    """Apply the baseline only to a logically empty database."""
+    if not is_logically_empty(connection):
+        raise UnknownDatabaseSchemaError("A schema baseline can be applied only to an empty database.")
+    expected_fingerprint: str = expected_schema_fingerprint()
+    try:
+        for statement in _sql_statements(load_baseline_sql()):
+            _ = connection.execute(statement)
+        initialized_at: str = datetime.now(tz=timezone.utc).isoformat()
+        _ = connection.execute(
+            """
+            INSERT INTO schema_metadata (
+                singleton, application_id, release, schema_fingerprint, initialized_at
+            ) VALUES (1, ?, ?, ?, ?)
+            """,
+            (APP_NAME, APP_VERSION, expected_fingerprint, initialized_at),
         )
-        """
-    )
-    applied: tuple[tuple[int, str, str], ...] = _applied_migrations(connection)
-    if len(applied) > len(selected):
-        raise MigrationHistoryError("Database contains migrations not present in this application build.")
-    for index, (version, name, checksum) in enumerate(applied):
-        packaged: Migration = selected[index]
-        if version != packaged.version or name != packaged.name:
-            raise MigrationHistoryError(
-                f"Database migration {version}:{name} is not the expected {packaged.version}:{packaged.name}."
-            )
-        if checksum != packaged.checksum:
-            raise MigrationChecksumError(f"Database migration {version}:{name} does not match its packaged checksum.")
+        _ = connection.execute(
+            """
+            INSERT INTO execution_control (
+                control_id, execution_disabled, changed_at, changed_by, reason, policy_version
+            ) VALUES (1, 1, ?, 'system', 'Execution is disabled until explicitly enabled.', 'unconfigured')
+            """,
+            (initialized_at,),
+        )
+    except sqlite3.Error as error:
+        raise BaselineApplyError("Could not apply the 0.0.2 schema baseline.") from error
 
-    for migration in selected[len(applied) :]:
-        try:
-            for statement in _sql_statements(migration.sql):
-                connection.execute(statement)
-            applied_at: str = datetime.now(tz=timezone.utc).isoformat()
-            connection.execute(
-                """
-                INSERT INTO schema_migrations (version, name, checksum, applied_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (migration.version, migration.name, migration.checksum, applied_at),
-            )
-        except sqlite3.Error as error:
-            raise MigrationApplyError(f"Could not apply migration {migration.version}:{migration.name}.") from error
+
+def verify_schema_identity(connection: sqlite3.Connection) -> None:
+    """Fail closed unless metadata and the live schema exactly match this build."""
+    expected_fingerprint: str = expected_schema_fingerprint()
+    try:
+        row: sqlite3.Row | None = connection.execute(
+            """
+            SELECT application_id, release, schema_fingerprint
+            FROM schema_metadata
+            WHERE singleton = 1
+            """
+        ).fetchone()
+    except sqlite3.Error as error:
+        raise UnknownDatabaseSchemaError("The nonempty database has no recognized schema metadata.") from error
+    if row is None:
+        raise UnknownDatabaseSchemaError("The nonempty database has no recognized schema metadata.")
+    stored_identity: tuple[str, str, str] = (
+        str(row["application_id"]),
+        str(row["release"]),
+        str(row["schema_fingerprint"]),
+    )
+    expected_identity: tuple[str, str, str] = (APP_NAME, APP_VERSION, expected_fingerprint)
+    if stored_identity != expected_identity or catalog_fingerprint(connection) != expected_fingerprint:
+        raise UnknownDatabaseSchemaError("The database schema does not exactly match the money-pit 0.0.2 baseline.")

@@ -1,5 +1,8 @@
 """Subpackage containing static portfolio-report renderers."""
 
+from money_pit.reports.outcomes import render_outcome_html
+from money_pit.reports.outcomes import render_outcome_json
+from money_pit.reports.outcomes import render_outcome_markdown
 from money_pit.reports.portfolio import PortfolioReview
 from money_pit.reports.portfolio import ReportEvidence
 from money_pit.reports.portfolio import ReportReadError
@@ -18,5 +21,8 @@ __all__ = [
     "render_html",
     "render_json",
     "render_markdown",
+    "render_outcome_html",
+    "render_outcome_json",
+    "render_outcome_markdown",
     "write_report_bundle",
 ]

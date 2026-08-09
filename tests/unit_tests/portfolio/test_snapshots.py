@@ -95,9 +95,11 @@ def test_portfolio_state_payload_with_unsorted_positions_rejects_value(
     portfolio_state_payload: PortfolioStatePayload,
 ) -> None:
     with pytest.raises(ValidationError):
-        PortfolioStatePayload(
-            **portfolio_state_payload.model_dump(exclude={"positions"}),
-            positions=tuple(reversed(portfolio_state_payload.positions)),
+        _ = PortfolioStatePayload.model_validate(
+            {
+                **portfolio_state_payload.model_dump(exclude={"positions"}),
+                "positions": tuple(reversed(portfolio_state_payload.positions)),
+            },
         )
 
 
@@ -105,7 +107,7 @@ def test_market_state_payload_with_duplicate_quotes_rejects_value(
     market_state_payload: MarketStatePayload,
 ) -> None:
     with pytest.raises(ValidationError):
-        MarketStatePayload(
+        _ = MarketStatePayload(
             captured_at=market_state_payload.captured_at,
             quotes=(market_state_payload.quotes[0], market_state_payload.quotes[0]),
         )
@@ -154,14 +156,14 @@ def test_snapshot_repository_rejects_identifier_collision(
     snapshot_repository.append_portfolio(original)
 
     with pytest.raises(MalformedSnapshotRecordError):
-        snapshot_repository.append_portfolio(collision)
+        _ = snapshot_repository.append_portfolio(collision)
 
 
 def test_snapshot_repository_with_missing_snapshot_raises(
     snapshot_repository: SnapshotRepository,
 ) -> None:
     with pytest.raises(SnapshotNotFoundError):
-        snapshot_repository.get_market("missing")
+        _ = snapshot_repository.get_market("missing")
 
 
 def test_snapshot_repository_with_tampered_json_fails_closed(
@@ -172,11 +174,11 @@ def test_snapshot_repository_with_tampered_json_fails_closed(
     snapshot: PortfolioStateSnapshot = PortfolioStateSnapshot.from_payload(portfolio_state_payload)
     snapshot_repository.append_portfolio(snapshot)
     with database.transaction(TransactionMode.WRITE) as connection:
-        connection.execute(
+        _ = connection.execute(
             """UPDATE portfolio_state_snapshots SET payload_json = ?
             WHERE snapshot_id = ?""",
             ("{}", snapshot.snapshot_id),
         )
 
     with pytest.raises(MalformedSnapshotRecordError):
-        snapshot_repository.get_portfolio(snapshot.snapshot_id)
+        _ = snapshot_repository.get_portfolio(snapshot.snapshot_id)

@@ -5,7 +5,6 @@ attestations. Callers must construct the complete ``PortfolioPlan`` before this
 boundary will validate its digest and persist it.
 """
 
-import json
 import sqlite3
 from datetime import datetime
 from typing import cast
@@ -50,22 +49,16 @@ class PortfolioPlanRepository:
             _ = connection.execute(
                 """
                 INSERT INTO portfolio_plans (
-                    plan_id, plan_hash, created_at, expires_at, portfolio_snapshot_id,
-                    market_snapshot_id, policy_version, model_versions_json,
-                    prompt_versions_json, plan_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    plan_id, plan_hash, decision_snapshot_id, created_at, expires_at, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT DO NOTHING
                 """,
                 (
                     payload.plan_id,
                     plan.plan_hash,
+                    payload.decision_snapshot_id,
                     payload.created_at.isoformat(),
                     payload.expires_at.isoformat(),
-                    payload.portfolio_snapshot_id,
-                    payload.market_snapshot_id,
-                    payload.policy_version,
-                    json.dumps(payload.model_versions, sort_keys=True),
-                    json.dumps(payload.prompt_versions, sort_keys=True),
                     plan.model_dump_json(),
                 ),
             )
@@ -90,9 +83,7 @@ def _select_plan_row(connection: sqlite3.Connection, plan_id: str) -> sqlite3.Ro
         "sqlite3.Row | None",
         connection.execute(
             """
-            SELECT plan_id, plan_hash, created_at, expires_at, portfolio_snapshot_id,
-                   market_snapshot_id, policy_version, model_versions_json,
-                   prompt_versions_json, plan_json
+            SELECT plan_id, plan_hash, decision_snapshot_id, created_at, expires_at, payload_json
             FROM portfolio_plans
             WHERE plan_id = ?
             """,
@@ -103,20 +94,16 @@ def _select_plan_row(connection: sqlite3.Connection, plan_id: str) -> sqlite3.Ro
 
 def _plan_from_row(row: sqlite3.Row) -> PortfolioPlan:
     try:
-        plan: PortfolioPlan = PortfolioPlan.model_validate_json(_text_column(row, "plan_json"))
+        plan: PortfolioPlan = PortfolioPlan.model_validate_json(_text_column(row, "payload_json"))
         payload = plan.payload
         indexed_values: tuple[tuple[object, object], ...] = (
             (_text_column(row, "plan_id"), payload.plan_id),
             (_text_column(row, "plan_hash"), plan.plan_hash),
+            (_text_column(row, "decision_snapshot_id"), payload.decision_snapshot_id),
             (_datetime_column(row, "created_at"), payload.created_at),
             (_datetime_column(row, "expires_at"), payload.expires_at),
-            (_text_column(row, "portfolio_snapshot_id"), payload.portfolio_snapshot_id),
-            (_text_column(row, "market_snapshot_id"), payload.market_snapshot_id),
-            (_text_column(row, "policy_version"), payload.policy_version),
-            (_string_mapping_column(row, "model_versions_json"), payload.model_versions),
-            (_string_mapping_column(row, "prompt_versions_json"), payload.prompt_versions),
         )
-    except (TypeError, ValueError, json.JSONDecodeError, ValidationError) as error:
+    except (TypeError, ValueError, ValidationError) as error:
         raise MalformedPortfolioPlanRecordError("Stored portfolio plan is malformed") from error
     if any(indexed != canonical for indexed, canonical in indexed_values):
         raise MalformedPortfolioPlanRecordError("Stored portfolio-plan metadata disagrees with its payload")
@@ -139,15 +126,3 @@ def _datetime_column(row: sqlite3.Row, name: str) -> datetime:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ValueError(f"Stored {name} must be timezone-aware")
     return parsed
-
-
-def _string_mapping_column(row: sqlite3.Row, name: str) -> dict[str, str]:
-    parsed: object = cast("object", json.loads(_text_column(row, name)))
-    if not isinstance(parsed, dict):
-        raise TypeError(f"Stored {name} must be a JSON object")
-    mapping: dict[str, str] = {}
-    for key, value in cast("dict[object, object]", parsed).items():
-        if not isinstance(key, str) or not isinstance(value, str):
-            raise TypeError(f"Stored {name} must map text keys to text values")
-        mapping[key] = value
-    return mapping

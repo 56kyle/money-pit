@@ -9,7 +9,6 @@ import pytest
 _INTEGRATION_ENV: dict[str, str] = {
     "MONEY_PIT__ALPACA_SERVICE": "alpaca-paper",
     "MONEY_PIT__ALPACA_USERNAME": "56kyle",
-    "MONEY_PIT__ALPACA_PAPER": "true",
 }
 
 
@@ -22,6 +21,6 @@ def integration_env() -> Iterator[None]:
     finally:
         for name, prior in snapshot.items():
             if prior is None:
-                os.environ.pop(name, None)
+                _ = os.environ.pop(name, None)
             else:
                 os.environ[name] = prior

@@ -4,7 +4,6 @@ import sqlite3
 from collections.abc import Iterator
 from datetime import datetime
 from datetime import timedelta
-from typing import TYPE_CHECKING
 from typing import cast
 
 import pytest
@@ -18,23 +17,29 @@ from money_pit.execution_control.repository import ExecutionClaimTransitionError
 from money_pit.execution_control.repository import InvalidExecutionClaimStatusError
 from money_pit.execution_control.repository import MissingExecutionControlStateError
 from money_pit.execution_control.repository import SqliteExecutionAuthorityRepository
-from money_pit.execution_control.repository import _aware_datetime_column
-from money_pit.execution_control.repository import _integer_column
-from money_pit.execution_control.repository import _optional_text_column
-from money_pit.execution_control.repository import _row_or_none
-from money_pit.execution_control.repository import _text_column
+from money_pit.execution_control.repository import (
+    _aware_datetime_column,  # pyright: ignore[reportPrivateUsage]  # Contract test pins durable row validation.
+)
+from money_pit.execution_control.repository import (
+    _integer_column,  # pyright: ignore[reportPrivateUsage]  # Contract test pins durable row validation.
+)
+from money_pit.execution_control.repository import (
+    _optional_text_column,  # pyright: ignore[reportPrivateUsage]  # Contract test pins durable row validation.
+)
+from money_pit.execution_control.repository import (
+    _row_or_none,  # pyright: ignore[reportPrivateUsage]  # Contract test pins durable row validation.
+)
+from money_pit.execution_control.repository import (
+    _text_column,  # pyright: ignore[reportPrivateUsage]  # Contract test pins durable row validation.
+)
 from money_pit.schemas.portfolio_plan import PortfolioPlan
 from money_pit.storage.database import Database
 from money_pit.storage.database import TransactionMode
 
 
-if TYPE_CHECKING:
-    from money_pit.plans.lifecycle import PlanDecision
-
-
 def _remove_control_state(database: Database) -> None:
     with database.transaction(TransactionMode.WRITE) as connection:
-        connection.execute("DELETE FROM execution_control WHERE control_id = 1")
+        _ = connection.execute("DELETE FROM execution_control WHERE control_id = 1")
 
 
 def test_get_unknown_plan_returns_none(
@@ -49,13 +54,6 @@ def test_latest_for_unknown_plan_returns_none(
     assert execution_repository.latest_for("missing-plan") is None
 
 
-def test_append_rejects_unknown_decision_type(
-    execution_repository: SqliteExecutionAuthorityRepository,
-) -> None:
-    with pytest.raises(AssertionError, match="Unhandled plan decision"):
-        execution_repository.append(cast("PlanDecision", object()))
-
-
 def test_get_control_state_without_seed_row_fails_closed(
     database: Database,
     execution_repository: SqliteExecutionAuthorityRepository,
@@ -63,14 +61,14 @@ def test_get_control_state_without_seed_row_fails_closed(
     _remove_control_state(database)
 
     with pytest.raises(MissingExecutionControlStateError):
-        execution_repository.get_control_state()
+        _ = execution_repository.get_control_state()
 
 
 def test_disable_rejects_enabled_state(
     execution_repository: SqliteExecutionAuthorityRepository,
     now: datetime,
 ) -> None:
-    state = ExecutionControlState(disabled=False, changed_at=now, actor="operator")
+    state = ExecutionControlState(disabled=False, changed_at=now, actor="operator", policy_version="policy-1")
 
     with pytest.raises(ValueError, match="disable requires"):
         execution_repository.disable(state)
@@ -82,7 +80,7 @@ def test_disable_without_seed_row_fails_closed(
     now: datetime,
 ) -> None:
     _remove_control_state(database)
-    state = ExecutionControlState(disabled=True, changed_at=now, actor="operator")
+    state = ExecutionControlState(disabled=True, changed_at=now, actor="operator", policy_version="policy-1")
 
     with pytest.raises(MissingExecutionControlStateError):
         execution_repository.disable(state)
@@ -92,7 +90,7 @@ def test_enable_persists_enabled_state(
     execution_repository: SqliteExecutionAuthorityRepository,
     now: datetime,
 ) -> None:
-    state = ExecutionControlState(disabled=False, changed_at=now, actor="operator")
+    state = ExecutionControlState(disabled=False, changed_at=now, actor="operator", policy_version="policy-1")
 
     execution_repository.enable(state)
 
@@ -103,7 +101,7 @@ def test_enable_rejects_disabled_state(
     execution_repository: SqliteExecutionAuthorityRepository,
     now: datetime,
 ) -> None:
-    state = ExecutionControlState(disabled=True, changed_at=now, actor="operator")
+    state = ExecutionControlState(disabled=True, changed_at=now, actor="operator", policy_version="policy-1")
 
     with pytest.raises(ValueError, match="enable requires"):
         execution_repository.enable(state)
@@ -115,7 +113,7 @@ def test_enable_without_seed_row_fails_closed(
     now: datetime,
 ) -> None:
     _remove_control_state(database)
-    state = ExecutionControlState(disabled=False, changed_at=now, actor="operator")
+    state = ExecutionControlState(disabled=False, changed_at=now, actor="operator", policy_version="policy-1")
 
     with pytest.raises(MissingExecutionControlStateError):
         execution_repository.enable(state)
@@ -293,7 +291,7 @@ def test_update_with_naive_durable_timestamp_fails_closed(
 ) -> None:
     execution_repository.claim(persisted_portfolio_plan.plan_hash, "leg-0", claimed_at=now)
     with database.transaction(TransactionMode.WRITE) as connection:
-        connection.execute(
+        _ = connection.execute(
             """UPDATE execution_claims SET updated_at = ?
             WHERE plan_hash = ? AND trade_identity = ?""",
             (now.replace(tzinfo=None).isoformat(), persisted_portfolio_plan.plan_hash, "leg-0"),
@@ -365,8 +363,8 @@ def test_latest_for_unknown_persisted_decision_fails_closed(
     now: datetime,
 ) -> None:
     with database.transaction(TransactionMode.WRITE) as connection:
-        connection.execute("PRAGMA ignore_check_constraints = ON")
-        connection.execute(
+        _ = connection.execute("PRAGMA ignore_check_constraints = ON")
+        _ = connection.execute(
             """INSERT INTO plan_decisions
             (decision_id, plan_id, plan_hash, decision, decided_at, actor, reason)
             VALUES (?, ?, ?, ?, ?, ?, ?)""",
@@ -377,12 +375,12 @@ def test_latest_for_unknown_persisted_decision_fails_closed(
                 "unknown",
                 now.isoformat(),
                 "operator",
-                None,
+                "",
             ),
         )
 
     with pytest.raises(ExecutionControlError, match="Unknown decision"):
-        execution_repository.latest_for(persisted_portfolio_plan.payload.plan_id)
+        _ = execution_repository.latest_for(persisted_portfolio_plan.payload.plan_id)
 
 
 @pytest.fixture
@@ -396,20 +394,23 @@ def sqlite_row_connection() -> Iterator[sqlite3.Connection]:
 
 
 def _row_with_value(connection: sqlite3.Connection, value: object) -> sqlite3.Row:
-    row = connection.execute("SELECT ? AS value", (value,)).fetchone()
+    row = cast(
+        "sqlite3.Row | None",
+        connection.execute("SELECT ? AS value", (value,)).fetchone(),
+    )
     assert row is not None
     return row
 
 
 def test__row_or_none_rejects_unexpected_row_representation() -> None:
     with pytest.raises(ExecutionControlError, match="unexpected row representation"):
-        _row_or_none(("value",))
+        _ = _row_or_none(("value",))
 
 
 def test__text_column_rejects_non_text(sqlite_row_connection: sqlite3.Connection) -> None:
     row = _row_with_value(sqlite_row_connection, 1)
     with pytest.raises(ExecutionControlError, match="must be text"):
-        _text_column(row, "value")
+        _ = _text_column(row, "value")
 
 
 def test__optional_text_column_preserves_null(sqlite_row_connection: sqlite3.Connection) -> None:
@@ -420,13 +421,13 @@ def test__optional_text_column_preserves_null(sqlite_row_connection: sqlite3.Con
 def test__optional_text_column_rejects_non_text(sqlite_row_connection: sqlite3.Connection) -> None:
     row = _row_with_value(sqlite_row_connection, 1)
     with pytest.raises(ExecutionControlError, match="must be text or null"):
-        _optional_text_column(row, "value")
+        _ = _optional_text_column(row, "value")
 
 
 def test__integer_column_rejects_non_integer(sqlite_row_connection: sqlite3.Connection) -> None:
     row = _row_with_value(sqlite_row_connection, "1")
     with pytest.raises(ExecutionControlError, match="must be an integer"):
-        _integer_column(row, "value")
+        _ = _integer_column(row, "value")
 
 
 def test__aware_datetime_column_rejects_invalid_iso_datetime(
@@ -434,7 +435,7 @@ def test__aware_datetime_column_rejects_invalid_iso_datetime(
 ) -> None:
     row = _row_with_value(sqlite_row_connection, "not-a-datetime")
     with pytest.raises(ExecutionControlError, match="must be an ISO datetime"):
-        _aware_datetime_column(row, "value")
+        _ = _aware_datetime_column(row, "value")
 
 
 def test__aware_datetime_column_rejects_naive_datetime(
@@ -442,4 +443,4 @@ def test__aware_datetime_column_rejects_naive_datetime(
 ) -> None:
     row = _row_with_value(sqlite_row_connection, "2026-07-29T12:00:00")
     with pytest.raises(ExecutionControlError, match="must be timezone-aware"):
-        _aware_datetime_column(row, "value")
+        _ = _aware_datetime_column(row, "value")

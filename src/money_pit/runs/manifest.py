@@ -1,93 +1,148 @@
-"""Module containing immutable generic run manifests for the money_pit package."""
+"""Module registering recoverable filesystem and database run starts."""
 
-import json
+from __future__ import annotations
+
 import os
 import tempfile
-import uuid
-from dataclasses import dataclass
-from datetime import datetime
-from datetime import timezone
+from contextlib import suppress
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING
+from typing import Protocol
+
+from pydantic import ValidationError
 
 from money_pit.constants import RUN_MANIFEST_FILENAME
 from money_pit.runs.errors import RunAlreadyExistsError
 from money_pit.runs.errors import RunManifestWriteError
-from money_pit.runs.paths import RepositoryPaths
+from money_pit.runs.errors import RunReconciliationNotFoundError
+from money_pit.runs.errors import RunRegistrationIncompleteError
+from money_pit.schemas.runs import RunRecord
+from money_pit.schemas.runs import validate_run_id
+from money_pit.storage.runs import ImmutableRunCollisionError
 
 
-_MANIFEST_SCHEMA_VERSION: Final[int] = 1
+if TYPE_CHECKING:
+    from money_pit.runs.paths import RepositoryPaths
 
 
-@dataclass(frozen=True)
-class RunManifest:
-    """An immutable UUID4 run identity with an explicit creation instant."""
+class RunStartStore(Protocol):
+    """Database authority required for recoverable run registration."""
 
-    run_id: uuid.UUID
-    created_at: datetime
-    schema_version: int = _MANIFEST_SCHEMA_VERSION
-
-    def __post_init__(self) -> None:
-        """Validate identity, time, and manifest schema invariants."""
-        if self.run_id.version != 4:
-            raise ValueError("run_id must be a UUID4 value.")
-        if self.created_at.tzinfo is None or self.created_at.utcoffset() is None:
-            raise ValueError("created_at must be timezone-aware.")
-        if self.schema_version != _MANIFEST_SCHEMA_VERSION:
-            raise ValueError(f"schema_version must be {_MANIFEST_SCHEMA_VERSION}.")
-
-    def to_json(self) -> str:
-        """Serialize the manifest using stable field order and UTC timestamps."""
-        created_at_utc: datetime = self.created_at.astimezone(timezone.utc)
-        return (
-            json.dumps(
-                {
-                    "schema_version": self.schema_version,
-                    "run_id": str(self.run_id),
-                    "created_at": created_at_utc.isoformat(),
-                },
-                indent=2,
-            )
-            + "\n"
-        )
+    def append_run(self, run: RunRecord) -> None:
+        """Append or validate the exact immutable start record."""
+        ...
 
 
-def create_run(
-    paths: RepositoryPaths,
-    *,
-    created_at: datetime | None = None,
-    run_id: uuid.UUID | None = None,
-) -> tuple[RunManifest, Path]:
-    """Create one UUID4 run directory and its manifest atomically."""
-    manifest: RunManifest = RunManifest(
-        run_id=run_id if run_id is not None else uuid.uuid4(),
-        created_at=created_at if created_at is not None else datetime.now(tz=timezone.utc),
-    )
-    run_dir: Path = paths.runs_root / str(manifest.run_id)
+class RunReconciliationStore(RunStartStore, Protocol):
+    """Database authority that can discover an existing run start."""
+
+    def find_run(self, run_id: str) -> RunRecord | None:
+        """Return the registered start, if any."""
+        ...
+
+
+def register_run(paths: RepositoryPaths, store: RunStartStore, record: RunRecord) -> Path:
+    """Register one run start in SQLite before atomically installing its manifest."""
+    paths.runs_root.mkdir(parents=True, exist_ok=True)
+    run_dir = paths.runs_root / record.run_id
+    pending_dir = paths.runs_root / f".run-{record.run_id}.pending"
+    if run_dir.exists():
+        _require_exact_manifest(run_dir, record)
+        _append_database_start(store, record)
+        if pending_dir.exists():
+            _require_exact_manifest(pending_dir, record)
+            _remove_redundant_pending(pending_dir, record.run_id)
+        return run_dir
+    if pending_dir.exists():
+        _require_exact_manifest(pending_dir, record)
+    else:
+        _create_pending_manifest(pending_dir, record)
+    _append_database_start(store, record)
     try:
-        run_dir.mkdir(parents=True, exist_ok=False)
+        _ = pending_dir.replace(run_dir)
+    except OSError as error:
+        raise RunRegistrationIncompleteError(record.run_id, "manifest_install") from error
+    return run_dir
+
+
+def reconcile_run(paths: RepositoryPaths, store: RunReconciliationStore, run_id: str) -> Path:
+    """Discover and safely reconcile database, final, and pending run-start state."""
+    _ = validate_run_id(run_id)
+    final_dir = paths.runs_root / run_id
+    pending_dir = paths.runs_root / f".run-{run_id}.pending"
+    database_record = store.find_run(run_id)
+    final_record = _record_if_present(final_dir, run_id)
+    pending_record = _record_if_present(pending_dir, run_id)
+    discovered = tuple(record for record in (database_record, final_record, pending_record) if record is not None)
+    if not discovered:
+        raise RunReconciliationNotFoundError(f"No durable state exists for run {run_id}.")
+    expected = discovered[0]
+    if any(record != expected for record in discovered[1:]):
+        raise RunAlreadyExistsError(f"Run stores disagree for {run_id}.")
+    return register_run(paths, store, expected)
+
+
+def _create_pending_manifest(pending_dir: Path, record: RunRecord) -> None:
+    try:
+        pending_dir.mkdir(parents=False, exist_ok=False)
     except FileExistsError as error:
-        raise RunAlreadyExistsError(f"Run directory already exists for {manifest.run_id}.") from error
-    manifest_path: Path = run_dir / RUN_MANIFEST_FILENAME
+        raise RunAlreadyExistsError(f"Pending run directory already exists for {record.run_id}.") from error
+    manifest_path = pending_dir / RUN_MANIFEST_FILENAME
     temporary_path: Path | None = None
     try:
-        file_descriptor: int
-        temporary_name: str
-        file_descriptor, temporary_name = tempfile.mkstemp(
-            dir=run_dir,
-            prefix=".run.",
-            suffix=".tmp",
-        )
+        descriptor, temporary_name = tempfile.mkstemp(dir=pending_dir, prefix=".run.", suffix=".tmp")
         temporary_path = Path(temporary_name)
-        with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="\n") as manifest_file:
-            manifest_file.write(manifest.to_json())
-            manifest_file.flush()
-            os.fsync(manifest_file.fileno())
-        temporary_path.replace(manifest_path)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            _ = stream.write(record.canonical_json())
+            stream.flush()
+            os.fsync(stream.fileno())
+        _ = temporary_path.replace(manifest_path)
         temporary_path = None
     except OSError as error:
-        raise RunManifestWriteError(f"Could not write manifest for run {manifest.run_id}.") from error
+        raise RunManifestWriteError(f"Could not write manifest for run {record.run_id}.") from error
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
-    return manifest, run_dir
+        if not manifest_path.exists():
+            with suppress(OSError):
+                pending_dir.rmdir()
+
+
+def _append_database_start(store: RunStartStore, record: RunRecord) -> None:
+    try:
+        store.append_run(record)
+    except ImmutableRunCollisionError:
+        raise
+    except Exception as error:
+        raise RunRegistrationIncompleteError(record.run_id, "database_registration") from error
+
+
+def _require_exact_manifest(directory: Path, expected: RunRecord) -> None:
+    actual = _read_manifest(directory, expected.run_id)
+    if actual != expected:
+        raise RunAlreadyExistsError(f"Run manifest differs for {expected.run_id}.")
+
+
+def _record_if_present(directory: Path, run_id: str) -> RunRecord | None:
+    if not directory.exists():
+        return None
+    return _read_manifest(directory, run_id)
+
+
+def _read_manifest(directory: Path, run_id: str) -> RunRecord:
+    manifest_path = directory / RUN_MANIFEST_FILENAME
+    try:
+        actual = RunRecord.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, ValidationError) as error:
+        raise RunAlreadyExistsError(f"Run manifest is invalid for {run_id}.") from error
+    if actual.run_id != run_id:
+        raise RunAlreadyExistsError(f"Run manifest identity differs for {run_id}.")
+    return actual
+
+
+def _remove_redundant_pending(pending_dir: Path, run_id: str) -> None:
+    try:
+        (pending_dir / RUN_MANIFEST_FILENAME).unlink()
+        pending_dir.rmdir()
+    except OSError as error:
+        raise RunRegistrationIncompleteError(run_id, "pending_cleanup") from error

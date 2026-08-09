@@ -2,6 +2,7 @@
 
 from money_pit.sources.feeds import FeedConnector
 from money_pit.sources.http import WebConnector
+from money_pit.sources.imap import ImapConnector
 from money_pit.sources.local import local_audio_connector
 from money_pit.sources.local import local_email_connector
 from money_pit.sources.local import local_pdf_connector
@@ -18,6 +19,7 @@ def builtin_adapter_registry() -> AdapterRegistry:
     registry.register("local_audio", local_audio_connector)
     registry.register("local_pdf", local_pdf_connector)
     registry.register("local_email", local_email_connector)
+    registry.register("imap", ImapConnector)
     registry.register("manual_url", WebConnector)
     registry.register("web", WebConnector)
     registry.register("rss", FeedConnector)

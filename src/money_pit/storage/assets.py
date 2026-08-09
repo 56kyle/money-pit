@@ -61,10 +61,10 @@ class AssetStore:
             )
             temporary_path = Path(temporary_name)
             with os.fdopen(file_descriptor, "wb") as temporary_file:
-                temporary_file.write(content)
+                _ = temporary_file.write(content)
                 temporary_file.flush()
                 os.fsync(temporary_file.fileno())
-            temporary_path.replace(destination)
+            _ = temporary_path.replace(destination)
             temporary_path = None
         except OSError as error:
             raise AssetWriteError(f"Could not persist asset {digest}.") from error

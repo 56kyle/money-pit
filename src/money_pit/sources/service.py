@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import timezone
@@ -10,15 +11,26 @@ from typing import TYPE_CHECKING
 from typing import ClassVar
 from typing import Protocol
 from typing import cast
+from uuid import uuid4
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 
+from money_pit.evidence.admission import materialize_processing_bundle
+from money_pit.evidence.errors import EvidenceProcessingError
+from money_pit.evidence.errors import EvidenceProcessorNotFoundError
+from money_pit.evidence.results import EvidenceProcessingBundle
+from money_pit.schemas.evidence import EvidenceDocument
+from money_pit.schemas.evidence import EvidenceProcessingAttempt
+from money_pit.schemas.evidence import EvidenceProcessingStatus
 from money_pit.schemas.sources import SourceCursor
 from money_pit.schemas.sources import SourceCursorPurpose
+from money_pit.sources._shared import evidence_asset
 from money_pit.sources._shared import utc_now
 from money_pit.sources.errors import SourceDiscoveryError
+from money_pit.sources.errors import SourceError
+from money_pit.sources.errors import SourceExtractionError
 from money_pit.storage.database import Database
 from money_pit.storage.database import TransactionMode
 
@@ -27,11 +39,14 @@ if TYPE_CHECKING:
     import sqlite3
     from datetime import datetime
 
-    from money_pit.schemas.evidence import EvidenceDocument
+    from money_pit.evidence.processors import EvidenceProcessorRegistry
+    from money_pit.evidence.repository import EvidenceProcessingAttemptRepository
     from money_pit.schemas.evidence import EvidenceFragment
+    from money_pit.schemas.sources import RawArtifact
     from money_pit.schemas.sources import SourceDefinition
     from money_pit.schemas.sources import SourceItem
     from money_pit.schemas.sources import SourceRegistryDocument
+    from money_pit.sources.protocol import SourceConnector
     from money_pit.sources.registry import AdapterRegistry
     from money_pit.storage.assets import AssetStore
 
@@ -43,7 +58,7 @@ class SourceStateRepository(Protocol):
         self,
         definition: SourceDefinition,
         *,
-        registry_version: int,
+        registry_version: str,
         registered_at: datetime,
     ) -> bool:
         """Persist one current source definition."""
@@ -181,23 +196,26 @@ class EvidenceRepository:
             "sqlite3.Row | None",
             connection.execute(
                 """
-                SELECT source_id, canonical_uri, published_at, updated_at, discovered_at
+                SELECT source_id, source_definition_hash, canonical_uri,
+                       published_at, updated_at, discovered_at
                 FROM source_items
                 WHERE source_item_id = ? AND content_version = ?
                 """,
                 (item.source_item_id, item.content_version),
             ).fetchone(),
         )
-        values: tuple[str, str, str | None, str | None, str] = (
+        values: tuple[str, str, str, str | None, str | None, str] = (
             item.source_id,
+            item.source_definition_hash,
             item.canonical_uri,
             _optional_utc_text(item.published_at),
             _optional_utc_text(item.updated_at),
             _utc_text(item.discovered_at),
         )
         if existing is not None:
-            durable_values: tuple[str, str, str | None, str | None, str] = (
+            durable_values: tuple[str, str, str, str | None, str | None, str] = (
                 str(_column(existing, "source_id")),
+                str(_column(existing, "source_definition_hash")),
                 str(_column(existing, "canonical_uri")),
                 _optional_text(_column(existing, "published_at")),
                 _optional_text(_column(existing, "updated_at")),
@@ -209,10 +227,10 @@ class EvidenceRepository:
         _ = connection.execute(
             """
             INSERT INTO source_items (
-                source_item_id, source_id, canonical_uri, published_at,
+                source_item_id, source_id, source_definition_hash, canonical_uri, published_at,
                 updated_at, discovered_at, content_version
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (item.source_item_id, *values, item.content_version),
         )
@@ -315,19 +333,31 @@ class EvidenceRepository:
         if document.asset.source_item_id != source_item.source_item_id:
             raise SourceDiscoveryError("Evidence document does not belong to its source item")
         retrieved_at: str = _utc_text(document.asset.retrieved_at)
+        acquisition_id: str = hashlib.sha256(
+            "\0".join(
+                (
+                    document.asset.asset_id,
+                    source_item.source_item_id,
+                    source_item.content_version,
+                    retrieved_at,
+                ),
+            ).encode("utf-8"),
+        ).hexdigest()
         acquisition = connection.execute(
             """
             INSERT INTO evidence_asset_acquisitions (
-                asset_id, source_item_id, content_version, retrieved_at,
-                media_type, provenance_status
+                acquisition_id, asset_id, source_item_id, content_version,
+                source_definition_hash, retrieved_at, media_type
             )
-            VALUES (?, ?, ?, ?, ?, 'resolved')
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT DO NOTHING
             """,
             (
+                acquisition_id,
                 document.asset.asset_id,
                 source_item.source_item_id,
                 source_item.content_version,
+                source_item.source_definition_hash,
                 retrieved_at,
                 document.asset.media_type,
             ),
@@ -344,7 +374,6 @@ class EvidenceRepository:
                   AND source_item_id = ?
                   AND content_version = ?
                   AND retrieved_at = ?
-                  AND provenance_status = 'resolved'
                 """,
                 (
                     document.asset.asset_id,
@@ -421,14 +450,13 @@ class EvidenceRepository:
         _ = connection.execute(
             """
             INSERT INTO evidence_fragment_search (
-                fragment_id, extracted_text, cited_source_text
+                fragment_id, content
             )
-            VALUES (?, ?, ?)
+            VALUES (?, ?)
             """,
             (
                 fragment.fragment_id,
-                fragment.extracted_text,
-                fragment.cited_source_text,
+                "\n".join(value for value in (fragment.extracted_text, fragment.cited_source_text) if value),
             ),
         )
         return True
@@ -444,6 +472,9 @@ class SourceSyncService:
         source_repository: SourceStateRepository,
         evidence_repository: EvidenceRepository,
         asset_store: AssetStore,
+        *,
+        attempt_repository: EvidenceProcessingAttemptRepository,
+        processor_registry: EvidenceProcessorRegistry | None = None,
     ) -> None:
         """Bind a validated registry to its durable synchronization dependencies."""
         self._registry_document: SourceRegistryDocument = registry_document
@@ -451,6 +482,8 @@ class SourceSyncService:
         self._source_repository: SourceStateRepository = source_repository
         self._evidence_repository: EvidenceRepository = evidence_repository
         self._asset_store: AssetStore = asset_store
+        self._processor_registry: EvidenceProcessorRegistry | None = processor_registry
+        self._attempt_repository: EvidenceProcessingAttemptRepository = attempt_repository
 
     def register_definitions(self) -> int:
         """Persist all configured definitions and return the changed count."""
@@ -521,27 +554,19 @@ class SourceSyncService:
         cursor_purpose: SourceCursorPurpose = SourceCursorPurpose.SYNC,
     ) -> SourceSyncResult:
         connector = self._adapters.create(definition)
-        batch = connector.discover(cursor)
+        batch = connector.discover(cursor, purpose=cursor_purpose)
         records: list[SourceIngestionRecord] = []
+        attempts: list[EvidenceProcessingAttempt] = []
         for discovered_item in batch.items:
             artifact = connector.fetch(discovered_item)
-            stored = self._asset_store.put_bytes(artifact.content)
-            if stored.digest != artifact.content_hash:
-                raise SourceDiscoveryError("Fetched artifact hash changed during persistence")
-            extracted: EvidenceDocument = connector.extract(artifact)
-            durable_document: EvidenceDocument = extracted.model_copy(
-                update={
-                    "asset": extracted.asset.model_copy(
-                        update={"local_path": stored.path},
-                    ),
-                },
+            item_records, item_attempts = self._process_artifact(
+                definition.source_id,
+                connector,
+                artifact,
+                cursor_purpose=cursor_purpose,
             )
-            records.append(
-                SourceIngestionRecord(
-                    source_item=artifact.source_item,
-                    evidence_document=durable_document,
-                )
-            )
+            records.extend(item_records)
+            attempts.extend(item_attempts)
         persistence: SourceIngestionPersistenceResult = self._evidence_repository.persist_ingestion_batch(
             definition.source_id,
             tuple(records),
@@ -549,6 +574,8 @@ class SourceSyncService:
             updated_at=utc_now(),
             cursor_purpose=cursor_purpose,
         )
+        for attempt in attempts:
+            _ = self._attempt_repository.persist(attempt)
         return SourceSyncResult(
             source_id=definition.source_id,
             discovered_count=len(batch.items),
@@ -556,6 +583,147 @@ class SourceSyncService:
             evidence_document_count=persistence.changed_evidence_document_count,
             next_cursor=batch.next_cursor,
         )
+
+    def _process_artifact(
+        self,
+        source_id: str,
+        connector: SourceConnector,
+        artifact: RawArtifact,
+        *,
+        cursor_purpose: SourceCursorPurpose,
+    ) -> tuple[tuple[SourceIngestionRecord, ...], tuple[EvidenceProcessingAttempt, ...]]:
+        stored = self._asset_store.put_bytes(artifact.content)
+        if stored.digest != artifact.content_hash:
+            raise SourceDiscoveryError("Fetched artifact hash changed during persistence")
+        raw_document = EvidenceDocument(
+            asset=evidence_asset(artifact).model_copy(update={"local_path": stored.path}),
+            fragments=(),
+        )
+        _ = self._evidence_repository.persist_ingestion_batch(
+            source_id,
+            (SourceIngestionRecord(source_item=artifact.source_item, evidence_document=raw_document),),
+            next_cursor=None,
+            updated_at=utc_now(),
+            cursor_purpose=cursor_purpose,
+        )
+        started_at = utc_now()
+        processor_identity = self._processor_identity(connector, artifact)
+        try:
+            bundle, processor_identity = self._extract(connector, artifact)
+            primary, derived_records = self._validate_and_store_bundle(
+                artifact,
+                bundle,
+            )
+        except (EvidenceProcessingError, SourceError, OSError, ValueError) as error:
+            self._persist_failed_attempt(artifact, processor_identity, started_at, error)
+            raise
+        records = (
+            SourceIngestionRecord(source_item=artifact.source_item, evidence_document=primary),
+            *derived_records,
+        )
+        fragment_ids = tuple(fragment.fragment_id for fragment in primary.fragments)
+        primary_attempt = EvidenceProcessingAttempt(
+            attempt_id=str(uuid4()),
+            source_item_id=artifact.source_item.source_item_id,
+            content_version=artifact.source_item.content_version,
+            asset_id=artifact.content_hash,
+            processor_name=processor_identity[0],
+            processor_version=processor_identity[1],
+            started_at=started_at,
+            completed_at=utc_now(),
+            status=EvidenceProcessingStatus.SUCCEEDED,
+            document_id=artifact.content_hash,
+            fragment_ids=fragment_ids,
+        )
+        derived_attempts = tuple(
+            EvidenceProcessingAttempt(
+                attempt_id=str(uuid4()),
+                source_item_id=artifact.source_item.source_item_id,
+                content_version=artifact.source_item.content_version,
+                asset_id=record.evidence_document.asset.asset_id,
+                processor_name=processor_identity[0],
+                processor_version=processor_identity[1],
+                started_at=started_at,
+                completed_at=primary_attempt.completed_at,
+                status=EvidenceProcessingStatus.SUCCEEDED,
+                document_id=record.evidence_document.asset.asset_id,
+                fragment_ids=tuple(fragment.fragment_id for fragment in record.evidence_document.fragments),
+            )
+            for record in derived_records
+        )
+        return records, (primary_attempt, *derived_attempts)
+
+    def _validate_and_store_bundle(
+        self,
+        artifact: RawArtifact,
+        bundle: EvidenceProcessingBundle,
+    ) -> tuple[EvidenceDocument, tuple[SourceIngestionRecord, ...]]:
+        try:
+            documents = materialize_processing_bundle(artifact, bundle, self._asset_store)
+        except SourceExtractionError as error:
+            raise SourceDiscoveryError("Evidence processor returned an invalid bundle") from error
+        return documents[0], tuple(
+            SourceIngestionRecord(source_item=artifact.source_item, evidence_document=document)
+            for document in documents[1:]
+        )
+
+    def _persist_failed_attempt(
+        self,
+        artifact: RawArtifact,
+        processor_identity: tuple[str, str],
+        started_at: datetime,
+        error: Exception,
+    ) -> None:
+        _ = self._attempt_repository.persist(
+            EvidenceProcessingAttempt(
+                attempt_id=str(uuid4()),
+                source_item_id=artifact.source_item.source_item_id,
+                content_version=artifact.source_item.content_version,
+                asset_id=artifact.content_hash,
+                processor_name=processor_identity[0],
+                processor_version=processor_identity[1],
+                started_at=started_at,
+                completed_at=utc_now(),
+                status=EvidenceProcessingStatus.FAILED,
+                failure_kind=type(error).__name__,
+            ),
+        )
+
+    def _extract(
+        self,
+        connector: SourceConnector,
+        artifact: RawArtifact,
+    ) -> tuple[EvidenceProcessingBundle, tuple[str, str]]:
+        """Use a generic processor when configured, else the connector extractor."""
+        registry: EvidenceProcessorRegistry | None = self._processor_registry
+        if registry is None:
+            return EvidenceProcessingBundle(primary=connector.extract(artifact)), (
+                f"connector:{type(connector).__name__}",
+                "1",
+            )
+        try:
+            processor = registry.select(artifact.media_type)
+        except EvidenceProcessorNotFoundError:
+            return EvidenceProcessingBundle(primary=connector.extract(artifact)), (
+                f"connector:{type(connector).__name__}",
+                "1",
+            )
+        return processor.process_bundle(artifact), (processor.name, processor.version)
+
+    def _processor_identity(
+        self,
+        connector: SourceConnector,
+        artifact: RawArtifact,
+    ) -> tuple[str, str]:
+        registry = self._processor_registry
+        if registry is not None:
+            try:
+                processor = registry.select(artifact.media_type)
+            except EvidenceProcessorNotFoundError:
+                pass
+            else:
+                return processor.name, processor.version
+        return f"connector:{type(connector).__name__}", "1"
 
 
 def _column(row: sqlite3.Row, name: str) -> object:

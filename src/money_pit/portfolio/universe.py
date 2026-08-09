@@ -1,8 +1,9 @@
 """Module containing layered investment-universe construction."""
 
 from collections.abc import Iterable
-from enum import StrEnum
+from datetime import datetime
 from typing import ClassVar
+from typing import Protocol
 from typing import Self
 
 from pydantic import BaseModel
@@ -10,16 +11,7 @@ from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import model_validator
 
-
-class UniverseLayer(StrEnum):
-    """Origins from which an investment candidate can enter the universe."""
-
-    HOLDING = "holding"
-    WATCHLIST = "watchlist"
-    SOURCE_MENTION = "source_mention"
-    BENCHMARK = "benchmark"
-    QUANTITATIVE_SCREEN = "quantitative_screen"
-    EXPLICIT_PROXY = "explicit_proxy"
+from money_pit.schemas.universe import UniverseLayer
 
 
 class CandidateReference(BaseModel):
@@ -86,6 +78,68 @@ class LayeredUniverse(BaseModel):
         return tuple(candidate.instrument for candidate in self.candidates)
 
 
+class UniverseLayerProvider(Protocol):
+    """Read-only boundary for one configured candidate-universe layer."""
+
+    @property
+    def layer(self) -> UniverseLayer:
+        """Return the single layer supplied by this provider."""
+        ...
+
+    def references(self, *, as_of: datetime) -> tuple[CandidateReference, ...]:
+        """Return only references knowable at the requested cutoff."""
+        ...
+
+
+class InstrumentResolver(Protocol):
+    """Resolve references only from an explicit point-in-time authority."""
+
+    def resolve(
+        self,
+        reference: str,
+        *,
+        layer: UniverseLayer,
+        proxy_for: str | None = None,
+    ) -> CandidateReference:
+        """Return an explicit tradability decision or observation-only reference."""
+        ...
+
+
+class ConfiguredInstrumentResolver:
+    """Resolve only instruments explicitly approved by strategy configuration."""
+
+    def __init__(self, approved_instruments: frozenset[str]) -> None:
+        """Bind a normalized, nonempty approval snapshot."""
+        self._approved_instruments: frozenset[str] = frozenset(
+            _canonical_instrument(instrument) for instrument in approved_instruments
+        )
+
+    def resolve(
+        self,
+        reference: str,
+        *,
+        layer: UniverseLayer,
+        proxy_for: str | None = None,
+    ) -> CandidateReference:
+        """Refuse to infer capital authority from ticker-shaped text."""
+        canonical = _canonical_instrument(reference)
+        if canonical not in self._approved_instruments:
+            return CandidateReference(
+                reference=reference,
+                instrument=None,
+                tradable=None,
+                observation_reason=f"{layer.value} reference lacks configured instrument authority",
+                proxy_for=None,
+            )
+        return CandidateReference(
+            reference=reference,
+            instrument=canonical,
+            tradable=True,
+            observation_reason=None,
+            proxy_for=proxy_for,
+        )
+
+
 def _canonical_instrument(instrument: str) -> str:
     canonical: str = instrument.strip().upper()
     if not canonical:
@@ -101,6 +155,7 @@ def build_layered_universe(
     benchmark_constituents: Iterable[CandidateReference] = (),
     quantitative_screens: Iterable[CandidateReference] = (),
     explicit_proxies: Iterable[CandidateReference] = (),
+    portfolio_gaps: Iterable[CandidateReference] = (),
 ) -> LayeredUniverse:
     """Union universe layers without silently resolving ambiguity or proxies."""
     layered_references: tuple[tuple[UniverseLayer, Iterable[CandidateReference]], ...] = (
@@ -110,6 +165,7 @@ def build_layered_universe(
         (UniverseLayer.BENCHMARK, benchmark_constituents),
         (UniverseLayer.QUANTITATIVE_SCREEN, quantitative_screens),
         (UniverseLayer.EXPLICIT_PROXY, explicit_proxies),
+        (UniverseLayer.PORTFOLIO_GAP, portfolio_gaps),
     )
     candidate_layers: dict[str, set[UniverseLayer]] = {}
     candidate_references: dict[str, set[str]] = {}

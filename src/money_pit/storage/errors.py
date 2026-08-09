@@ -17,24 +17,20 @@ class StorageTransactionError(StorageError):
     """Raised when a transaction cannot begin, commit, or roll back."""
 
 
-class MigrationError(StorageError):
-    """Base class for schema migration failures."""
+class SchemaIdentityError(StorageError):
+    """Base class for schema baseline and identity failures."""
 
 
-class MigrationDiscoveryError(MigrationError):
-    """Raised when packaged migration resources are malformed."""
+class BaselineDiscoveryError(SchemaIdentityError):
+    """Raised when the packaged release baseline is malformed."""
 
 
-class MigrationHistoryError(MigrationError):
-    """Raised when database history is not a prefix of packaged migrations."""
+class UnknownDatabaseSchemaError(SchemaIdentityError):
+    """Raised before writes when a nonempty database is not the exact release schema."""
 
 
-class MigrationChecksumError(MigrationHistoryError):
-    """Raised when an applied migration differs from its packaged resource."""
-
-
-class MigrationApplyError(MigrationError):
-    """Raised when a packaged migration cannot be applied."""
+class BaselineApplyError(SchemaIdentityError):
+    """Raised when the release baseline cannot be applied atomically."""
 
 
 class AssetStoreError(StorageError):

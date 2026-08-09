@@ -19,6 +19,14 @@ class LotSelectionPolicy(StrEnum):
     SPECIFIC_ID = "specific_id"
 
 
+class WashSaleStatus(StrEnum):
+    """Conservative wash-sale knowledge for an instrument."""
+
+    CLEAR = "clear"
+    POSSIBLE = "possible"
+    UNKNOWN = "unknown"
+
+
 class TaxLot(BaseModel):
     """A known acquisition lot in a taxable account."""
 
@@ -42,6 +50,9 @@ class TaxLotSnapshot(BaseModel):
     lots: tuple[TaxLot, ...]
     complete_for_known_accounts: bool
     unknown_external_activity: bool
+    short_term_tax_rate: float | None = Field(default=None, ge=0, le=1)
+    long_term_tax_rate: float | None = Field(default=None, ge=0, le=1)
+    wash_sale_status: dict[str, WashSaleStatus] = Field(default_factory=dict)
 
 
 class TaxLotProvider(Protocol):

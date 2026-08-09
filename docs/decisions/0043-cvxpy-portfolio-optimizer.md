@@ -45,7 +45,13 @@ Use a pluggable `OptimizerBackend` protocol with an initial `ClarabelOptimizer`.
 
 `ClarabelOptimizer` imports CVXPY only when `optimize` is called, verifies that CLARABEL is
 registered, and invokes it by name. The optimization maximizes expected return less quadratic risk,
-turnover, and estimated tax costs. Deterministic constraints cover required cash, individual names,
+turnover, and estimated tax costs. A known sell's scalar tax coefficient is the maximum positive
+unrealized-gain fraction multiplied by the applicable holding-period tax rate across its covered
+lots. This deliberately upper-bounds every partial sale when a scalar objective cannot represent a
+lot-order cost curve. Losses receive no assumed tax benefit. Incomplete coverage is explicitly
+unknown and contributes no fabricated optimizer penalty, so an observation-only reduction remains
+visible while autonomous execution rejects it.
+Deterministic constraints cover required cash, individual names,
 turnover, maximum position change, aggregate satellite exposure, minimum core weights, and sector
 exposure.
 
@@ -60,9 +66,8 @@ accepted. The result is quantized and independently checked against every declar
 before it leaves the backend. Solver name, installed solver-package version, status, policy version,
 and input snapshot identifiers are persisted in `OptimizationResult`.
 
-The versioned policy identifier is a content-immutable registry key. Reusing a policy version for
-different content is prohibited. The plan schema currently binds the policy version rather than a
-second policy digest; the registry must enforce this invariant when policy persistence is wired.
+The versioned policy identifier and policy fingerprint are both bound at the execution-approval
+boundary. Reusing a policy version for different content is prohibited.
 
 Determinism is scoped to identical canonical inputs, policy, Python platform, and pinned numerical
 dependency versions. Cross-platform bit-for-bit equality from floating-point solvers is not
@@ -77,7 +82,8 @@ promised. The post-solve quantization and validation boundary is the stable pers
 - Bad, because CVXPY and its solver stack increase installation size and platform sensitivity.
 - Bad, because an inaccurate optimum is a policy decision that operators must understand and
   version.
-- Neutral, because tax cost is an estimate at this stage; exact lot selection remains downstream.
+- Neutral, because optimization uses a conservative per-weight tax estimate; the hashed plan also
+  records the exact selected lots and estimated currency cost.
 
 ### Confirmation
 

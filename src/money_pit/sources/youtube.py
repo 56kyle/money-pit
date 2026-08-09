@@ -1,7 +1,12 @@
 """Module containing YouTube uploads-playlist discovery contracts."""
 
+import hashlib
 import os
+import tempfile
+from pathlib import Path
+from time import monotonic
 from typing import ClassVar
+from typing import Protocol
 from urllib.parse import urlencode
 
 from pydantic import AwareDatetime
@@ -15,18 +20,20 @@ from money_pit.schemas.evidence import EvidenceDocument
 from money_pit.schemas.sources import DiscoveryBatch
 from money_pit.schemas.sources import RawArtifact
 from money_pit.schemas.sources import SourceCursor
+from money_pit.schemas.sources import SourceCursorPurpose
 from money_pit.schemas.sources import SourceDefinition
 from money_pit.schemas.sources import SourceItem
 from money_pit.sources._shared import BoundedConnectorConfig
 from money_pit.sources._shared import parse_config
 from money_pit.sources._shared import require_media_type
+from money_pit.sources._shared import source_definition_hash
 from money_pit.sources._shared import utc_now
 from money_pit.sources.errors import ConnectorConfigurationError
 from money_pit.sources.errors import SourceDiscoveryError
+from money_pit.sources.errors import SourceFetchError
+from money_pit.sources.http import AddressPinnedHttpTransport
 from money_pit.sources.http import HttpResponse
 from money_pit.sources.http import HttpTransport
-from money_pit.sources.http import UrllibHttpTransport
-from money_pit.sources.http import WebConnector
 
 
 _YOUTUBE_PLAYLIST_ITEMS_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
@@ -39,6 +46,73 @@ class YouTubeConnectorConfig(BoundedConnectorConfig):
 
     api_key_env: str = Field(min_length=1)
     max_results: int = Field(default=25, ge=1, le=50)
+    max_sync_pages: int = Field(default=20, ge=2, le=100)
+    max_media_bytes: int = Field(default=512 * 1024 * 1024, ge=1)
+
+
+class YouTubeMediaTransport(Protocol):
+    """Read-only seam for acquiring one public video's immutable bytes."""
+
+    def fetch(self, url: str, *, maximum_bytes: int, timeout_seconds: float) -> tuple[bytes, str, str]:
+        """Return media bytes, media type, and a safe filename."""
+        ...
+
+
+class YtDlpMediaTransport:
+    """Acquire bounded public video media without retaining downloader caches."""
+
+    def fetch(self, url: str, *, maximum_bytes: int, timeout_seconds: float) -> tuple[bytes, str, str]:
+        """Download one video to an isolated temporary directory."""
+        started_at = monotonic()
+
+        def enforce_elapsed_bound(status: dict[str, object]) -> None:
+            del status
+            if monotonic() - started_at > timeout_seconds:
+                raise TimeoutError("YouTube media acquisition exceeded its elapsed-time bound")
+
+        try:
+            import yt_dlp
+
+            with tempfile.TemporaryDirectory(prefix="money-pit-youtube-") as temporary:
+                output = str(Path(temporary, "media.%(ext)s"))
+                options: dict[str, object] = {
+                    "format": "bestvideo*+bestaudio/best",
+                    "outtmpl": output,
+                    "max_filesize": maximum_bytes,
+                    "socket_timeout": timeout_seconds,
+                    "noplaylist": True,
+                    "quiet": True,
+                    "no_warnings": True,
+                    "progress_hooks": [enforce_elapsed_bound],
+                }
+                with yt_dlp.YoutubeDL(options) as downloader:  # pyright: ignore[reportArgumentType]
+                    _ = downloader.extract_info(url, download=True)
+                paths = tuple(path for path in Path(temporary).iterdir() if path.is_file())
+                if len(paths) != 1:
+                    raise SourceFetchError("YouTube media acquisition produced an unexpected file set")
+                path = paths[0]
+                content = path.read_bytes()
+                if monotonic() - started_at > timeout_seconds:
+                    raise SourceFetchError("YouTube media acquisition exceeded its elapsed-time bound")
+                if not content or len(content) > maximum_bytes:
+                    raise SourceFetchError("YouTube media exceeds its configured byte bound")
+                media_types = {
+                    ".m4a": "audio/mp4",
+                    ".mka": "audio/x-matroska",
+                    ".mp3": "audio/mpeg",
+                    ".mp4": "video/mp4",
+                    ".mkv": "video/x-matroska",
+                    ".webm": "video/webm",
+                }
+                try:
+                    media_type = media_types[path.suffix.casefold()]
+                except KeyError as error:
+                    raise SourceFetchError("YouTube media container is unsupported") from error
+                return content, media_type, path.name
+        except Exception as error:
+            if isinstance(error, SourceFetchError):
+                raise
+            raise SourceFetchError("YouTube media acquisition failed") from error
 
 
 class _YouTubeResourceId(BaseModel):
@@ -68,6 +142,24 @@ class _YouTubePlaylistResponse(BaseModel):
     items: tuple[_YouTubePlaylistItem, ...] = ()
 
 
+class _YouTubeSyncRange(BaseModel):
+    """A durable unfinished newest-to-watermark playlist interval."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    stop_video_id: str = Field(min_length=1)
+    page_token: str = Field(min_length=1)
+
+
+class _YouTubeSyncCursor(BaseModel):
+    """Newest high-water identity plus bounded continuation recovery."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    high_water_video_id: str | None = None
+    pending_ranges: tuple[_YouTubeSyncRange, ...] = ()
+
+
 class YouTubeConnector:
     """Discovers videos through a channel's configured uploads playlist."""
 
@@ -75,6 +167,7 @@ class YouTubeConnector:
         self,
         definition: SourceDefinition,
         transport: HttpTransport | None = None,
+        media_transport: YouTubeMediaTransport | None = None,
     ) -> None:
         """Bind playlist discovery to runtime credentials and transport."""
         self._definition: SourceDefinition = definition
@@ -87,25 +180,89 @@ class YouTubeConnector:
                 f"Environment variable {self._config.api_key_env!r} is not configured",
             )
         self._api_key: SecretStr = SecretStr(api_key_value)
-        self._transport: HttpTransport = transport or UrllibHttpTransport()
-        web_definition: SourceDefinition = definition.model_copy(
-            update={
-                "locator": "https://www.youtube.com/",
-                "adapter_config": {"max_content_bytes": self._config.max_content_bytes},
-            },
-        )
-        self._web: WebConnector = WebConnector(web_definition, self._transport)
+        self._transport: HttpTransport = transport or AddressPinnedHttpTransport()
+        self._media_transport: YouTubeMediaTransport = media_transport or YtDlpMediaTransport()
 
-    def discover(self, cursor: SourceCursor | None) -> DiscoveryBatch:
-        """Return one bounded YouTube playlist page and its next-page cursor."""
+    def discover(
+        self,
+        cursor: SourceCursor | None,
+        *,
+        purpose: SourceCursorPurpose = SourceCursorPurpose.SYNC,
+    ) -> DiscoveryBatch:
+        """Poll newest uploads or return one independently paged backfill batch."""
+        if purpose is SourceCursorPurpose.BACKFILL:
+            parsed = self._discover_page(None if cursor is None else cursor.value)
+            return self._discovery_batch(
+                parsed.items,
+                next_cursor=(SourceCursor(value=parsed.next_page_token) if parsed.next_page_token else None),
+            )
+
+        state = self._sync_cursor(cursor)
+        previous_high_water = state.high_water_video_id
+        discovered: list[_YouTubePlaylistItem] = []
+        newest_page = self._discover_page(None)
+        newest_video_id = (
+            newest_page.items[0].snippet.resource_id.video_id if newest_page.items else previous_high_water
+        )
+        reached_previous = previous_high_water is None
+        for item in newest_page.items:
+            if item.snippet.resource_id.video_id == previous_high_water:
+                reached_previous = True
+                break
+            discovered.append(item)
+
+        pending = list(state.pending_ranges)
+        if not reached_previous and newest_page.next_page_token is not None and previous_high_water is not None:
+            pending.append(
+                _YouTubeSyncRange(
+                    stop_video_id=previous_high_water,
+                    page_token=newest_page.next_page_token,
+                )
+            )
+
+        remaining_pages = self._config.max_sync_pages - 1
+        while pending and remaining_pages > 0:
+            current = pending[0]
+            page = self._discover_page(current.page_token)
+            remaining_pages -= 1
+            reached_stop = False
+            for item in page.items:
+                if item.snippet.resource_id.video_id == current.stop_video_id:
+                    reached_stop = True
+                    break
+                discovered.append(item)
+            if reached_stop or page.next_page_token is None:
+                _ = pending.pop(0)
+            else:
+                pending[0] = current.model_copy(update={"page_token": page.next_page_token})
+
+        next_state = _YouTubeSyncCursor(
+            high_water_video_id=newest_video_id,
+            pending_ranges=tuple(pending),
+        )
+        next_cursor = SourceCursor(value=next_state.model_dump_json())
+        return self._discovery_batch(tuple(discovered), next_cursor=next_cursor)
+
+    @staticmethod
+    def _sync_cursor(cursor: SourceCursor | None) -> _YouTubeSyncCursor:
+        """Load the typed newest-watermark cursor or fail closed on corruption."""
+        if cursor is None:
+            return _YouTubeSyncCursor()
+        try:
+            return _YouTubeSyncCursor.model_validate_json(cursor.value)
+        except ValidationError as error:
+            raise SourceDiscoveryError("Stored YouTube sync cursor is malformed") from error
+
+    def _discover_page(self, page_token: str | None) -> _YouTubePlaylistResponse:
+        """Fetch and validate one bounded uploads-playlist page."""
         query_params: dict[str, str | int] = {
             "part": "snippet",
             "playlistId": self._definition.locator,
             "maxResults": self._config.max_results,
             "key": self._api_key.get_secret_value(),
         }
-        if cursor is not None:
-            query_params["pageToken"] = cursor.value
+        if page_token is not None:
+            query_params["pageToken"] = page_token
         query: str = urlencode(query_params)
         response: HttpResponse = self._transport.get(
             f"{_YOUTUBE_PLAYLIST_ITEMS_URL}?{query}",
@@ -119,27 +276,56 @@ class YouTubeConnector:
             )
         except ValidationError as error:
             raise SourceDiscoveryError("YouTube playlist response is malformed") from error
+        return parsed
+
+    def _discovery_batch(
+        self,
+        page_items: tuple[_YouTubePlaylistItem, ...] | list[_YouTubePlaylistItem],
+        *,
+        next_cursor: SourceCursor | None,
+    ) -> DiscoveryBatch:
+        """Materialize stable source identities for validated playlist entries."""
+        discovered_at = utc_now()
+        unique_items = tuple({item.snippet.resource_id.video_id: item for item in page_items}.values())
         items: tuple[SourceItem, ...] = tuple(
             SourceItem(
-                source_item_id=f"{self._definition.source_id}:{item.id}",
+                source_item_id=(f"{self._definition.source_id}:{item.snippet.resource_id.video_id}"),
                 source_id=self._definition.source_id,
+                source_definition_hash=source_definition_hash(self._definition),
                 canonical_uri=f"https://www.youtube.com/watch?v={item.snippet.resource_id.video_id}",
                 published_at=item.snippet.published_at,
                 updated_at=item.snippet.published_at,
-                discovered_at=utc_now(),
-                content_version=item.id,
+                discovered_at=discovered_at,
+                content_version=item.snippet.resource_id.video_id,
             )
-            for item in parsed.items
+            for item in unique_items
         )
-        next_cursor: SourceCursor | None = (
-            SourceCursor(value=parsed.next_page_token) if parsed.next_page_token else None
-        )
-        return DiscoveryBatch(items=items, next_cursor=next_cursor, discovered_at=utc_now())
+        return DiscoveryBatch(items=items, next_cursor=next_cursor, discovered_at=discovered_at)
 
     def fetch(self, item: SourceItem) -> RawArtifact:
-        """Fetch the public watch page while video media remains adapter-neutral."""
-        return self._web.fetch(item)
+        """Acquire the actual public video for transcript and frame processing."""
+        if item.source_id != self._definition.source_id or item.source_definition_hash != source_definition_hash(
+            self._definition
+        ):
+            raise SourceFetchError("Cannot fetch a YouTube item from another source")
+        content, media_type, filename = self._media_transport.fetch(
+            str(item.canonical_uri),
+            maximum_bytes=self._config.max_media_bytes,
+            timeout_seconds=self._config.timeout_seconds,
+        )
+        digest = hashlib.sha256(content).hexdigest()
+        return RawArtifact(
+            source_item=item.model_copy(update={"content_version": digest}),
+            content=content,
+            content_hash=digest,
+            media_type=media_type,
+            filename=Path(filename),
+            retrieved_at=utc_now(),
+            canonical_uri=str(item.canonical_uri),
+        )
 
     def extract(self, artifact: RawArtifact) -> EvidenceDocument:
-        """Extract watch-page evidence; media enrichment remains a later stage."""
-        return self._web.extract(artifact)
+        """Extract timestamped media evidence when used outside a processor registry."""
+        from money_pit.evidence.media import MediaEvidenceProcessor
+
+        return MediaEvidenceProcessor().process(artifact)

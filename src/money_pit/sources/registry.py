@@ -16,7 +16,7 @@ from money_pit.sources.errors import UnsupportedSourceRegistryVersionError
 from money_pit.sources.protocol import SourceConnector
 
 
-CURRENT_SOURCE_REGISTRY_VERSION = 1
+CURRENT_SOURCE_REGISTRY_VERSION = "0.0.2"
 ConnectorFactory = Callable[[SourceDefinition], SourceConnector]
 
 

@@ -1,0 +1,68 @@
+# This template is intentionally not runnable. Replace every placeholder with an
+# operator-approved strategy value; money-pit has no capital-sensitive defaults.
+version = "<strategy-policy-version>"
+# portfolio_environment = "paper"
+# plan_ttl_seconds = "<seconds>"
+# strategic_core_targets = { "<instrument>" = "<weight>" }
+# watchlist = ["<instrument>"]
+# benchmark_constituents = ["<instrument>"]
+# benchmark_id = "<benchmark-identity>"
+# benchmark_provider = "<configured-market-provider>"
+# benchmark_weights = { "<instrument>" = "<weight>" }
+# explicit_proxies = { "<theme-or-instrument>" = "<approved-proxy>" }
+# [[quantitative_screens]]
+# screen_id = "<screen-and-result-version>"
+# instruments = ["<explicit-result-instrument>"]
+# name_weight_limit = "<fraction>"
+# sector_weight_limit = "<fraction>"
+# factor_weight_limit = "<fraction>"
+# correlated_exposure_limit = "<fraction>"
+# cash_minimum = "<fraction>"
+# satellite_weight_limit = "<fraction>"
+# turnover_limit = "<fraction>"
+# position_change_limit = "<fraction>"
+# minimum_trade_notional = "<currency-amount>"
+# maximum_slippage_fraction = "<fraction>"
+# minimum_average_daily_notional = "<usd-notional>"
+# maximum_daily_volume_participation = "<fraction>"
+# market_history_period = "<bounded-yfinance-period>"
+# tax_lot_ledger_path = "<local-ledger-path>"
+# tax_lot_policy = "<fifo|lifo|highest_cost|specific_id>"
+# specific_tax_lot_ids = { TICKER = ["<ordered-lot-id>"] }
+# expected_return_uncertainty_multiplier = "<fraction>"
+# expected_return_bounds_version = "<bounds-policy-version>"
+# scenario_return_floor = "<at-least-minus-one>"
+# scenario_return_ceiling = "<positive>"
+# calibrated_return_floor = "<at-least-minus-one>"
+# calibrated_return_ceiling = "<positive>"
+# return_bound_policy = "reject"
+# risk_aversion = "<positive>"
+# turnover_penalty = "<nonnegative>"
+# tax_penalty = "<nonnegative>"
+# accept_optimal_inaccurate = false
+# feasibility_tolerance = "<positive-at-most-0.01>"
+# correlated_exposure_groups = { "<group>" = ["<instrument>"] }
+
+# [sector_taxonomy]
+# TICKER = "<configured-sector>"
+
+# [instrument_asset_classes]
+# TICKER = "us_equity"
+
+# [factor_loadings.TICKER]
+# factor_name = "<signed-loading>"
+# expected_return_calibration_version = "<calibration-version>"
+
+# [horizons.event]
+# minimum_days = 0
+# maximum_days = 14
+# review_interval_days = "<days>"
+# Repeat for tactical, medium_term, and structural.
+
+# [claim_freshness]
+# version = "<freshness-policy-version>"
+# [claim_freshness.rules.fundamental.event]
+# review_interval_days = "<days>"
+# freshness_days = "<days>"
+# Define every event, tactical, medium_term, and structural rule for every
+# fundamental, technical, macro, sentiment, catalyst, market, and portfolio category.

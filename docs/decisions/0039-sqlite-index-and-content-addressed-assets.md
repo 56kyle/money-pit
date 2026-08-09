@@ -91,5 +91,5 @@ full digest before reuse.
 
 ## More Information
 
-The generic run layout and read-only legacy bridge are defined by
-[ADR 0040](0040-generic-run-manifests-and-read-only-legacy-index.md).
+Recoverable run registration is defined by
+[ADR 0061](0061-register-run-starts-before-atomic-manifest-install.md).

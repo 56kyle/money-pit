@@ -2,22 +2,28 @@
 
 from __future__ import annotations
 
+import hashlib
 import html
 import json
+import tempfile
+from collections.abc import Mapping
+from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import ClassVar
+from typing import Self
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import HttpUrl
 from pydantic import JsonValue
+from pydantic import model_validator
 
 from money_pit.schemas.portfolio_plan import PortfolioPlan  # noqa: TC001
 
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
-    from pathlib import Path
 
 
 class ReportReadError(Exception):
@@ -29,14 +35,32 @@ class ReportRenderError(Exception):
 
 
 class ReportEvidence(BaseModel):
-    """One inert, human-readable evidence locator in a portfolio report."""
+    """One safe web locator and optional local evidence thumbnail."""
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
 
     label: str = Field(min_length=1)
-    locator: str = Field(min_length=1)
+    web_url: HttpUrl | None = None
+    local_thumbnail: Path | None = None
+    unavailable_reason: str | None = Field(default=None, min_length=1)
     source_item_id: str = Field(min_length=1)
     status: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_locator(self) -> Self:
+        """Require a link or a safe relative image path."""
+        has_locator = self.web_url is not None or self.local_thumbnail is not None
+        if has_locator == (self.unavailable_reason is not None):
+            raise ValueError("report evidence requires a URL or thumbnail, or an unavailable reason")
+        if self.local_thumbnail is not None:
+            path = self.local_thumbnail
+            if (
+                path.is_absolute()
+                or ".." in path.parts
+                or path.suffix.casefold() not in {".png", ".jpg", ".jpeg", ".webp"}
+            ):
+                raise ValueError("local thumbnail must be a safe relative image path")
+        return self
 
 
 class PortfolioReview(BaseModel):
@@ -52,10 +76,10 @@ class PortfolioReview(BaseModel):
     factor_exposures: dict[str, float]
     thesis_statuses: dict[str, str]
     conflicting_claims: tuple[str, ...]
-    source_reliability: dict[str, float]
+    source_authority_ratio_by_claim_category: dict[str, float]
     evidence: tuple[ReportEvidence, ...]
     scenarios: tuple[dict[str, JsonValue], ...]
-    sensitivities: tuple[dict[str, JsonValue], ...]
+    decision_diagnostics: tuple[dict[str, JsonValue], ...]
     approval_state: str = Field(min_length=1)
     execution_state: str = Field(min_length=1)
 
@@ -120,7 +144,9 @@ def render_markdown(review: PortfolioReview) -> str:
     lines.extend(_markdown_mapping("Sector exposure", review.sector_exposures))
     lines.extend(_markdown_mapping("Factor exposure", review.factor_exposures))
     lines.extend(_markdown_mapping("Theses", review.thesis_statuses))
-    lines.extend(_markdown_mapping("Source reliability", review.source_reliability))
+    lines.extend(
+        _markdown_mapping("Source authority ratio by claim category", review.source_authority_ratio_by_claim_category)
+    )
     lines.extend(
         [
             "## Proposed trades",
@@ -143,7 +169,7 @@ def render_markdown(review: PortfolioReview) -> str:
     lines.extend(
         "| {label} | {locator} | {source} | {status} |".format(
             label=_markdown_text(evidence.label),
-            locator=_markdown_text(evidence.locator),
+            locator=_markdown_evidence_locator(evidence),
             source=_markdown_text(evidence.source_item_id),
             status=_markdown_text(evidence.status),
         )
@@ -166,17 +192,46 @@ def render_markdown(review: PortfolioReview) -> str:
             },
         )
     )
-    lines.extend(_markdown_mapping("Tax estimates", payload.tax_estimates))
+    lines.extend(_markdown_mapping("Tax estimate", payload.tax_estimate.model_dump(mode="json")))
     lines.extend(["", "## Scenarios", ""])
     lines.extend(f"- {_markdown_text(json.dumps(scenario, sort_keys=True))}" for scenario in review.scenarios)
-    lines.extend(["", "## Sensitivities", ""])
-    lines.extend(f"- {_markdown_text(json.dumps(sensitivity, sort_keys=True))}" for sensitivity in review.sensitivities)
+    lines.extend(["", "## Decision diagnostics", ""])
+    lines.extend(f"- {_markdown_text(json.dumps(item, sort_keys=True))}" for item in review.decision_diagnostics)
     lines.append("")
     return "\n".join(lines)
 
 
 def _html_text(value: object) -> str:
     return html.escape(str(value), quote=True)
+
+
+def _markdown_evidence_locator(evidence: ReportEvidence) -> str:
+    parts: list[str] = []
+    if evidence.web_url is not None:
+        parts.append(f"[source]({_markdown_url(str(evidence.web_url))})")
+    if evidence.local_thumbnail is not None:
+        parts.append(f"![{_markdown_text(evidence.label)}]({_markdown_url(evidence.local_thumbnail.as_posix())})")
+    if evidence.unavailable_reason is not None:
+        parts.append(f"Unavailable: {_markdown_text(evidence.unavailable_reason)}")
+    return " ".join(parts)
+
+
+def _markdown_url(value: str) -> str:
+    return value.replace(" ", "%20").replace("(", "%28").replace(")", "%29")
+
+
+def _html_evidence_locator(evidence: ReportEvidence) -> str:
+    parts: list[str] = []
+    if evidence.web_url is not None:
+        parts.append(f'<a href="{_html_text(evidence.web_url)}" rel="noreferrer">source</a>')
+    if evidence.local_thumbnail is not None:
+        parts.append(
+            f'<img src="{_html_text(evidence.local_thumbnail.as_posix())}" '
+            + f'alt="{_html_text(evidence.label)}" loading="lazy">'
+        )
+    if evidence.unavailable_reason is not None:
+        parts.append(f"Unavailable: {_html_text(evidence.unavailable_reason)}")
+    return " ".join(parts)
 
 
 def _html_mapping(title: str, values: Mapping[str, object]) -> str:
@@ -196,7 +251,7 @@ def render_html(review: PortfolioReview) -> str:
         _html_mapping("Sector exposure", review.sector_exposures),
         _html_mapping("Factor exposure", review.factor_exposures),
         _html_mapping("Theses", review.thesis_statuses),
-        _html_mapping("Source reliability", review.source_reliability),
+        _html_mapping("Source authority ratio by claim category", review.source_authority_ratio_by_claim_category),
         _html_mapping(
             "Plan estimates",
             {
@@ -205,25 +260,25 @@ def render_html(review: PortfolioReview) -> str:
                 "expected return change": payload.expected_return_change,
             },
         ),
-        _html_mapping("Tax estimates", payload.tax_estimates),
+        _html_mapping("Tax estimate", payload.tax_estimate.model_dump(mode="json")),
     ]
     trade_rows: str = "".join(
         "<tr>"
-        f"<td>{_html_text(trade.instrument)}</td>"
-        f"<td>{_html_text(trade.side)}</td>"
-        f"<td>{_html_text(trade.quantity)}</td>"
-        f"<td>{_html_text(trade.estimated_notional)}</td>"
-        f"<td>{_html_text(trade.tax_cost_known)}</td>"
-        "</tr>"
+        + f"<td>{_html_text(trade.instrument)}</td>"
+        + f"<td>{_html_text(trade.side)}</td>"
+        + f"<td>{_html_text(trade.quantity)}</td>"
+        + f"<td>{_html_text(trade.estimated_notional)}</td>"
+        + f"<td>{_html_text(trade.tax_cost_known)}</td>"
+        + "</tr>"
         for trade in payload.proposed_trades
     )
     evidence_rows: str = "".join(
         "<tr>"
-        f"<td>{_html_text(evidence.label)}</td>"
-        f"<td>{_html_text(evidence.locator)}</td>"
-        f"<td>{_html_text(evidence.source_item_id)}</td>"
-        f"<td>{_html_text(evidence.status)}</td>"
-        "</tr>"
+        + f"<td>{_html_text(evidence.label)}</td>"
+        + f"<td>{_html_evidence_locator(evidence)}</td>"
+        + f"<td>{_html_text(evidence.source_item_id)}</td>"
+        + f"<td>{_html_text(evidence.status)}</td>"
+        + "</tr>"
         for evidence in review.evidence
     )
     conflicts: str = "".join(f"<li>{_html_text(claim)}</li>" for claim in review.conflicting_claims)
@@ -247,7 +302,7 @@ def render_html(review: PortfolioReview) -> str:
             f"<section><h2>Conflicting claims</h2><ul>{conflicts}</ul></section>",
             f"<section><h2>Rejected candidates</h2><ul>{rejected}</ul></section>",
             f"<section><h2>Scenarios</h2>{_html_text(json.dumps(review.scenarios, sort_keys=True))}</section>",
-            f"<section><h2>Sensitivities</h2>{_html_text(json.dumps(review.sensitivities, sort_keys=True))}</section>",
+            f"<section><h2>Decision diagnostics</h2>{_html_text(json.dumps(review.decision_diagnostics, sort_keys=True))}</section>",
         ]
     )
     return (
@@ -262,15 +317,59 @@ def render_html(review: PortfolioReview) -> str:
     )
 
 
-def write_report_bundle(review: PortfolioReview, report_directory: Path) -> tuple[Path, Path, Path]:
-    """Write the three static report formats and return their paths."""
+def write_report_bundle(
+    review: PortfolioReview,
+    report_directory: Path,
+    *,
+    thumbnail_sources: Mapping[Path, Path] | None = None,
+) -> tuple[Path, Path, Path]:
+    """Atomically install one immutable three-format report bundle."""
     if report_directory.exists() and not report_directory.is_dir():
         raise ReportRenderError("report path exists and is not a directory")
-    report_directory.mkdir(parents=True, exist_ok=True)
-    json_path: Path = report_directory / "portfolio-review.json"
-    markdown_path: Path = report_directory / "portfolio-review.md"
-    html_path: Path = report_directory / "portfolio-review.html"
-    _ = json_path.write_text(render_json(review), encoding="utf-8")
-    _ = markdown_path.write_text(render_markdown(review), encoding="utf-8")
-    _ = html_path.write_text(render_html(review), encoding="utf-8")
-    return json_path, markdown_path, html_path
+    contents: dict[Path, bytes] = {
+        Path("portfolio-review.json"): render_json(review).encode(),
+        Path("portfolio-review.md"): render_markdown(review).encode(),
+        Path("portfolio-review.html"): render_html(review).encode(),
+    }
+    sources = {} if thumbnail_sources is None else dict(thumbnail_sources)
+    required = {item.local_thumbnail for item in review.evidence if item.local_thumbnail is not None}
+    if set(sources) != required:
+        raise ReportRenderError("report thumbnail sources must exactly cover local evidence thumbnails")
+    for relative, source in sources.items():
+        payload = source.read_bytes()
+        if len(payload) > 10_000_000:
+            raise ReportRenderError("report thumbnail exceeds the bounded size")
+        if hashlib.sha256(payload).hexdigest() != relative.stem:
+            raise ReportRenderError("report thumbnail content does not match its asset identity")
+        contents[relative] = payload
+    if report_directory.is_dir():
+        _require_exact_report_contents(report_directory, contents)
+        return (
+            report_directory / "portfolio-review.json",
+            report_directory / "portfolio-review.md",
+            report_directory / "portfolio-review.html",
+        )
+    report_directory.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f".{report_directory.name}-", dir=report_directory.parent) as temporary:
+        staged = Path(temporary)
+        for name, content in contents.items():
+            target = staged / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _ = target.write_bytes(content)
+        try:
+            _ = staged.replace(report_directory)
+        except FileExistsError:
+            _require_exact_report_contents(report_directory, contents)
+    return (
+        report_directory / "portfolio-review.json",
+        report_directory / "portfolio-review.md",
+        report_directory / "portfolio-review.html",
+    )
+
+
+def _require_exact_report_contents(report_directory: Path, expected: dict[Path, bytes]) -> None:
+    actual_names = {item.relative_to(report_directory) for item in report_directory.rglob("*") if item.is_file()}
+    if actual_names != set(expected):
+        raise ReportRenderError("immutable report bundle collides with different files")
+    if any((report_directory / name).read_bytes() != content for name, content in expected.items()):
+        raise ReportRenderError("immutable report bundle collides with different content")

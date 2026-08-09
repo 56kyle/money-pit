@@ -26,6 +26,8 @@ class PortfolioPolicy(BaseModel):
     maximum_position_change: float = Field(gt=0, le=1)
     minimum_core_weights: dict[str, float]
     maximum_sector_weights: dict[str, float]
+    maximum_factor_exposures: dict[str, float] = Field(default_factory=dict)
+    maximum_correlated_group_weights: dict[str, float] = Field(default_factory=dict)
     accept_optimal_inaccurate: bool
     feasibility_tolerance: float = Field(gt=0, le=0.01)
 
@@ -38,6 +40,10 @@ class PortfolioPolicy(BaseModel):
             raise ValueError("minimum_core_weights values must be between zero and one")
         if any(weight <= 0 or weight > 1 for weight in self.maximum_sector_weights.values()):
             raise ValueError("maximum_sector_weights values must be greater than zero and at most one")
+        if any(limit <= 0 for limit in self.maximum_factor_exposures.values()):
+            raise ValueError("maximum_factor_exposures values must be positive")
+        if any(weight <= 0 or weight > 1 for weight in self.maximum_correlated_group_weights.values()):
+            raise ValueError("maximum_correlated_group_weights values must be greater than zero and at most one")
         if sum(self.minimum_core_weights.values()) > 1 - self.minimum_cash_weight:
             raise ValueError("minimum core weights leave insufficient required cash")
         if self.minimum_trade_weight > self.maximum_position_change:

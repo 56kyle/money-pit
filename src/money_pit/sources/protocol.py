@@ -6,13 +6,19 @@ from money_pit.schemas.evidence import EvidenceDocument
 from money_pit.schemas.sources import DiscoveryBatch
 from money_pit.schemas.sources import RawArtifact
 from money_pit.schemas.sources import SourceCursor
+from money_pit.schemas.sources import SourceCursorPurpose
 from money_pit.schemas.sources import SourceItem
 
 
 class SourceConnector(Protocol):
     """Discovers, fetches, and extracts one configured source."""
 
-    def discover(self, cursor: SourceCursor | None) -> DiscoveryBatch:
+    def discover(
+        self,
+        cursor: SourceCursor | None,
+        *,
+        purpose: SourceCursorPurpose = SourceCursorPurpose.SYNC,
+    ) -> DiscoveryBatch:
         """Discover a bounded, idempotent batch of source items."""
         ...
 

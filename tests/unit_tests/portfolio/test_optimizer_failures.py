@@ -7,6 +7,7 @@ from typing import cast
 import cvxpy as cp
 import numpy as np
 import pytest
+from cvxpy.error import SolverError
 from pydantic import ValidationError
 from pytest import MonkeyPatch
 
@@ -41,7 +42,7 @@ class _Weights:
 )
 def test__finite_solver_objective_rejects_invalid_value(value: object) -> None:
     with pytest.raises(OptimizationFailedError, match="no finite objective"):
-        ClarabelOptimizer._finite_solver_objective(value)
+        _ = ClarabelOptimizer._finite_solver_objective(value)  # pyright: ignore[reportPrivateUsage]  # Contract test pins private solver validation.
 
 
 @pytest.mark.parametrize(
@@ -58,7 +59,7 @@ def test__validated_solver_weights_rejects_malformed_value(
 ) -> None:
     weights = cast("cp.Variable", cast("object", _Weights(value)))
     with pytest.raises(OptimizationFailedError, match="malformed weights"):
-        ClarabelOptimizer._validated_solver_weights(weights, expected_count)
+        _ = ClarabelOptimizer._validated_solver_weights(weights, expected_count)  # pyright: ignore[reportPrivateUsage]  # Contract test pins private solver validation.
 
 
 @pytest.mark.parametrize(
@@ -68,7 +69,11 @@ def test__validated_solver_weights_rejects_malformed_value(
         pytest.param({"current_weights": {"AAPL": 0.1}}, "current_weights", id="current-map"),
         pytest.param({"covariance": {"AAPL": {"AAPL": 0.1}}}, "covariance rows", id="covariance-map"),
         pytest.param({"sectors": {"AAPL": "technology"}}, "sectors", id="sector-map"),
-        pytest.param({"tax_cost_rates": {"AAPL": 0.0}}, "tax_cost_rates", id="tax-map"),
+        pytest.param(
+            {"tax_cost_per_sold_weight": {"AAPL": 0.0}},
+            "tax_cost_per_sold_weight",
+            id="tax-map",
+        ),
         pytest.param({"satellite_instruments": {"UNKNOWN"}}, "unknown instrument", id="satellite"),
         pytest.param(
             {
@@ -92,7 +97,7 @@ def test__validated_solver_weights_rejects_malformed_value(
             id="overinvested",
         ),
         pytest.param(
-            {"tax_cost_rates": {"AAPL": -0.1, "SPY": 0.0, "XOM": 0.0}},
+            {"tax_cost_per_sold_weight": {"AAPL": -0.1, "SPY": 0.0, "XOM": 0.0}},
             "cannot be negative",
             id="negative-tax",
         ),
@@ -106,7 +111,7 @@ def test_validate_instruments_rejects_inconsistent_inputs(
     values = {**optimization_input.model_dump(), **update}
 
     with pytest.raises(ValidationError, match=message):
-        OptimizationInput.model_validate(values)
+        _ = OptimizationInput.model_validate(values)
 
 
 @pytest.mark.parametrize(
@@ -122,7 +127,7 @@ def test__validate_covariance_rejects_invalid_matrix(
     message: str,
 ) -> None:
     with pytest.raises(InvalidOptimizationInputError, match=message):
-        ClarabelOptimizer._validate_covariance(covariance)
+        ClarabelOptimizer._validate_covariance(covariance)  # pyright: ignore[reportPrivateUsage]  # Contract test pins private covariance validation.
 
 
 @pytest.mark.parametrize(
@@ -149,7 +154,7 @@ def test__validate_policy_coverage_rejects_incomplete_policy(
     inputs = optimization_input.model_copy(update=input_update)
 
     with pytest.raises(IncompletePortfolioPolicyError, match=message):
-        ClarabelOptimizer._validate_policy_coverage(inputs, policy)
+        ClarabelOptimizer._validate_policy_coverage(inputs, policy)  # pyright: ignore[reportPrivateUsage]  # Contract test pins private policy validation.
 
 
 def test__require_acceptable_solution_accepts_configured_inaccurate_status(
@@ -157,9 +162,9 @@ def test__require_acceptable_solution_accepts_configured_inaccurate_status(
 ) -> None:
     policy = portfolio_policy.model_copy(update={"accept_optimal_inaccurate": True})
 
-    status = ClarabelOptimizer._require_acceptable_solution(
-        _Problem("optimal_inaccurate"),
-        _Weights(np.array([0.5])),
+    status = ClarabelOptimizer._require_acceptable_solution(  # pyright: ignore[reportPrivateUsage]  # Contract test pins private solver status validation.
+        cast("cp.Problem", cast("object", _Problem("optimal_inaccurate"))),
+        cast("cp.Variable", cast("object", _Weights(np.array([0.5])))),
         1.0,
         policy,
     )
@@ -183,9 +188,9 @@ def test__require_acceptable_solution_rejects_invalid_solver_result(
     message: str,
 ) -> None:
     with pytest.raises(OptimizationFailedError, match=message):
-        ClarabelOptimizer._require_acceptable_solution(
-            _Problem(status),
-            _Weights(value),
+        _ = ClarabelOptimizer._require_acceptable_solution(  # pyright: ignore[reportPrivateUsage]  # Contract test pins private solver status validation.
+            cast("cp.Problem", cast("object", _Problem(status))),
+            cast("cp.Variable", cast("object", _Weights(value))),
             objective,
             portfolio_policy,
         )
@@ -217,7 +222,7 @@ def test__validate_result_rejects_constraint_violation(
     policy = portfolio_policy.model_copy(update=policy_update)
 
     with pytest.raises(OptimizationResultError, match=message):
-        ClarabelOptimizer._validate_result(
+        ClarabelOptimizer._validate_result(  # pyright: ignore[reportPrivateUsage]  # Contract test pins private constraint validation.
             instruments,
             np.asarray(weights),
             current,
@@ -251,10 +256,13 @@ def test_optimize_without_installed_clarabel_fails_closed(
     portfolio_policy: PortfolioPolicy,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(cp, "installed_solvers", lambda: [])
+    def no_installed_solvers() -> list[str]:
+        return []
+
+    monkeypatch.setattr(cp, "installed_solvers", no_installed_solvers)
 
     with pytest.raises(OptimizerUnavailableError, match="not installed"):
-        ClarabelOptimizer().optimize(optimization_input, portfolio_policy)
+        _ = ClarabelOptimizer().optimize(optimization_input, portfolio_policy)
 
 
 def test_optimize_with_solver_failure_raises_typed_error(
@@ -263,12 +271,12 @@ def test_optimize_with_solver_failure_raises_typed_error(
     monkeypatch: MonkeyPatch,
 ) -> None:
     def fail_solve(_problem: cp.Problem, **_kwargs: object) -> float:
-        raise cp.error.SolverError("solver failed")
+        raise SolverError("solver failed")
 
     monkeypatch.setattr(cp.Problem, "solve", fail_solve)
 
     with pytest.raises(OptimizationFailedError, match="failed to solve"):
-        ClarabelOptimizer().optimize(optimization_input, portfolio_policy)
+        _ = ClarabelOptimizer().optimize(optimization_input, portfolio_policy)
 
 
 def test_optimize_without_solver_package_metadata_fails_closed(
@@ -282,4 +290,4 @@ def test_optimize_without_solver_package_metadata_fails_closed(
     monkeypatch.setattr(importlib.metadata, "version", missing_version)
 
     with pytest.raises(OptimizerUnavailableError, match="metadata is unavailable"):
-        ClarabelOptimizer().optimize(optimization_input, portfolio_policy)
+        _ = ClarabelOptimizer().optimize(optimization_input, portfolio_policy)

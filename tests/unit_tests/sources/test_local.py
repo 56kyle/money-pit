@@ -2,7 +2,12 @@ from pathlib import Path
 
 import pytest
 
+from money_pit.schemas.evidence import TextLocator
+from money_pit.schemas.sources import AllowedUse
 from money_pit.schemas.sources import SourceDefinition
+from money_pit.schemas.sources import SourceTrustSetting
+from money_pit.schemas.sources import TrustCategory
+from money_pit.schemas.sources import TrustLevel
 from money_pit.sources.errors import SourceContentTooLargeError
 from money_pit.sources.errors import SourceExtractionError
 from money_pit.sources.errors import SourceMediaTypeError
@@ -14,13 +19,16 @@ def _definition(path: Path, *, maximum_bytes: int = 1024) -> SourceDefinition:
         source_id="local",
         adapter_name="local_text",
         locator=str(path),
+        provenance_group="local-test",
+        allowed_uses=(AllowedUse.INTERPRETATION,),
+        trust_settings=(SourceTrustSetting(category=TrustCategory.FACTUAL, level=TrustLevel.COMMENTARY),),
         adapter_config={"max_content_bytes": maximum_bytes},
     )
 
 
-def test_discover_is_idempotent_for_matching_cursor(tmp_path):
+def test_discover_is_idempotent_for_matching_cursor(tmp_path: Path) -> None:
     source_path = tmp_path / "source.txt"
-    source_path.write_text("evidence", encoding="utf-8")
+    _ = source_path.write_text("evidence", encoding="utf-8")
     connector = local_text_connector(_definition(source_path))
     first = connector.discover(None)
 
@@ -30,51 +38,51 @@ def test_discover_is_idempotent_for_matching_cursor(tmp_path):
     assert second.next_cursor == first.next_cursor
 
 
-def test_discover_creates_new_content_version_after_edit(tmp_path):
+def test_discover_creates_new_content_version_after_edit(tmp_path: Path) -> None:
     source_path = tmp_path / "source.txt"
-    source_path.write_text("first", encoding="utf-8")
+    _ = source_path.write_text("first", encoding="utf-8")
     connector = local_text_connector(_definition(source_path))
     first = connector.discover(None)
-    source_path.write_text("second", encoding="utf-8")
+    _ = source_path.write_text("second", encoding="utf-8")
 
     second = connector.discover(first.next_cursor)
 
     assert second.items[0].content_version != first.items[0].content_version
 
 
-def test_fetch_rejects_edit_after_discovery(tmp_path):
+def test_fetch_rejects_edit_after_discovery(tmp_path: Path) -> None:
     source_path = tmp_path / "source.txt"
-    source_path.write_text("first", encoding="utf-8")
+    _ = source_path.write_text("first", encoding="utf-8")
     connector = local_text_connector(_definition(source_path))
     item = connector.discover(None).items[0]
-    source_path.write_text("second", encoding="utf-8")
+    _ = source_path.write_text("second", encoding="utf-8")
 
     with pytest.raises(SourceExtractionError):
-        connector.fetch(item)
+        _ = connector.fetch(item)
 
 
-def test_discover_rejects_oversized_content(tmp_path):
+def test_discover_rejects_oversized_content(tmp_path: Path) -> None:
     source_path = tmp_path / "source.txt"
-    source_path.write_bytes(b"too large")
+    _ = source_path.write_bytes(b"too large")
     connector = local_text_connector(_definition(source_path, maximum_bytes=3))
 
     with pytest.raises(SourceContentTooLargeError):
-        connector.discover(None)
+        _ = connector.discover(None)
 
 
-def test_fetch_rejects_unaccepted_media_type(tmp_path):
+def test_fetch_rejects_unaccepted_media_type(tmp_path: Path) -> None:
     source_path = tmp_path / "source.bin"
-    source_path.write_bytes(b"plain bytes")
+    _ = source_path.write_bytes(b"plain bytes")
     connector = local_text_connector(_definition(source_path))
     item = connector.discover(None).items[0]
 
     with pytest.raises(SourceMediaTypeError):
-        connector.fetch(item)
+        _ = connector.fetch(item)
 
 
-def test_extract_retains_asset_and_text_locator(tmp_path):
+def test_extract_retains_asset_and_text_locator(tmp_path: Path) -> None:
     source_path = tmp_path / "source.txt"
-    source_path.write_text("traceable claim", encoding="utf-8")
+    _ = source_path.write_text("traceable claim", encoding="utf-8")
     connector = local_text_connector(_definition(source_path))
     item = connector.discover(None).items[0]
 
@@ -86,4 +94,6 @@ def test_extract_retains_asset_and_text_locator(tmp_path):
         evidence.asset.content_hash,
     )
     assert evidence.fragments[0].extracted_text == "traceable claim"
-    assert evidence.fragments[0].locator.end_offset == len("traceable claim")
+    locator = evidence.fragments[0].locator
+    assert isinstance(locator, TextLocator)
+    assert locator.end_offset == len("traceable claim")

@@ -6,6 +6,7 @@ from money_pit.schemas.evidence import EvidenceDocument
 from money_pit.schemas.sources import DiscoveryBatch
 from money_pit.schemas.sources import RawArtifact
 from money_pit.schemas.sources import SourceCursor
+from money_pit.schemas.sources import SourceCursorPurpose
 from money_pit.schemas.sources import SourceDefinition
 from money_pit.schemas.sources import SourceItem
 from money_pit.sources.errors import ConnectorConfigurationError
@@ -27,9 +28,14 @@ class SecFilingsConnector:
             raise ConnectorConfigurationError("SEC source locator must use an sec.gov host")
         self._feed: FeedConnector = FeedConnector(definition, transport)
 
-    def discover(self, cursor: SourceCursor | None) -> DiscoveryBatch:
+    def discover(
+        self,
+        cursor: SourceCursor | None,
+        *,
+        purpose: SourceCursorPurpose = SourceCursorPurpose.SYNC,
+    ) -> DiscoveryBatch:
         """Discover bounded SEC filing entries."""
-        return self._feed.discover(cursor)
+        return self._feed.discover(cursor, purpose=purpose)
 
     def fetch(self, item: SourceItem) -> RawArtifact:
         """Fetch the SEC filing landing document."""

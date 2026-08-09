@@ -1,10 +1,10 @@
-"""Tests for money_pit.schemas.fills.FillObservation — construction and frozen invariant."""
+"""Tests for execution-owned fill observation contracts."""
 
 import pytest
 from pydantic import ValidationError
 
-from money_pit.schemas.enums import ExecutionPhase
-from money_pit.schemas.fills import FillObservation
+from money_pit.execution_control.fills import ExecutionPhase
+from money_pit.execution_control.fills import FillObservation
 
 
 def test_fill_observation_with_valid() -> None:

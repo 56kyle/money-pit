@@ -3,9 +3,12 @@
 from datetime import datetime
 from typing import Protocol
 
+from money_pit.execution_control.models import ExecutionClaim
 from money_pit.execution_control.models import ExecutionControlState
-from money_pit.plans.lifecycle import AuthorizationContext
+from money_pit.execution_control.models import ExecutionEvent
+from money_pit.execution_control.models import PreflightDenial
 from money_pit.plans.lifecycle import PlanDecision
+from money_pit.plans.lifecycle import RejectionRecord
 from money_pit.schemas.execution_policy import ExecutionPolicy
 from money_pit.schemas.portfolio_plan import PortfolioPlan
 
@@ -29,6 +32,10 @@ class DecisionRepository(Protocol):
         """Return the latest decision for a plan, or None."""
         ...
 
+    def rejection_for(self, plan_id: str, plan_hash: str) -> RejectionRecord | None:
+        """Return an exact-hash rejection, which is a terminal veto."""
+        ...
+
 
 class KillSwitchStore(Protocol):
     """Read and durably update the global execution kill switch."""
@@ -46,19 +53,11 @@ class KillSwitchStore(Protocol):
         ...
 
 
-class AuthorizationContextProvider(Protocol):
-    """Read trusted current state for immediate plan authorization."""
+class AutonomousEligibilityEvaluator(Protocol):
+    """Evaluate staged autonomous-execution evidence for one exact plan."""
 
-    def current(self, plan: PortfolioPlan) -> AuthorizationContext:
-        """Return current state or raise a typed availability failure."""
-        ...
-
-
-class AutonomousCoverageEvaluator(Protocol):
-    """Decide whether a versioned autonomous policy covers an exact plan."""
-
-    def covers(self, plan: PortfolioPlan, policy: ExecutionPolicy) -> bool:
-        """Return True only when every proposed action is explicitly covered."""
+    def denials(self, plan: PortfolioPlan, policy: ExecutionPolicy) -> tuple[PreflightDenial, ...]:
+        """Return every reason autonomous execution is unavailable."""
         ...
 
 
@@ -79,4 +78,20 @@ class ExecutionClaimRepository(Protocol):
         broker_order_id: str | None,
     ) -> None:
         """Persist a claimed trade's latest execution phase."""
+        ...
+
+    def nonterminal_claims(self) -> tuple[ExecutionClaim, ...]:
+        """Return every claim that still requires broker reconciliation."""
+        ...
+
+
+class ExecutionJournalRepository(Protocol):
+    """Append and query immutable execution lifecycle events."""
+
+    def append_event(self, event: ExecutionEvent) -> None:
+        """Persist one event before allowing the next side effect."""
+        ...
+
+    def events_for_plan(self, plan_hash: str) -> tuple[ExecutionEvent, ...]:
+        """Return one plan's events in deterministic append order."""
         ...

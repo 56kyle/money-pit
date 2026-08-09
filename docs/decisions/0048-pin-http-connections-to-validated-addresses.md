@@ -40,7 +40,7 @@ The production transport connects directly to one of those validated IP addresse
 
 Redirects are followed manually up to a fixed count of five. Every target is resolved relative to the prior URL and then passes the complete validation, resolution, and address-pinning process. All hops and address attempts consume one shared monotonic deadline.
 
-The existing `HttpTransport` and connector interfaces remain unchanged. `HttpNameResolver` and `HttpAddressPinnedExchange` are injectable seams for deterministic tests. The historical `UrllibHttpTransport` class name remains temporarily for import compatibility even though its production implementation no longer uses `urllib`.
+The existing `HttpTransport` and connector interfaces remain unchanged. `HttpNameResolver` and `HttpAddressPinnedExchange` are injectable seams for deterministic tests. The production `AddressPinnedHttpTransport` name states the connection security property directly.
 
 dnspython 2.8.0 was audited before adoption. It supports the project’s Python range, uses the ISC license, publishes a universal wheel, has no transitive runtime dependencies, was not yanked, and had no OSV advisories for version 2.8.0 at the time of review. Its active repository has multiple maintainers. The earlier CVE-2023-29483 issue was fixed in dnspython 2.6.1.
 

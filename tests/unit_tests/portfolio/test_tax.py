@@ -39,7 +39,7 @@ def test_lot_selection_policy_round_trips(policy: LotSelectionPolicy) -> None:
 
 def test_tax_lot_rejects_non_positive_quantity() -> None:
     with pytest.raises(ValidationError):
-        TaxLot(
+        _ = TaxLot(
             lot_id="lot-1",
             account_id="taxable-1",
             instrument="AAPL",

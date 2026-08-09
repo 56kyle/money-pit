@@ -1,110 +1,64 @@
-"""Module containing constants used throughout the money_pit package."""
+"""Module containing shared constants for the money_pit package."""
 
 import datetime
 import re
 from pathlib import Path
+from typing import Final
 
-from platformdirs import user_cache_path
 from platformdirs import user_config_path
 from platformdirs import user_log_path
-from platformdirs import user_state_path
 
 
-FILE_SAFE_DATETIME_FORMAT: str = "%Y-%m-%d_%H-%M-%S"
-ISO_UTC_FORMAT: str = "%Y-%m-%dT%H:%M:%SZ"
+APP_NAME: Final[str] = "money_pit"
+APP_AUTHOR: Final[str] = "56kyle"
+APP_VERSION: Final[str] = "0.0.2"
+APP_START_TIME: Final[datetime.datetime] = datetime.datetime.now(tz=datetime.timezone.utc)
 
-APP_NAME: str = "money_pit"
-APP_AUTHOR: str = "56kyle"
-APP_START_TIME: datetime.datetime = datetime.datetime.now(tz=datetime.timezone.utc)
+DATA_ROOT: Final[Path] = Path("data")
+ASSETS_DIRNAME: Final[str] = "assets"
+RUNS_DIRNAME: Final[str] = "runs"
+REPORTS_DIRNAME: Final[str] = "reports"
+STATE_DATABASE_FILENAME: Final[str] = "intelligence.sqlite3"
+RUN_MANIFEST_FILENAME: Final[str] = "run.json"
 
-_CONFIG_FILENAME: str = ".env"
-_INGEST_CACHE_DIRNAME: str = "ingest_cache"
-_PROCESSED_EPISODES_FILENAME: str = "processed_episodes.json"
+SOURCES_CONFIG_FILENAME: Final[str] = "sources.toml"
+STRATEGY_CONFIG_FILENAME: Final[str] = "strategy.toml"
+EXECUTION_CONFIG_FILENAME: Final[str] = "execution.toml"
+ENV_CONFIG_FILENAME: Final[str] = ".env"
+
+OPENAI_MODEL_PREFIX: Final[str] = "openai:"
 
 
 def user_config_folder() -> Path:
-    """Return the per-user config folder, creating it on each call."""
+    """Return the per-user configuration folder."""
     return user_config_path(appname=APP_NAME, appauthor=APP_AUTHOR, ensure_exists=True)
 
 
-def user_cache_folder() -> Path:
-    """Return the per-user cache folder, creating it on each call."""
-    return user_cache_path(appname=APP_NAME, appauthor=APP_AUTHOR, ensure_exists=True)
-
-
-def user_state_folder() -> Path:
-    """Return the per-user state folder, creating it on each call."""
-    return user_state_path(appname=APP_NAME, appauthor=APP_AUTHOR, ensure_exists=True)
-
-
 def user_log_folder() -> Path:
-    """Return the per-user log folder, creating it on each call."""
+    """Return the per-user log folder."""
     return user_log_path(appname=APP_NAME, appauthor=APP_AUTHOR, ensure_exists=True)
 
 
 def default_config_path() -> Path:
-    """Return the default per-user config file path, creating its parent folder on each call."""
-    return user_config_folder() / _CONFIG_FILENAME
+    """Return the default secrets-only environment file."""
+    return user_config_folder() / ENV_CONFIG_FILENAME
 
 
-def default_ingest_cache_dir() -> Path:
-    """Return the default per-user ingest cache directory, creating its parent folder on each call."""
-    return user_cache_folder() / _INGEST_CACHE_DIRNAME
+def default_sources_config_path() -> Path:
+    """Return the default source-registry path."""
+    return Path(SOURCES_CONFIG_FILENAME)
 
 
-def default_processed_episodes_path() -> Path:
-    """Return the default per-user processed-episodes ledger path, creating its parent folder on each call."""
-    return user_state_folder() / _PROCESSED_EPISODES_FILENAME
+def default_strategy_config_path() -> Path:
+    """Return the default strategy configuration path."""
+    return Path(STRATEGY_CONFIG_FILENAME)
+
+
+def default_execution_config_path() -> Path:
+    """Return the default execution configuration path."""
+    return Path(EXECUTION_CONFIG_FILENAME)
 
 
 def source_id_to_dirname(source_id: str) -> str:
-    """Return a filesystem-safe directory name for a logical source id.
-
-    The logical source id keeps its colon on `SourceRef.source_id`; only the on-disk directory
-    name is sanitized so ids like `yt:dQw4w9WgXcQ` do not raise on colon-hostile filesystems.
-    """
+    """Return a filesystem-safe directory name for a logical source identifier."""
     return re.sub(r"[^\w.\-]", "_", source_id)
-
-
-OPENAI_MODEL_PREFIX: str = "openai:"
-
-GMAIL_KEYRING_SERVICE: str = "money-pit-gmail"
-
-DEFAULT_SMTP_HOST: str = "smtp.gmail.com"
-DEFAULT_SMTP_PORT: int = 587
-
-DAILY_SHOW_ROOT: Path = Path("data") / "daily_show"
-DATA_ROOT: Path = Path("data")
-ASSETS_DIRNAME: str = "assets"
-RUNS_DIRNAME: str = "runs"
-REPORTS_DIRNAME: str = "reports"
-STATE_DATABASE_FILENAME: str = "money_pit.sqlite3"
-RUN_MANIFEST_FILENAME: str = "run.json"
-
-SIGNALS_DIRNAME: str = "signals"
-
-AGGREGATED_SIGNALS_JSON_FILENAME: str = "aggregated_signals.json"
-AGGREGATED_SIGNALS_MD_FILENAME: str = "aggregated_signals.md"
-PORTFOLIO_SNAPSHOT_FILENAME: str = "portfolio_snapshot.json"
-INITIAL_QUESTIONS_JSON_FILENAME: str = "initial_questions.json"
-INITIAL_QUESTIONS_MD_FILENAME: str = "initial_questions.md"
-INITIAL_ANSWERS_JSON_FILENAME: str = "initial_answers.json"
-INITIAL_ANSWERS_MD_FILENAME: str = "initial_answers.md"
-ANALYSIS_JUDGMENT_JSON_FILENAME: str = "analysis_judgment.json"
-ANALYSIS_MD_FILENAME: str = "analysis.md"
-ACTION_STEPS_JSON_FILENAME: str = "action_steps.json"
-ACTION_STEPS_MD_FILENAME: str = "action_steps.md"
-ACTION_STEPS_VALIDATION_JSON_FILENAME: str = "action_steps_validation.json"
-ACTION_STEPS_VALIDATION_MD_FILENAME: str = "action_steps_validation.md"
-VALIDATION_STATUS_FILENAME: str = "validation_status.json"
-DETERMINATION_VERDICT_JSON_FILENAME: str = "determination_verdict.json"
-DETERMINATION_JSON_FILENAME: str = "determination.json"
-DETERMINATION_MD_FILENAME: str = "determination.md"
-EXECUTION_JOURNAL_FILENAME: str = "execution_journal.json"
-RECOVERY_JSON_FILENAME: str = "recovery.json"
-UNDELIVERED_EMAIL_FILENAME_STEM: str = "undelivered_email"
-UNDELIVERED_EMAIL_FILENAME_SUFFIX: str = ".txt"
-UNDELIVERED_EMAIL_FILENAME_TEMPLATE: str = (
-    f"{UNDELIVERED_EMAIL_FILENAME_STEM}_{{index:02d}}{UNDELIVERED_EMAIL_FILENAME_SUFFIX}"
-)
-UNDELIVERED_EMAIL_FILENAME_GLOB: str = f"{UNDELIVERED_EMAIL_FILENAME_STEM}_*{UNDELIVERED_EMAIL_FILENAME_SUFFIX}"

@@ -6,8 +6,11 @@ from typing import cast
 
 from pydantic import ValidationError
 
+from money_pit.portfolio.providers import LiquiditySnapshot
+from money_pit.portfolio.providers import RiskSnapshot
 from money_pit.portfolio.snapshots import MarketStateSnapshot
 from money_pit.portfolio.snapshots import PortfolioStateSnapshot
+from money_pit.schemas.tax import TaxLotSnapshot
 from money_pit.storage.database import Database
 from money_pit.storage.database import TransactionMode
 from money_pit.storage.errors import StorageError
@@ -28,6 +31,9 @@ class MalformedSnapshotRecordError(SnapshotRepositoryError):
 class _SnapshotKind(StrEnum):
     PORTFOLIO = "portfolio"
     MARKET = "market"
+    RISK = "risk"
+    LIQUIDITY = "liquidity"
+    TAX = "tax"
 
 
 _INSERT_SQL: dict[_SnapshotKind, str] = {
@@ -41,10 +47,28 @@ _INSERT_SQL: dict[_SnapshotKind, str] = {
         VALUES (?, ?, ?)
         ON CONFLICT(snapshot_id) DO NOTHING
     """,
+    _SnapshotKind.RISK: """
+        INSERT INTO risk_state_snapshots (snapshot_id, captured_at, payload_json)
+        VALUES (?, ?, ?)
+        ON CONFLICT(snapshot_id) DO NOTHING
+    """,
+    _SnapshotKind.LIQUIDITY: """
+        INSERT INTO liquidity_state_snapshots (snapshot_id, captured_at, payload_json)
+        VALUES (?, ?, ?)
+        ON CONFLICT(snapshot_id) DO NOTHING
+    """,
+    _SnapshotKind.TAX: """
+        INSERT INTO tax_state_snapshots (snapshot_id, captured_at, payload_json)
+        VALUES (?, ?, ?)
+        ON CONFLICT(snapshot_id) DO NOTHING
+    """,
 }
 _SELECT_SQL: dict[_SnapshotKind, str] = {
     _SnapshotKind.PORTFOLIO: "SELECT payload_json FROM portfolio_state_snapshots WHERE snapshot_id = ?",
     _SnapshotKind.MARKET: "SELECT payload_json FROM market_state_snapshots WHERE snapshot_id = ?",
+    _SnapshotKind.RISK: "SELECT payload_json FROM risk_state_snapshots WHERE snapshot_id = ?",
+    _SnapshotKind.LIQUIDITY: "SELECT payload_json FROM liquidity_state_snapshots WHERE snapshot_id = ?",
+    _SnapshotKind.TAX: "SELECT payload_json FROM tax_state_snapshots WHERE snapshot_id = ?",
 }
 
 
@@ -73,6 +97,33 @@ class SnapshotRepository:
             payload_json=snapshot.model_dump_json(),
         )
 
+    def append_risk(self, snapshot: RiskSnapshot) -> None:
+        """Persist one immutable risk snapshot idempotently."""
+        self._append(
+            kind=_SnapshotKind.RISK,
+            snapshot_id=snapshot.snapshot_id,
+            captured_at=snapshot.payload.captured_at.isoformat(),
+            payload_json=snapshot.model_dump_json(),
+        )
+
+    def append_liquidity(self, snapshot: LiquiditySnapshot) -> None:
+        """Persist one immutable liquidity snapshot idempotently."""
+        self._append(
+            kind=_SnapshotKind.LIQUIDITY,
+            snapshot_id=snapshot.snapshot_id,
+            captured_at=snapshot.payload.captured_at.isoformat(),
+            payload_json=snapshot.model_dump_json(),
+        )
+
+    def append_tax(self, snapshot: TaxLotSnapshot) -> None:
+        """Persist one immutable tax-lot snapshot idempotently."""
+        self._append(
+            kind=_SnapshotKind.TAX,
+            snapshot_id=snapshot.snapshot_id,
+            captured_at=snapshot.captured_at.isoformat(),
+            payload_json=snapshot.model_dump_json(),
+        )
+
     def get_portfolio(self, snapshot_id: str) -> PortfolioStateSnapshot:
         """Return one fingerprint-validated portfolio snapshot."""
         serialized: str = self._get(_SnapshotKind.PORTFOLIO, snapshot_id)
@@ -88,6 +139,27 @@ class SnapshotRepository:
             return MarketStateSnapshot.model_validate_json(serialized)
         except (ValueError, ValidationError) as error:
             raise MalformedSnapshotRecordError("stored market snapshot is malformed") from error
+
+    def get_risk(self, snapshot_id: str) -> RiskSnapshot:
+        """Return one fingerprint-validated risk snapshot."""
+        try:
+            return RiskSnapshot.model_validate_json(self._get(_SnapshotKind.RISK, snapshot_id))
+        except (ValueError, ValidationError) as error:
+            raise MalformedSnapshotRecordError("stored risk snapshot is malformed") from error
+
+    def get_liquidity(self, snapshot_id: str) -> LiquiditySnapshot:
+        """Return one fingerprint-validated liquidity snapshot."""
+        try:
+            return LiquiditySnapshot.model_validate_json(self._get(_SnapshotKind.LIQUIDITY, snapshot_id))
+        except (ValueError, ValidationError) as error:
+            raise MalformedSnapshotRecordError("stored liquidity snapshot is malformed") from error
+
+    def get_tax(self, snapshot_id: str) -> TaxLotSnapshot:
+        """Return one immutable tax-lot snapshot."""
+        try:
+            return TaxLotSnapshot.model_validate_json(self._get(_SnapshotKind.TAX, snapshot_id))
+        except (ValueError, ValidationError) as error:
+            raise MalformedSnapshotRecordError("stored tax snapshot is malformed") from error
 
     def _append(
         self,

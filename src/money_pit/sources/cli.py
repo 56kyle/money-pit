@@ -10,6 +10,8 @@ import typer
 from money_pit.constants import ASSETS_DIRNAME
 from money_pit.constants import DATA_ROOT
 from money_pit.constants import STATE_DATABASE_FILENAME
+from money_pit.evidence.processors import builtin_evidence_processors
+from money_pit.evidence.repository import EvidenceProcessingAttemptRepository
 from money_pit.sources.builtin import builtin_adapter_registry
 from money_pit.sources.errors import SourceError
 from money_pit.sources.registry import AdapterRegistry
@@ -47,6 +49,8 @@ def _source_runtime(
         repository,
         EvidenceRepository(database),
         AssetStore(DATA_ROOT / ASSETS_DIRNAME),
+        attempt_repository=EvidenceProcessingAttemptRepository(database),
+        processor_registry=builtin_evidence_processors(),
     )
     _ = service.register_definitions()
     return service, repository
@@ -101,3 +105,12 @@ def backfill(
         raise typer.Exit(code=1) from error
     for result in results:
         typer.echo(result.model_dump_json())
+
+
+@source_app.command()
+def ingest(
+    source_id: str,
+    sources_path: Path = _DEFAULT_SOURCES_PATH,
+) -> None:
+    """Ingest one configured manual source through the durable source lifecycle."""
+    sync(source_id=source_id, sources_path=sources_path)

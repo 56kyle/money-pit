@@ -24,7 +24,7 @@ def test_validate_weight_limits_rejects_contradictory_policy(
     values = {**portfolio_policy.model_dump(), **update}
 
     with pytest.raises(ValidationError, match=expected_message):
-        PortfolioPolicy.model_validate(values)
+        _ = PortfolioPolicy.model_validate(values)
 
 
 def test_validate_weight_limits_accepts_complete_policy(portfolio_policy: PortfolioPolicy) -> None:

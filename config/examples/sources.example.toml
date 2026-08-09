@@ -1,0 +1,85 @@
+version = "0.0.2"
+
+[[sources]]
+source_id = "manual-research"
+adapter_name = "local_text"
+enabled = true
+locator = "manual:research"
+provenance_group = "manual-research"
+allowed_uses = ["interpretation", "thesis_generation", "portfolio_decision"]
+
+[[sources.trust_settings]]
+category = "factual"
+level = "commentary"
+
+[[sources.trust_settings]]
+category = "opinion"
+level = "commentary"
+
+# Enable these provider policies only after configuring their matching .env credentials.
+[[sources]]
+source_id = "research-brave"
+adapter_name = "web"
+enabled = false
+locator = "https://api.search.brave.com/res/v1/web/search"
+provenance_group = "web-search"
+allowed_uses = ["interpretation", "thesis_generation", "factual_verification"]
+tags = ["research-provider", "provider:brave"]
+
+[[sources.trust_settings]]
+category = "factual"
+level = "untrusted"
+
+# Brave destinations need explicit publisher policies. Unknown hosts fail closed.
+# Give syndicated copies the same provenance_group as their upstream origin.
+[[sources]]
+source_id = "research-publisher-example"
+adapter_name = "web"
+enabled = false
+locator = "https://investor.example.com/"
+provenance_group = "issuer-example-primary"
+allowed_uses = ["interpretation", "thesis_generation", "factual_verification"]
+tags = ["research-publisher", "provider:brave"]
+
+[[sources.trust_settings]]
+category = "factual"
+level = "authoritative_primary"
+
+[[sources]]
+source_id = "research-syndicated-example"
+adapter_name = "web"
+enabled = false
+locator = "https://syndicated.example.net/"
+provenance_group = "issuer-example-primary"
+allowed_uses = ["interpretation", "thesis_generation", "factual_verification"]
+tags = ["research-publisher", "provider:brave"]
+
+[[sources.trust_settings]]
+category = "factual"
+level = "independent_secondary"
+
+[[sources]]
+source_id = "research-edgar"
+adapter_name = "sec_filings"
+enabled = false
+locator = "https://www.sec.gov/edgar/search/"
+provenance_group = "sec-edgar"
+allowed_uses = ["interpretation", "thesis_generation", "factual_verification", "portfolio_decision"]
+tags = ["research-provider", "provider:edgar"]
+
+[[sources.trust_settings]]
+category = "factual"
+level = "authoritative_primary"
+
+[[sources]]
+source_id = "research-fred"
+adapter_name = "web"
+enabled = false
+locator = "https://api.stlouisfed.org/fred/series/observations"
+provenance_group = "fred"
+allowed_uses = ["interpretation", "thesis_generation", "factual_verification"]
+tags = ["research-provider", "provider:fred"]
+
+[[sources.trust_settings]]
+category = "factual"
+level = "authoritative_primary"

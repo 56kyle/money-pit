@@ -1,0 +1,12 @@
+# This template is intentionally not runnable. Execution limits require explicit
+# operator approval and have no production defaults.
+policy_version = "<execution-policy-version>"
+broker_environment = "paper"
+execution_mode = "approval_required"
+# maximum_order_notional = "<currency-amount>"
+# maximum_daily_turnover = "<fraction>"
+# maximum_market_drift_fraction = "<fraction>"
+# maximum_quote_age_seconds = "<positive-seconds>"
+# poll_interval_seconds = "<positive-seconds>"
+# poll_timeout_seconds = "<positive-seconds>"
+# allowed_asset_classes = ["us_equity", "us_etf"]

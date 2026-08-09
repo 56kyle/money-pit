@@ -11,6 +11,8 @@ from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import model_validator
 
+from money_pit.schemas.execution_policy import BrokerEnvironment
+
 
 class PortfolioStatePosition(BaseModel):
     """One position included in an authoritative portfolio fingerprint."""
@@ -29,6 +31,9 @@ class PortfolioStatePayload(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
 
     account_id: str = Field(min_length=1)
+    broker_environment: BrokerEnvironment = BrokerEnvironment.PAPER
+    account_status: str = Field(default="ACTIVE", min_length=1)
+    trading_blocked: bool = False
     captured_at: AwareDatetime
     available_cash: float
     positions: tuple[PortfolioStatePosition, ...]

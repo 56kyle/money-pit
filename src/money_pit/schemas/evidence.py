@@ -1,5 +1,6 @@
 """Module containing evidence provenance contracts for the money_pit package."""
 
+from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar
 from typing import Literal
@@ -89,3 +90,29 @@ class EvidenceDocument(BaseModel):
 
     asset: EvidenceAsset
     fragments: tuple[EvidenceFragment, ...]
+
+
+class EvidenceProcessingStatus(StrEnum):
+    """Outcome of one evidence-processing attempt."""
+
+    STARTED = "started"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class EvidenceProcessingAttempt(BaseModel):
+    """Durable record of one processor invocation against an acquisition."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+    attempt_id: str = Field(min_length=1)
+    source_item_id: str = Field(min_length=1)
+    content_version: str = Field(min_length=1)
+    asset_id: str = Field(min_length=1)
+    processor_name: str = Field(min_length=1)
+    processor_version: str = Field(min_length=1)
+    started_at: AwareDatetime
+    completed_at: AwareDatetime | None = None
+    status: EvidenceProcessingStatus
+    failure_kind: str | None = Field(default=None, min_length=1)
+    document_id: str | None = Field(default=None, min_length=1)
+    fragment_ids: tuple[str, ...] = ()

@@ -1,0 +1,50 @@
+from types import SimpleNamespace
+from typing import cast
+
+import pytest
+
+from money_pit.composition import ApplicationDependencyError
+from money_pit.composition import _research_publisher_definitions  # pyright: ignore[reportPrivateUsage]
+from money_pit.config import ApplicationConfig
+from money_pit.schemas.sources import AllowedUse
+from money_pit.schemas.sources import SourceDefinition
+from money_pit.schemas.sources import SourceTrustSetting
+from money_pit.schemas.sources import TrustCategory
+from money_pit.schemas.sources import TrustLevel
+
+
+def _publisher(source_id: str, *, enabled: bool = True) -> SourceDefinition:
+    return SourceDefinition(
+        source_id=source_id,
+        adapter_name="web",
+        enabled=enabled,
+        locator=f"https://{source_id}.example/",
+        provenance_group=source_id,
+        allowed_uses=(AllowedUse.INTERPRETATION, AllowedUse.FACTUAL_VERIFICATION),
+        trust_settings=(
+            SourceTrustSetting(
+                category=TrustCategory.FACTUAL,
+                level=TrustLevel.INDEPENDENT_SECONDARY,
+            ),
+        ),
+        tags=("research-publisher", "provider:brave"),
+    )
+
+
+def _config(*definitions: SourceDefinition) -> ApplicationConfig:
+    value = SimpleNamespace(sources=SimpleNamespace(sources=definitions))
+    return cast("ApplicationConfig", cast("object", value))
+
+
+def test__research_publisher_definitions_returns_only_enabled_exact_provider_policies() -> None:
+    enabled = _publisher("enabled")
+    disabled = _publisher("disabled", enabled=False)
+
+    result = _research_publisher_definitions(_config(enabled, disabled), "brave")
+
+    assert result == (enabled,)
+
+
+def test__research_publisher_definitions_fails_when_no_destination_policy_is_enabled() -> None:
+    with pytest.raises(ApplicationDependencyError):
+        _ = _research_publisher_definitions(_config(_publisher("disabled", enabled=False)), "brave")

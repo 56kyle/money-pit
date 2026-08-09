@@ -99,7 +99,7 @@ def lint_python(session: Session) -> None:
 def typecheck(session: Session) -> None:
     """Run static type checking (Basedpyright) on Python code."""
     session.log("Installing type checking dependencies...")
-    session.install("-e", ".", "--group", "dev")
+    session.install("-e", ".[video]", "--group", "dev")
     python_path: Path = Path(shutil.which("python", path=session.bin))
 
     session.log(f"Running Basedpyright check with py{session.python}.")
@@ -110,7 +110,7 @@ def typecheck(session: Session) -> None:
 def security_python(session: Session) -> None:
     """Run code security checks (Bandit) on Python code."""
     session.log(f"Running Bandit static security analysis with py{session.python}.")
-    session.run("uvx", "bandit", "-r", PACKAGE_NAME, "-c", "bandit.yml", "-ll")
+    session.run("uvx", "bandit", "-r", str(Path("src") / PACKAGE_NAME), "-c", "bandit.yml", "-ll")
 
     session.log(f"Running pip-audit dependency security check with py{session.python}.")
     session.run("uvx", "pip-audit")
@@ -126,6 +126,7 @@ def tests_python(session: Session) -> None:
     test_results_dir = TESTS_FOLDER / "results"
     test_results_dir.mkdir(parents=True, exist_ok=True)
     junitxml_file = test_results_dir / f"test-results-py{session.python.replace('.', '')}.xml"
+    pytest_temp_root = REPO_ROOT / ".test-tmp" / f"nox-py{session.python.replace('.', '')}"
 
     session.run(
         "pytest",
@@ -134,6 +135,10 @@ def tests_python(session: Session) -> None:
         "--cov-report=term",
         "--cov-report=xml",
         f"--junitxml={junitxml_file}",
+        "--basetemp",
+        str(pytest_temp_root),
+        "-p",
+        "no:cacheprovider",
         "tests/",
     )
 
@@ -151,7 +156,7 @@ def docs_build(session: Session) -> None:
     session.run("sphinx-build", "-b", "html", "docs", str(docs_build_dir), "-E")
 
     session.log("Building documentation.")
-    session.run("sphinx-build", "-b", "html", "docs", str(docs_build_dir), "-W")
+    session.run("sphinx-build", "-b", "html", "docs", str(docs_build_dir), "-W", "-E")
 
 
 @nox.session(python=DEFAULT_PYTHON_VERSION, name="docs", tags=[DOCS, BUILD])

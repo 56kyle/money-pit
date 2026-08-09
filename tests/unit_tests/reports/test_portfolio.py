@@ -1,12 +1,16 @@
 """Tests for static portfolio-review reports."""
 
+import hashlib
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from pydantic import HttpUrl
+from pydantic import ValidationError
 
 from money_pit.reports.portfolio import PortfolioReview
 from money_pit.reports.portfolio import ReportEvidence
+from money_pit.reports.portfolio import ReportRenderError
 from money_pit.reports.portfolio import load_portfolio_review
 from money_pit.reports.portfolio import render_html
 from money_pit.reports.portfolio import render_json
@@ -25,17 +29,17 @@ def _review(plan: PortfolioPlan) -> PortfolioReview:
         factor_exposures={"market": 0.7},
         thesis_statuses={"AAPL": "active"},
         conflicting_claims=("Demand is high | supply is constrained",),
-        source_reliability={"filing": 0.9},
+        source_authority_ratio_by_claim_category={"filing": 0.9},
         evidence=(
             ReportEvidence(
                 label="Frame <script>alert(1)</script>",
-                locator="https://youtu.be/example?t=30",
+                web_url=HttpUrl("https://youtu.be/example?t=30"),
                 source_item_id="video-1",
                 status="supported",
             ),
         ),
         scenarios=({"name": "base", "probability": 0.5},),
-        sensitivities=({"turnover": 0.1},),
+        decision_diagnostics=({"turnover": 0.1},),
         approval_state="approval_required",
         execution_state="not_executed",
     )
@@ -53,10 +57,60 @@ def test_render_markdown_escapes_table_structure(portfolio_plan: PortfolioPlan) 
     assert r"Demand is high \| supply is constrained" in rendered
 
 
+def test_render_markdown_labels_source_authority_ratio_honestly(portfolio_plan: PortfolioPlan) -> None:
+    rendered = render_markdown(_review(portfolio_plan))
+
+    assert "Source authority ratio by claim category" in rendered
+    assert "0.9" in rendered
+
+
+def test_render_markdown_includes_deterministic_decision_diagnostics(
+    portfolio_plan: PortfolioPlan,
+) -> None:
+    rendered = render_markdown(_review(portfolio_plan))
+
+    assert "Decision diagnostics" in rendered
+    assert '"turnover": 0.1' in rendered
+
+
 def test_render_html_escapes_untrusted_evidence(portfolio_plan: PortfolioPlan) -> None:
     rendered: str = render_html(_review(portfolio_plan))
 
     assert "<script>alert(1)</script>" not in rendered
+
+
+@pytest.mark.parametrize(
+    "renderer",
+    [pytest.param(render_markdown, id="markdown"), pytest.param(render_html, id="html")],
+)
+def test_render_report_preserves_timestamp_url_and_local_thumbnail(
+    portfolio_plan: PortfolioPlan,
+    renderer: Callable[[PortfolioReview], str],
+) -> None:
+    evidence = ReportEvidence(
+        label="Video frame at 00:30",
+        web_url=HttpUrl("https://youtu.be/example?t=30"),
+        local_thumbnail=Path("thumbnails") / f"{'a' * 64}.png",
+        source_item_id="video-1",
+        status="supported",
+    )
+    review = _review(portfolio_plan).model_copy(update={"evidence": (evidence,)})
+
+    rendered = renderer(review)
+
+    assert "https://youtu.be/example?t=30" in rendered
+    assert f"thumbnails/{'a' * 64}.png" in rendered
+
+
+def test_report_evidence_rejects_unavailable_reason_with_a_locator() -> None:
+    with pytest.raises(ValidationError):
+        _ = ReportEvidence(
+            label="Video frame at 00:30",
+            web_url=HttpUrl("https://youtu.be/example?t=30"),
+            unavailable_reason="not available",
+            source_item_id="video-1",
+            status="supported",
+        )
 
 
 def test_render_markdown_neutralizes_untrusted_remote_image(portfolio_plan: PortfolioPlan) -> None:
@@ -118,3 +172,53 @@ def test_load_portfolio_review_reads_written_json(
     _ = path.write_text(render_json(review), encoding="utf-8")
 
     assert load_portfolio_review(path) == review
+
+
+def test_write_report_bundle_copies_thumbnail_bound_to_exact_content_hash(
+    portfolio_plan: PortfolioPlan,
+    tmp_path: Path,
+) -> None:
+    payload = b"bounded thumbnail bytes"
+    content_hash = hashlib.sha256(payload).hexdigest()
+    relative = Path("thumbnails") / f"{content_hash}.png"
+    source = tmp_path / "assets" / content_hash[:2] / content_hash
+    source.parent.mkdir(parents=True)
+    _ = source.write_bytes(payload)
+    evidence = ReportEvidence(
+        label="Video frame at 00:30",
+        local_thumbnail=relative,
+        source_item_id="video-1",
+        status="supported",
+    )
+    review = _review(portfolio_plan).model_copy(update={"evidence": (evidence,)})
+
+    _ = write_report_bundle(
+        review,
+        tmp_path / "report",
+        thumbnail_sources={relative: source},
+    )
+
+    assert (tmp_path / "report" / relative).read_bytes() == payload
+
+
+def test_write_report_bundle_rejects_thumbnail_with_wrong_content_hash(
+    portfolio_plan: PortfolioPlan,
+    tmp_path: Path,
+) -> None:
+    relative = Path("thumbnails") / f"{'a' * 64}.png"
+    source = tmp_path / "thumbnail.png"
+    _ = source.write_bytes(b"different content")
+    evidence = ReportEvidence(
+        label="Video frame at 00:30",
+        local_thumbnail=relative,
+        source_item_id="video-1",
+        status="supported",
+    )
+    review = _review(portfolio_plan).model_copy(update={"evidence": (evidence,)})
+
+    with pytest.raises(ReportRenderError, match="content does not match"):
+        _ = write_report_bundle(
+            review,
+            tmp_path / "report",
+            thumbnail_sources={relative: source},
+        )

@@ -2,6 +2,7 @@
 
 import http.client
 import ipaddress
+import re
 import socket
 import ssl
 import time
@@ -27,6 +28,7 @@ from money_pit.schemas.evidence import TextLocator
 from money_pit.schemas.sources import DiscoveryBatch
 from money_pit.schemas.sources import RawArtifact
 from money_pit.schemas.sources import SourceCursor
+from money_pit.schemas.sources import SourceCursorPurpose
 from money_pit.schemas.sources import SourceDefinition
 from money_pit.schemas.sources import SourceItem
 from money_pit.sources._shared import BoundedConnectorConfig
@@ -34,6 +36,7 @@ from money_pit.sources._shared import evidence_asset
 from money_pit.sources._shared import parse_config
 from money_pit.sources._shared import require_media_type
 from money_pit.sources._shared import sha256_bytes
+from money_pit.sources._shared import source_definition_hash
 from money_pit.sources._shared import utc_now
 from money_pit.sources.errors import SourceContentTooLargeError
 from money_pit.sources.errors import SourceDiscoveryError
@@ -61,6 +64,21 @@ class HttpTransport(Protocol):
 
     def get(self, url: str, *, maximum_bytes: int, timeout_seconds: float) -> HttpResponse:
         """Fetch one URL under explicit byte and time limits."""
+        ...
+
+
+class FixedOriginHttpTransport(HttpTransport, Protocol):
+    """Transport capable of sending sensitive headers without following redirects."""
+
+    def get_fixed_origin(
+        self,
+        url: str,
+        *,
+        headers: tuple[tuple[str, str], ...],
+        maximum_bytes: int,
+        timeout_seconds: float,
+    ) -> HttpResponse:
+        """Fetch exactly one origin hop with validated caller headers."""
         ...
 
 
@@ -196,6 +214,7 @@ class AddressPinnedRequest:
     maximum_bytes: int
     deadline: float
     monotonic_clock: Callable[[], float]
+    headers: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -368,6 +387,7 @@ def _send_request_under_deadline(
             "Host": request.host_header,
             "User-Agent": _USER_AGENT,
             "Connection": "close",
+            **dict(request.headers),
         },
     )
     _set_connection_remaining_timeout(connection, request)
@@ -452,8 +472,8 @@ def _request_remaining_seconds(request: AddressPinnedRequest) -> float:
     )
 
 
-class UrllibHttpTransport:
-    """Compatibility-named HTTP transport with address-pinned connections."""
+class AddressPinnedHttpTransport:
+    """HTTP transport that pins each request connection to validated public addresses."""
 
     def __init__(
         self,
@@ -485,6 +505,33 @@ class UrllibHttpTransport:
             raise
         except (OSError, ValueError, http.client.HTTPException) as error:
             raise SourceFetchError(f"HTTP fetch failed for {_safe_url_label(url)}") from error
+
+    def get_fixed_origin(
+        self,
+        url: str,
+        *,
+        headers: tuple[tuple[str, str], ...],
+        maximum_bytes: int,
+        timeout_seconds: float,
+    ) -> HttpResponse:
+        """Fetch one address-pinned hop and reject every redirect."""
+        _validate_http_limits(maximum_bytes=maximum_bytes, timeout_seconds=timeout_seconds)
+        validated_headers = _validated_sensitive_headers(headers)
+        deadline = self._monotonic_clock() + timeout_seconds
+        try:
+            response = self._fetch_url(
+                url,
+                maximum_bytes=maximum_bytes,
+                deadline=deadline,
+                headers=validated_headers,
+            )
+            if response.status in _REDIRECT_STATUSES:
+                raise SourceFetchError("Credentialed HTTP fetch refused a redirect")
+            return _bounded_http_response(response, final_url=url)
+        except (SourceContentTooLargeError, SourceFetchError, SourceDiscoveryError):
+            raise
+        except (OSError, ValueError, http.client.HTTPException) as error:
+            raise SourceFetchError(f"Credentialed HTTP fetch failed for {_safe_url_label(url)}") from error
 
     def _get_redirect_chain(
         self,
@@ -518,6 +565,7 @@ class UrllibHttpTransport:
         *,
         maximum_bytes: int,
         deadline: float,
+        headers: tuple[tuple[str, str], ...] = (),
     ) -> AddressPinnedResponse:
         """Resolve one URL and fetch it only through its validated addresses."""
         request_parts: _ValidatedHttpRequestParts = _validated_request_parts(url)
@@ -536,6 +584,7 @@ class UrllibHttpTransport:
             addresses=addresses,
             maximum_bytes=maximum_bytes,
             deadline=deadline,
+            headers=headers,
         )
 
     def _fetch_from_validated_addresses(
@@ -545,6 +594,7 @@ class UrllibHttpTransport:
         addresses: tuple[str, ...],
         maximum_bytes: int,
         deadline: float,
+        headers: tuple[tuple[str, str], ...] = (),
     ) -> AddressPinnedResponse:
         """Try only the validated addresses until one returns a response."""
         last_error: OSError | http.client.HTTPException | None = None
@@ -559,6 +609,7 @@ class UrllibHttpTransport:
                 maximum_bytes=maximum_bytes,
                 deadline=deadline,
                 monotonic_clock=self._monotonic_clock,
+                headers=headers,
             )
             try:
                 return self._exchange.get(request)
@@ -577,6 +628,29 @@ def _validate_http_limits(*, maximum_bytes: int, timeout_seconds: float) -> None
         raise SourceFetchError("HTTP response byte limit must not be negative")
     if timeout_seconds <= 0:
         raise SourceFetchError("HTTP timeout must be positive")
+
+
+_HEADER_NAME = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+_RESERVED_HEADERS = frozenset({"connection", "host", "content-length", "transfer-encoding"})
+
+
+def _validated_sensitive_headers(
+    headers: tuple[tuple[str, str], ...],
+) -> tuple[tuple[str, str], ...]:
+    """Validate header syntax without retaining values in an error message."""
+    seen: set[str] = set()
+    validated: list[tuple[str, str]] = []
+    for name, value in headers:
+        normalized = name.casefold()
+        if _HEADER_NAME.fullmatch(name) is None or normalized in _RESERVED_HEADERS:
+            raise SourceFetchError("Credentialed HTTP request contained an invalid header name")
+        if normalized in seen:
+            raise SourceFetchError("Credentialed HTTP request contained a duplicate header")
+        if not value or "\r" in value or "\n" in value:
+            raise SourceFetchError("Credentialed HTTP request contained an invalid header value")
+        seen.add(normalized)
+        validated.append((name, value))
+    return tuple(validated)
 
 
 def _redirect_target(
@@ -688,16 +762,23 @@ class WebConnector:
         self._config: WebConnectorConfig = WebConnectorConfig.model_validate(
             parse_config(definition, WebConnectorConfig).model_dump(),
         )
-        self._transport: HttpTransport = transport or UrllibHttpTransport()
+        self._transport: HttpTransport = transport or AddressPinnedHttpTransport()
         validate_public_http_url(definition.locator)
 
-    def discover(self, cursor: SourceCursor | None) -> DiscoveryBatch:
+    def discover(
+        self,
+        cursor: SourceCursor | None,
+        *,
+        purpose: SourceCursorPurpose = SourceCursorPurpose.SYNC,
+    ) -> DiscoveryBatch:
         """Discover the configured URL without performing a speculative fetch."""
+        del purpose
         now = utc_now()
         version: str = cursor.value if cursor is not None else "unfetched"
         item: SourceItem = SourceItem(
             source_item_id=f"{self._definition.source_id}:{version}",
             source_id=self._definition.source_id,
+            source_definition_hash=source_definition_hash(self._definition),
             canonical_uri=self._definition.locator,
             discovered_at=now,
             content_version=version,

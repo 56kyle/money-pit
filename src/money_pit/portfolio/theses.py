@@ -1,359 +1,416 @@
-"""Module containing durable living-thesis state and transition history."""
+"""Module containing append-only candidate and thesis-revision persistence."""
 
 import json
 import sqlite3
 from datetime import datetime
-from datetime import timezone
-from typing import Final
 from typing import cast
 
 from pydantic import ValidationError
 
-from money_pit.schemas.theses import ScenarioOutcome
-from money_pit.schemas.theses import Thesis
-from money_pit.schemas.theses import ThesisDirection
+from money_pit.schemas.temporal import SignalContribution
+from money_pit.schemas.theses import CandidateThesis
+from money_pit.schemas.theses import ThesisRevision
 from money_pit.schemas.theses import ThesisStatus
 from money_pit.storage.database import Database
 from money_pit.storage.database import TransactionMode
 from money_pit.storage.errors import StorageError
 
 
-_ALLOWED_TRANSITIONS: Final[dict[ThesisStatus, frozenset[ThesisStatus]]] = {
-    ThesisStatus.CANDIDATE: frozenset({ThesisStatus.ACTIVE, ThesisStatus.INVALIDATED, ThesisStatus.CLOSED}),
-    ThesisStatus.ACTIVE: frozenset({ThesisStatus.WEAKENED, ThesisStatus.INVALIDATED, ThesisStatus.CLOSED}),
-    ThesisStatus.WEAKENED: frozenset({ThesisStatus.ACTIVE, ThesisStatus.INVALIDATED, ThesisStatus.CLOSED}),
-    ThesisStatus.INVALIDATED: frozenset({ThesisStatus.CLOSED}),
-    ThesisStatus.CLOSED: frozenset(),
-}
-
-
 class ThesisRepositoryError(StorageError):
     """Base class for invalid durable thesis state."""
 
 
-class ThesisNotFoundError(ThesisRepositoryError):
-    """Raised when a requested thesis is absent."""
+class ImmutableThesisCollisionError(ThesisRepositoryError):
+    """Raised when a candidate or revision identity is reused for different content."""
 
 
-class ThesisAlreadyExistsError(ThesisRepositoryError):
-    """Raised when append would replace an existing thesis."""
-
-
-class InvalidThesisTransitionError(ThesisRepositoryError):
-    """Raised when a requested status transition is not allowed."""
+class InvalidThesisRevisionError(ThesisRepositoryError):
+    """Raised when a revision does not extend the exact prior thesis history."""
 
 
 class MalformedThesisRecordError(ThesisRepositoryError):
-    """Raised when durable thesis state violates its schema."""
+    """Raised when durable thesis JSON or indexed metadata is inconsistent."""
 
 
 class ThesisRepository:
-    """Append theses, transition status, and query point-in-time relevance."""
+    """Persist sourced candidates and complete immutable thesis revisions."""
 
     def __init__(self, database: Database) -> None:
         """Bind the repository to an initialized database."""
         self._database: Database = database
 
-    def append(self, thesis: Thesis) -> None:
-        """Append a new thesis and its initial status-history record."""
-        instrument_or_theme: str = _encode_subject(thesis)
+    def append_candidate(self, candidate: CandidateThesis) -> None:
+        """Persist one sourced candidate idempotently without mutating its status."""
         with self._database.transaction(TransactionMode.WRITE) as connection:
-            existing: sqlite3.Row | None = cast(
-                "sqlite3.Row | None",
-                connection.execute(
-                    "SELECT thesis_id FROM theses WHERE thesis_id = ?",
-                    (thesis.thesis_id,),
-                ).fetchone(),
-            )
-            if existing is not None:
-                raise ThesisAlreadyExistsError(f"thesis already exists: {thesis.thesis_id}")
-            _insert_thesis(connection, thesis, instrument_or_theme)
-            _insert_history(connection, thesis, prior_status=None)
-
-    def get(self, thesis_id: str) -> Thesis:
-        """Return one durable thesis."""
-        with self._database.transaction() as connection:
-            row: sqlite3.Row | None = cast(
-                "sqlite3.Row | None",
-                connection.execute(
-                    "SELECT * FROM theses WHERE thesis_id = ?",
-                    (thesis_id,),
-                ).fetchone(),
-            )
-        if row is None:
-            raise ThesisNotFoundError(f"thesis not found: {thesis_id}")
-        return _thesis_from_row(row)
-
-    def transition(
-        self,
-        thesis_id: str,
-        *,
-        next_status: ThesisStatus,
-        reviewed_at: datetime,
-        expires_at: datetime | None = None,
-    ) -> Thesis:
-        """Apply one allowed status transition and append its history atomically."""
-        _require_aware(reviewed_at)
-        if expires_at is not None:
-            _require_aware(expires_at)
-        with self._database.transaction(TransactionMode.WRITE) as connection:
-            row: sqlite3.Row | None = cast(
-                "sqlite3.Row | None",
-                connection.execute(
-                    "SELECT * FROM theses WHERE thesis_id = ?",
-                    (thesis_id,),
-                ).fetchone(),
-            )
-            if row is None:
-                raise ThesisNotFoundError(f"thesis not found: {thesis_id}")
-            history_row: sqlite3.Row | None = cast(
-                "sqlite3.Row | None",
-                connection.execute(
-                    """
-                    SELECT thesis_id, next_status, transitioned_at, thesis_json
-                    FROM thesis_status_history
-                    WHERE thesis_id = ?
-                    ORDER BY transitioned_at DESC, transition_id DESC
-                    LIMIT 1
-                    """,
-                    (thesis_id,),
-                ).fetchone(),
-            )
-            if history_row is None:
-                raise MalformedThesisRecordError("stored thesis has no status history")
-            current: Thesis = _thesis_from_history_row(history_row)
-            latest_transitioned_at: datetime = _datetime_from_database(_column(history_row, "transitioned_at"))
-            if reviewed_at <= latest_transitioned_at:
-                raise InvalidThesisTransitionError(
-                    "thesis transition review time must be later than its latest history record"
-                )
-            if next_status not in _ALLOWED_TRANSITIONS[current.status]:
-                raise InvalidThesisTransitionError(
-                    f"cannot transition thesis from {current.status.value} to {next_status.value}"
-                )
-            transitioned: Thesis = current.model_copy(
-                update={
-                    "status": next_status,
-                    "reviewed_at": reviewed_at,
-                    "expires_at": expires_at if expires_at is not None else current.expires_at,
-                }
-            )
             _ = connection.execute(
                 """
-                UPDATE theses
-                SET status = ?, reviewed_at = ?, expires_at = ?
-                WHERE thesis_id = ?
+                INSERT INTO candidate_theses (
+                    candidate_thesis_id, status, created_at, known_at, candidate_json
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT DO NOTHING
                 """,
                 (
-                    transitioned.status.value,
-                    _utc_text(transitioned.reviewed_at),
-                    (_utc_text(transitioned.expires_at) if transitioned.expires_at is not None else None),
-                    transitioned.thesis_id,
+                    candidate.candidate_thesis_id,
+                    candidate.status.value,
+                    candidate.created_at.isoformat(),
+                    candidate.known_at.isoformat(),
+                    candidate.model_dump_json(),
                 ),
             )
-            _insert_history(connection, transitioned, prior_status=current.status)
-        return transitioned
+            stored: CandidateThesis | None = _select_candidate(connection, candidate.candidate_thesis_id)
+            if stored != candidate:
+                raise ImmutableThesisCollisionError("candidate identity is already bound to different content")
 
-    def active(self, *, as_of: datetime) -> tuple[Thesis, ...]:
-        """Return active, unexpired theses in stable identifier order."""
-        _require_aware(as_of)
-        return tuple(
-            thesis
-            for thesis in self._history_as_of(as_of)
-            if thesis.status is ThesisStatus.ACTIVE and (thesis.expires_at is None or thesis.expires_at > as_of)
-        )
+    def append_revision(self, revision: ThesisRevision) -> None:
+        """Append one complete revision after validating exact sequence and promotion."""
+        with self._database.transaction(TransactionMode.WRITE) as connection:
+            append_revision_record(connection, revision)
 
-    def expired(self, *, as_of: datetime) -> tuple[Thesis, ...]:
-        """Return theses whose declared expiry is at or before the point in time."""
-        _require_aware(as_of)
-        return tuple(
-            thesis
-            for thesis in self._history_as_of(as_of)
-            if thesis.expires_at is not None and thesis.expires_at <= as_of
-        )
+    def append_contribution(self, contribution: SignalContribution) -> None:
+        """Persist one immutable temporal contribution idempotently."""
+        with self._database.transaction(TransactionMode.WRITE) as connection:
+            append_contribution_record(connection, contribution)
 
-    def _history_as_of(self, as_of: datetime) -> tuple[Thesis, ...]:
+    def get_candidate(self, candidate_thesis_id: str) -> CandidateThesis | None:
+        """Return one immutable candidate when present."""
         with self._database.transaction() as connection:
-            rows: list[sqlite3.Row] = connection.execute(
+            return _select_candidate(connection, candidate_thesis_id)
+
+    def get_revision(self, revision_id: str) -> ThesisRevision | None:
+        """Return one immutable revision when present."""
+        with self._database.transaction() as connection:
+            return _select_revision(connection, revision_id)
+
+    def candidates_by_ids(self, candidate_ids: tuple[str, ...]) -> tuple[CandidateThesis, ...]:
+        """Return the exact requested candidates or fail on an unknown identity."""
+        if len(set(candidate_ids)) != len(candidate_ids):
+            raise ThesisRepositoryError("candidate identities must be unique")
+        with self._database.transaction() as connection:
+            candidates: tuple[CandidateThesis | None, ...] = tuple(
+                _select_candidate(connection, candidate_id) for candidate_id in candidate_ids
+            )
+        if any(candidate is None for candidate in candidates):
+            raise ThesisRepositoryError("one or more requested candidate identities are unknown")
+        return tuple(cast("CandidateThesis", candidate) for candidate in candidates)
+
+    def revisions_by_ids(self, revision_ids: tuple[str, ...]) -> tuple[ThesisRevision, ...]:
+        """Return the exact requested revisions or fail on an unknown identity."""
+        if len(set(revision_ids)) != len(revision_ids):
+            raise ThesisRepositoryError("revision identities must be unique")
+        with self._database.transaction() as connection:
+            revisions: tuple[ThesisRevision | None, ...] = tuple(
+                _select_revision(connection, revision_id) for revision_id in revision_ids
+            )
+        if any(revision is None for revision in revisions):
+            raise ThesisRepositoryError("one or more requested revision identities are unknown")
+        return tuple(cast("ThesisRevision", revision) for revision in revisions)
+
+    def _revisions_as_of(self, *, as_of: datetime) -> tuple[ThesisRevision, ...]:
+        """Return the last knowable revision of every thesis at a historical cutoff."""
+        with self._database.transaction() as connection:
+            rows: list[sqlite3.Row] = cast(
+                "list[sqlite3.Row]",
+                connection.execute(
+                    """
+                    SELECT revision_json, revision_id, thesis_id, revision_number, status,
+                           created_at, known_at, review_at, valid_until
+                    FROM (
+                        SELECT *, ROW_NUMBER() OVER (
+                            PARTITION BY thesis_id
+                            ORDER BY known_at DESC, revision_number DESC, revision_id DESC
+                        ) AS historical_rank
+                        FROM thesis_revisions
+                        WHERE known_at <= ?
+                    )
+                    WHERE historical_rank = 1
+                    ORDER BY thesis_id
+                    """,
+                    (as_of.isoformat(),),
+                ).fetchall(),
+            )
+        return tuple(_revision_from_row(row) for row in rows)
+
+    def candidates_as_of(self, *, as_of: datetime) -> tuple[CandidateThesis, ...]:
+        """Return candidates whose durable knowledge time is within the cutoff."""
+        with self._database.transaction() as connection:
+            rows: list[sqlite3.Row] = cast(
+                "list[sqlite3.Row]",
+                connection.execute(
+                    """
+                    SELECT * FROM candidate_theses
+                    WHERE known_at <= ?
+                    ORDER BY known_at, candidate_thesis_id
+                    """,
+                    (as_of.isoformat(),),
+                ).fetchall(),
+            )
+        return tuple(_candidate_from_row(row) for row in rows)
+
+    def candidates_due_for_research(
+        self,
+        *,
+        as_of: datetime,
+        exact_candidate_ids: tuple[str, ...] = (),
+    ) -> tuple[CandidateThesis, ...]:
+        """Return every eligible candidate in deterministic least-recently-researched order."""
+        if len(exact_candidate_ids) != len(set(exact_candidate_ids)):
+            raise ThesisRepositoryError("candidate identities must be unique")
+        if exact_candidate_ids:
+            _ = self.candidates_by_ids(exact_candidate_ids)
+        with self._database.transaction() as connection:
+            rows: list[sqlite3.Row] = cast(
+                "list[sqlite3.Row]",
+                connection.execute(
+                    """
+                    SELECT candidate.*,
+                           (
+                               SELECT MIN(task.known_at)
+                               FROM planned_research_tasks AS task
+                               WHERE task.candidate_thesis_id = candidate.candidate_thesis_id
+                                 AND task.status = 'pending'
+                           ) AS oldest_pending_at,
+                           (
+                               SELECT MAX(session.started_at)
+                               FROM research_sessions AS session
+                               WHERE session.scope_kind = 'candidate_thesis'
+                                 AND session.scope_subject_id = candidate.candidate_thesis_id
+                           ) AS last_researched_at
+                    FROM candidate_theses AS candidate
+                    WHERE candidate.status IN ('open', 'researching', 'unresolved')
+                      AND (
+                          candidate.known_at <= ?
+                          OR candidate.candidate_thesis_id IN (
+                              SELECT value FROM json_each(?)
+                          )
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM theses
+                          WHERE theses.candidate_thesis_id = candidate.candidate_thesis_id
+                      )
+                    ORDER BY
+                        CASE WHEN oldest_pending_at IS NULL THEN 1 ELSE 0 END,
+                        oldest_pending_at,
+                        CASE WHEN last_researched_at IS NULL THEN 0 ELSE 1 END,
+                        last_researched_at,
+                        candidate.known_at,
+                        candidate.candidate_thesis_id
+                    """,
+                    (as_of.isoformat(), json.dumps(exact_candidate_ids)),
+                ).fetchall(),
+            )
+        return tuple(_candidate_from_row(row) for row in rows)
+
+    def revisions_as_of(self, *, as_of: datetime) -> tuple[ThesisRevision, ...]:
+        """Return the last knowable complete revision for every thesis."""
+        return self._revisions_as_of(as_of=as_of)
+
+    def active_as_of(self, *, as_of: datetime) -> tuple[ThesisRevision, ...]:
+        """Return active, unexpired revisions knowable at the cutoff."""
+        return tuple(
+            revision
+            for revision in self.revisions_as_of(as_of=as_of)
+            if revision.status is ThesisStatus.ACTIVE and (revision.valid_until is None or revision.valid_until > as_of)
+        )
+
+    @staticmethod
+    def require_revision_sequence(connection: sqlite3.Connection, revision: ThesisRevision) -> None:
+        """Require an append-only revision number following the current head."""
+        row: sqlite3.Row | None = cast(
+            "sqlite3.Row | None",
+            connection.execute(
                 """
-                SELECT history.thesis_id, history.next_status,
-                       history.transitioned_at, history.thesis_json
-                FROM thesis_status_history AS history
-                WHERE history.transition_id = (
-                    SELECT candidate.transition_id
-                    FROM thesis_status_history AS candidate
-                    WHERE candidate.thesis_id = history.thesis_id
-                      AND candidate.transitioned_at <= ?
-                    ORDER BY candidate.transitioned_at DESC,
-                             candidate.transition_id DESC
-                    LIMIT 1
-                )
-                ORDER BY history.thesis_id
+                SELECT revision_id, revision_number
+                FROM thesis_revisions
+                WHERE thesis_id = ?
+                ORDER BY revision_number DESC
+                LIMIT 1
                 """,
-                (_utc_text(as_of),),
-            ).fetchall()
-        return tuple(_thesis_from_history_row(row) for row in rows)
+                (revision.thesis_id,),
+            ).fetchone(),
+        )
+        if row is None and revision.revision_number != 1:
+            raise InvalidThesisRevisionError("a thesis must begin at revision one")
+        if row is not None and revision.revision_number != _integer(row, "revision_number") + 1:
+            existing: ThesisRevision | None = _select_revision(connection, revision.revision_id)
+            if existing != revision:
+                raise InvalidThesisRevisionError("revision number must exactly follow the current thesis revision")
 
 
-def _encode_subject(thesis: Thesis) -> str:
-    if (thesis.instrument is None) == (thesis.theme is None):
-        raise MalformedThesisRecordError("a thesis must identify exactly one instrument or theme")
-    if thesis.instrument is not None:
-        return f"instrument:{thesis.instrument}"
-    return f"theme:{thesis.theme}"
-
-
-def _insert_thesis(
+def append_revision_record(
     connection: sqlite3.Connection,
-    thesis: Thesis,
-    instrument_or_theme: str,
+    revision: ThesisRevision,
 ) -> None:
+    """Append one validated thesis revision inside an existing write transaction."""
+    existing = _select_revision(connection, revision.revision_id)
+    if existing == revision:
+        return
+    if existing is not None:
+        raise ImmutableThesisCollisionError("revision identity is already bound to different content")
+    ThesisRepository.require_revision_sequence(connection, revision)
+    if revision.revision_number == 1:
+        candidate_id = revision.promoted_from_candidate_id or ""
+        if _select_candidate(connection, candidate_id) is None:
+            raise InvalidThesisRevisionError("first revision references an unknown candidate")
+        _ = connection.execute(
+            """
+            INSERT INTO theses (thesis_id, candidate_thesis_id, created_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT DO NOTHING
+            """,
+            (revision.thesis_id, candidate_id, revision.created_at.isoformat()),
+        )
     _ = connection.execute(
         """
-        INSERT INTO theses (
-            thesis_id, instrument_or_theme, direction, horizon, status,
-            supporting_claim_keys_json, contradicting_claim_keys_json,
-            scenario_distribution_json, invalidation_rules_json, confidence,
-            created_at, reviewed_at, expires_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO thesis_revisions (
+            revision_id, thesis_id, revision_number, status, created_at,
+            known_at, review_at, valid_until, revision_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT DO NOTHING
         """,
         (
-            thesis.thesis_id,
-            instrument_or_theme,
-            thesis.direction.value,
-            thesis.horizon,
-            thesis.status.value,
-            json.dumps(thesis.supporting_claim_keys),
-            json.dumps(thesis.contradicting_claim_keys),
-            json.dumps([scenario.model_dump(mode="json") for scenario in thesis.scenario_distribution]),
-            json.dumps(thesis.invalidation_rules),
-            thesis.confidence,
-            _utc_text(thesis.created_at),
-            _utc_text(thesis.reviewed_at),
-            _utc_text(thesis.expires_at) if thesis.expires_at is not None else None,
+            revision.revision_id,
+            revision.thesis_id,
+            revision.revision_number,
+            revision.status.value,
+            revision.created_at.isoformat(),
+            revision.known_at.isoformat(),
+            revision.review_at.isoformat(),
+            None if revision.valid_until is None else revision.valid_until.isoformat(),
+            revision.model_dump_json(),
         ),
     )
+    if _select_revision(connection, revision.revision_id) != revision:
+        raise ImmutableThesisCollisionError("revision identity or number is already bound to different content")
 
 
-def _insert_history(
+def append_contribution_record(
     connection: sqlite3.Connection,
-    thesis: Thesis,
-    *,
-    prior_status: ThesisStatus | None,
+    contribution: SignalContribution,
 ) -> None:
+    """Append one temporal contribution inside an existing write transaction."""
     _ = connection.execute(
         """
-        INSERT INTO thesis_status_history (
-            thesis_id, prior_status, next_status, transitioned_at, thesis_json
-        )
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO signal_contributions (
+            contribution_id, observation_id, thesis_revision_id, relation,
+            temporal_compatible, judged_at, known_at, contribution_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT DO NOTHING
         """,
         (
-            thesis.thesis_id,
-            prior_status.value if prior_status is not None else None,
-            thesis.status.value,
-            _utc_text(thesis.reviewed_at),
-            thesis.model_dump_json(),
+            contribution.contribution_id,
+            contribution.observation_id,
+            contribution.thesis_revision_id,
+            contribution.relation.value,
+            int(contribution.temporal_compatible),
+            contribution.judged_at.isoformat(),
+            contribution.known_at.isoformat(),
+            contribution.model_dump_json(),
         ),
     )
+    if _select_contribution(connection, contribution.contribution_id) != contribution:
+        raise ImmutableThesisCollisionError("contribution identity is already bound to different content")
 
 
-def _thesis_from_row(row: sqlite3.Row) -> Thesis:
+def _select_candidate(connection: sqlite3.Connection, candidate_id: str) -> CandidateThesis | None:
+    row: sqlite3.Row | None = cast(
+        "sqlite3.Row | None",
+        connection.execute("SELECT * FROM candidate_theses WHERE candidate_thesis_id = ?", (candidate_id,)).fetchone(),
+    )
+    return None if row is None else _candidate_from_row(row)
+
+
+def _select_revision(connection: sqlite3.Connection, revision_id: str) -> ThesisRevision | None:
+    row: sqlite3.Row | None = cast(
+        "sqlite3.Row | None",
+        connection.execute("SELECT * FROM thesis_revisions WHERE revision_id = ?", (revision_id,)).fetchone(),
+    )
+    return None if row is None else _revision_from_row(row)
+
+
+def _select_contribution(connection: sqlite3.Connection, contribution_id: str) -> SignalContribution | None:
+    row: sqlite3.Row | None = cast(
+        "sqlite3.Row | None",
+        connection.execute(
+            "SELECT * FROM signal_contributions WHERE contribution_id = ?", (contribution_id,)
+        ).fetchone(),
+    )
+    return None if row is None else _contribution_from_row(row)
+
+
+def _candidate_from_row(row: sqlite3.Row) -> CandidateThesis:
     try:
-        subject: str = str(_column(row, "instrument_or_theme"))
-        instrument: str | None
-        theme: str | None
-        if subject.startswith("instrument:"):
-            instrument = subject.removeprefix("instrument:")
-            theme = None
-        elif subject.startswith("theme:"):
-            instrument = None
-            theme = subject.removeprefix("theme:")
-        else:
-            raise ValueError("stored thesis subject has no type prefix")
-        return Thesis(
-            thesis_id=str(_column(row, "thesis_id")),
-            instrument=instrument,
-            theme=theme,
-            direction=ThesisDirection(str(_column(row, "direction"))),
-            horizon=str(_column(row, "horizon")),
-            status=ThesisStatus(str(_column(row, "status"))),
-            supporting_claim_keys=_json_string_tuple(_column(row, "supporting_claim_keys_json")),
-            contradicting_claim_keys=_json_string_tuple(_column(row, "contradicting_claim_keys_json")),
-            scenario_distribution=tuple(
-                ScenarioOutcome.model_validate(item)
-                for item in _json_object_list(_column(row, "scenario_distribution_json"))
-            ),
-            invalidation_rules=_json_string_tuple(_column(row, "invalidation_rules_json")),
-            confidence=_number_from_database(_column(row, "confidence")),
-            created_at=_datetime_from_database(_column(row, "created_at")),
-            reviewed_at=_datetime_from_database(_column(row, "reviewed_at")),
-            expires_at=_optional_datetime_from_database(_column(row, "expires_at")),
+        candidate: CandidateThesis = CandidateThesis.model_validate_json(_text(row, "candidate_json"))
+        indexed: tuple[tuple[object, object], ...] = (
+            (_text(row, "candidate_thesis_id"), candidate.candidate_thesis_id),
+            (_text(row, "status"), candidate.status.value),
+            (_text(row, "created_at"), candidate.created_at.isoformat()),
+            (_text(row, "known_at"), candidate.known_at.isoformat()),
         )
-    except (TypeError, ValueError, json.JSONDecodeError, ValidationError) as error:
-        raise MalformedThesisRecordError("stored thesis is malformed") from error
-
-
-def _thesis_from_history_row(row: sqlite3.Row) -> Thesis:
-    try:
-        thesis_json: object = _column(row, "thesis_json")
-        if not isinstance(thesis_json, str):
-            raise TypeError("stored thesis history snapshot must be text")
-        thesis: Thesis = Thesis.model_validate_json(thesis_json)
-        if thesis.thesis_id != str(_column(row, "thesis_id")):
-            raise ValueError("stored thesis history identifier does not match its snapshot")
-        if thesis.status.value != str(_column(row, "next_status")):
-            raise ValueError("stored thesis history status does not match its snapshot")
-        transitioned_at: datetime = _datetime_from_database(_column(row, "transitioned_at"))
-        if thesis.reviewed_at != transitioned_at:
-            raise ValueError("stored thesis history time does not match its snapshot")
-        return thesis
     except (TypeError, ValueError, ValidationError) as error:
-        raise MalformedThesisRecordError("stored thesis history is malformed") from error
+        raise MalformedThesisRecordError("stored candidate thesis is malformed") from error
+    if any(stored != canonical for stored, canonical in indexed):
+        raise MalformedThesisRecordError("stored candidate metadata disagrees with its payload")
+    return candidate
 
 
-def _json_string_tuple(value: object) -> tuple[str, ...]:
-    parsed: object = cast("object", json.loads(str(value)))
-    if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
-        raise TypeError("stored JSON value must be an array of text")
-    return tuple(cast("list[str]", parsed))
+def _revision_from_row(row: sqlite3.Row) -> ThesisRevision:
+    try:
+        revision: ThesisRevision = ThesisRevision.model_validate_json(_text(row, "revision_json"))
+        indexed: tuple[tuple[object, object], ...] = (
+            (_text(row, "revision_id"), revision.revision_id),
+            (_text(row, "thesis_id"), revision.thesis_id),
+            (_integer(row, "revision_number"), revision.revision_number),
+            (_text(row, "status"), revision.status.value),
+            (_text(row, "created_at"), revision.created_at.isoformat()),
+            (_text(row, "known_at"), revision.known_at.isoformat()),
+            (_text(row, "review_at"), revision.review_at.isoformat()),
+            (
+                _nullable_text(row, "valid_until"),
+                None if revision.valid_until is None else revision.valid_until.isoformat(),
+            ),
+        )
+    except (TypeError, ValueError, ValidationError) as error:
+        raise MalformedThesisRecordError("stored thesis revision is malformed") from error
+    if any(stored != canonical for stored, canonical in indexed):
+        raise MalformedThesisRecordError("stored thesis-revision metadata disagrees with its payload")
+    return revision
 
 
-def _json_object_list(value: object) -> tuple[dict[str, object], ...]:
-    parsed: object = cast("object", json.loads(str(value)))
-    if not isinstance(parsed, list) or not all(isinstance(item, dict) for item in parsed):
-        raise TypeError("stored scenario distribution must be an array of objects")
-    return tuple(cast("list[dict[str, object]]", parsed))
+def _contribution_from_row(row: sqlite3.Row) -> SignalContribution:
+    try:
+        contribution: SignalContribution = SignalContribution.model_validate_json(_text(row, "contribution_json"))
+        indexed: tuple[tuple[object, object], ...] = (
+            (_text(row, "contribution_id"), contribution.contribution_id),
+            (_text(row, "observation_id"), contribution.observation_id),
+            (_text(row, "thesis_revision_id"), contribution.thesis_revision_id),
+            (_text(row, "relation"), contribution.relation.value),
+            (_integer(row, "temporal_compatible"), int(contribution.temporal_compatible)),
+            (_text(row, "judged_at"), contribution.judged_at.isoformat()),
+            (_text(row, "known_at"), contribution.known_at.isoformat()),
+        )
+    except (TypeError, ValueError, ValidationError) as error:
+        raise MalformedThesisRecordError("stored signal contribution is malformed") from error
+    if any(stored != canonical for stored, canonical in indexed):
+        raise MalformedThesisRecordError("stored contribution metadata disagrees with its payload")
+    return contribution
 
 
-def _column(row: sqlite3.Row, name: str) -> object:
-    return cast("object", row[name])
-
-
-def _number_from_database(value: object) -> float:
-    if not isinstance(value, (int, float)):
-        raise TypeError("stored number must be numeric")
-    return float(value)
-
-
-def _datetime_from_database(value: object) -> datetime:
+def _text(row: sqlite3.Row, name: str) -> str:
+    value: object = cast("object", row[name])
     if not isinstance(value, str):
-        raise TypeError("stored datetime must be text")
-    parsed: datetime = datetime.fromisoformat(value)
-    _require_aware(parsed)
-    return parsed
+        raise TypeError(f"stored {name} must be text")
+    return value
 
 
-def _optional_datetime_from_database(value: object) -> datetime | None:
-    return None if value is None else _datetime_from_database(value)
+def _nullable_text(row: sqlite3.Row, name: str) -> str | None:
+    value: object = cast("object", row[name])
+    if value is None or isinstance(value, str):
+        return value
+    raise TypeError(f"stored {name} must be text or null")
 
 
-def _require_aware(value: datetime) -> None:
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError("datetime must be timezone-aware")
-
-
-def _utc_text(value: datetime) -> str:
-    _require_aware(value)
-    return value.astimezone(timezone.utc).isoformat()
+def _integer(row: sqlite3.Row, name: str) -> int:
+    value: object = cast("object", row[name])
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"stored {name} must be an integer")
+    return value

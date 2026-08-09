@@ -44,7 +44,7 @@ canonical payload representation so a second serialization convention cannot eme
 An `ApprovalRecord` or `RejectionRecord` contains a decision identifier, exact plan identifier and
 digest, actor, and aware timestamp. Decisions are frozen values and never mutate the plan.
 
-Immediately before execution, `authorize_plan`:
+Immediately before execution, the sole A6 gateway preflight:
 
 1. recomputes and compares the plan digest;
 2. checks the global execution enable;
@@ -54,8 +54,10 @@ Immediately before execution, `authorize_plan`:
    constraint results with the plan-bound values;
 6. requires all evidence and constraint gates to be present and passing;
 7. in approval-required mode, requires an approval matching the exact plan identifier and digest;
-8. in autonomous mode, rejects a supplied rejection and every sell with unknown tax cost; and
-9. returns an immutable `ExecutionAuthorization` bound to the same plan and current state.
+8. in every execution mode, treats an exact operator rejection as an unconditional veto, while
+   autonomous mode may bypass only a missing approval and rejects every sell with unknown tax cost; and
+9. reserves cumulative turnover atomically for the broker account and US trading date before any
+   broker write capability is constructed.
 
 Snapshot identifiers are content fingerprints, not arbitrary row identifiers. Portfolio
 fingerprints must cover account identity, cash, positions, quantities, and relevant prices; market

@@ -17,7 +17,7 @@ from money_pit.config import ENV_PREFIX
 
 
 @pytest.fixture(autouse=True)
-def _restore_money_pit_env() -> Iterator[None]:
+def _restore_money_pit_env() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Pytest discovers this autouse fixture dynamically.
     """Bracket every test so MONEY_PIT__* env mutations cannot cross a test boundary, across all tiers.
 
     load_config calls load_dotenv, which writes a .env's keys into os.environ persistently and untracked by

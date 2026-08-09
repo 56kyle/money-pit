@@ -1,12 +1,24 @@
-"""Module responsible for handling config used throughout the money_pit package."""
+"""Module containing validated application configuration boundaries."""
 
+from __future__ import annotations
+
+import hashlib
+import json
+import math
 from dataclasses import dataclass
-from pathlib import Path
+from datetime import timedelta
+from enum import StrEnum
+from pathlib import Path  # noqa: TC003 - Pydantic resolves this runtime field type.
+from typing import TYPE_CHECKING
 from typing import ClassVar
 from typing import Self
+from typing import TypeVar
 
 import keyring
+import tomllib
 from dotenv import load_dotenv
+from pydantic import BaseModel
+from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import SecretStr
 from pydantic import ValidationError
@@ -14,195 +26,394 @@ from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from pydantic_settings import SettingsConfigDict
 
-from money_pit.constants import DEFAULT_SMTP_HOST
-from money_pit.constants import DEFAULT_SMTP_PORT
-from money_pit.constants import GMAIL_KEYRING_SERVICE
 from money_pit.constants import default_config_path
-from money_pit.constants import default_ingest_cache_dir
+from money_pit.constants import default_execution_config_path
+from money_pit.constants import default_sources_config_path
+from money_pit.constants import default_strategy_config_path
+from money_pit.schemas.claims import ClaimCategory
+from money_pit.schemas.claims import HorizonClass
 from money_pit.schemas.execution_policy import BrokerEnvironment
 from money_pit.schemas.execution_policy import ExecutionMode
+from money_pit.schemas.execution_policy import TradableAssetClass
+from money_pit.schemas.sources import SourceRegistryDocument
+
+
+if TYPE_CHECKING:
+    from money_pit.claims.projection import ClaimRefreshPolicy
 
 
 ENV_PREFIX: str = "MONEY_PIT__"
 _DEFAULT_LLM_MODEL: str = "gpt-5"
-
-DEFAULT_OWNER_RECIPIENT: str = "56kyleoliver@gmail.com"
-
 _BLANK_KEYRING_FIELD_MESSAGE: str = "Blank {field} configured; cannot resolve {credential}."
 
 
-class CredentialResolutionError(Exception):
-    """Raised when a required secret or required credential config cannot be resolved."""
+class ConfigurationError(Exception):
+    """Base class for configuration loading failures."""
 
 
-@dataclass(frozen=True, init=False)
+class ConfigurationFileError(ConfigurationError):
+    """Raised when a required TOML document cannot be read or decoded."""
+
+
+class ConfigurationValidationError(ConfigurationError):
+    """Raised when a TOML document does not match its typed contract."""
+
+
+class CredentialResolutionError(ConfigurationError):
+    """Raised when a requested credential cannot be resolved."""
+
+
+@dataclass(frozen=True)
 class AlpacaCredentials:
-    """Resolved Alpaca API credentials plus the explicit broker environment."""
+    """Resolved Alpaca API credentials for one explicit broker environment."""
 
     api_key: str
     secret_key: SecretStr
     broker_environment: BrokerEnvironment
 
-    def __init__(
-        self,
-        api_key: str,
-        secret_key: SecretStr,
-        broker_environment: BrokerEnvironment | None = None,
-        *,
-        paper: bool | None = None,
-    ) -> None:
-        """Resolve the deprecated paper flag into the typed broker environment.
-
-        Supplying both forms is accepted only when they agree. The compatibility keyword
-        is removed when the stepping-stone terminus in ADR 0046 is reached.
-        """
-        resolved_environment: BrokerEnvironment
-        if broker_environment is None:
-            if paper is None:
-                raise TypeError("broker_environment is required when paper is not supplied.")
-            resolved_environment = BrokerEnvironment.PAPER if paper else BrokerEnvironment.LIVE
-        else:
-            resolved_environment = broker_environment
-            if paper is not None:
-                legacy_environment: BrokerEnvironment = BrokerEnvironment.PAPER if paper else BrokerEnvironment.LIVE
-                if legacy_environment is not resolved_environment:
-                    raise ValueError("paper conflicts with broker_environment.")
-        object.__setattr__(self, "api_key", api_key)
-        object.__setattr__(self, "secret_key", secret_key)
-        object.__setattr__(self, "broker_environment", resolved_environment)
-
     @property
     def paper(self) -> bool:
-        """Return the alpaca-py compatibility flag for the explicit environment."""
+        """Return the alpaca-py environment flag."""
         return self.broker_environment is BrokerEnvironment.PAPER
 
 
 class Config(BaseSettings):
-    """The primary config for the money_pit package."""
+    """Secrets and provider settings loaded only from the process environment."""
 
-    model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(env_prefix=ENV_PREFIX, frozen=True)
+    model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(env_prefix=ENV_PREFIX, frozen=True, extra="forbid")
 
-    alpaca_service: str
-    alpaca_username: str
-    alpaca_paper: bool
-    execution_mode: ExecutionMode = ExecutionMode.APPROVAL_REQUIRED
-    execution_policy_version: str | None = None
-    maximum_order_notional: float | None = Field(default=None, gt=0)
-    maximum_daily_turnover: float | None = Field(default=None, ge=0, le=1)
-
-    @property
-    def broker_environment(self) -> BrokerEnvironment:
-        """Translate the legacy MONEY_PIT__ALPACA_PAPER setting at the config boundary."""
-        return BrokerEnvironment.PAPER if self.alpaca_paper else BrokerEnvironment.LIVE
-
-    gmail_address: str | None = None
-    gmail_service: str = GMAIL_KEYRING_SERVICE
-    owner_recipient: str = DEFAULT_OWNER_RECIPIENT
-    smtp_host: str = DEFAULT_SMTP_HOST
-    smtp_port: int = DEFAULT_SMTP_PORT
-
-    regime_lookback: int = 60
-    current_events_lookback_days: int = Field(default=7, ge=0)
-    regime_band: float = 0.5
-    kelly_fraction: float = 0.25
-    max_position_weight: float = 0.10
-    haircut_unverified: float = 0.5
-    haircut_uncertain: float = 0.75
-    ev_gate: float = 0.03
-    sector_cap: float = 0.25
-    cash_min: float = 0.05
-    overlap_limit: float = 0.30
-    execution_fill_poll_interval_seconds: float = 1.0
-    execution_fill_poll_timeout_seconds: float = 30.0
-    threshold_yield_curve: float = 0.0
-    threshold_credit_spreads: float = 3.0
-    threshold_pmi: float = 0.0
-    threshold_earnings_revisions: float = 0.0
-    threshold_inflation: float = 2.5
-    threshold_factor_value_pe: float = 20.0
-    threshold_factor_value_pb: float = 2.0
-    threshold_factor_growth: float = 0.15
-    threshold_factor_momentum: float = 0.10
-    threshold_factor_quality_roe: float = 0.15
-    threshold_factor_quality_margin: float = 0.15
-    threshold_factor_low_vol_beta: float = 0.90
-    llm_model: str = _DEFAULT_LLM_MODEL
-    video_llm_context_character_budget: int = Field(default=160_000, ge=64_000)
-    video_llm_response_character_reserve: int = Field(default=32_000, ge=8_000)
-    youtube_channel_id: str | None = None
-    scene_detect_threshold: float = 27.0
-    keyframe_max_frames: int = 40
-    ingest_cache_dir: Path = Field(default_factory=default_ingest_cache_dir)
-    whisper_model: str = "large-v3"
-    whisper_device: str = "cuda"
-    whisper_compute_type: str = "float16"
+    alpaca_service: str | None = None
+    alpaca_username: str | None = None
     fred_api_key: SecretStr | None = None
-    brave_api_key: SecretStr | None = None
+    brave_search_api_key: SecretStr | None = None
+    sec_user_agent: SecretStr | None = None
+    openai_api_key: SecretStr | None = None
+    youtube_api_key: SecretStr | None = None
+    imap_password: SecretStr | None = None
+    llm_model: str = _DEFAULT_LLM_MODEL
+
+
+class HorizonPolicy(BaseModel):
+    """Versioned time bounds and review cadence for one investment horizon."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    minimum_days: int = Field(ge=0)
+    maximum_days: int | None = Field(default=None, ge=0)
+    review_interval_days: int = Field(gt=0)
 
     @model_validator(mode="after")
-    def validate_video_llm_budget(self) -> Self:
-        """Require the response reserve to leave capacity for video input."""
-        if self.video_llm_response_character_reserve >= self.video_llm_context_character_budget:
-            raise ValueError("video_llm_response_character_reserve must be less than the context budget.")
+    def validate_bounds(self) -> Self:
+        """Require the optional upper bound to include the lower bound."""
+        if self.maximum_days is not None and self.maximum_days < self.minimum_days:
+            raise ValueError("maximum_days must be greater than or equal to minimum_days.")
         return self
 
 
-def _missing_required_env_vars(error: ValidationError) -> list[str]:
-    """Return the MONEY_PIT__ environment variable names for the missing-required fields in a Config error."""
-    return [
-        f"{ENV_PREFIX}{str(entry['loc'][0]).upper()}"
-        for entry in error.errors()
-        if entry["type"] == "missing" and entry["loc"]
-    ]
+class ResearchBudgetConfig(BaseModel):
+    """Deterministic per-candidate research limits."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    maximum_rounds: int = Field(default=3, ge=1)
+    maximum_queries: int = Field(default=12, ge=1)
+    maximum_fetches: int = Field(default=24, ge=1)
+    maximum_elapsed_seconds: int = Field(default=600, ge=1)
+
+
+class QuantitativeScreenConfig(BaseModel):
+    """Versioned deterministic output from one externally evaluated screen."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    screen_id: str = Field(min_length=1)
+    instruments: tuple[str, ...] = Field(min_length=1)
+
+
+class ReturnBoundPolicy(StrEnum):
+    """Deterministic handling of agent-authored scenario returns outside policy."""
+
+    REJECT = "reject"
+    CLAMP = "clamp"
+
+
+class ClaimFreshnessRuleConfig(BaseModel):
+    """Configured review and freshness intervals for one claim category and horizon."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+    review_interval_days: int = Field(gt=0)
+    freshness_days: int = Field(gt=0)
+
+
+class ClaimFreshnessPolicyConfig(BaseModel):
+    """Complete versioned claim-freshness matrix."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+    version: str = Field(min_length=1)
+    rules: dict[ClaimCategory, dict[HorizonClass, ClaimFreshnessRuleConfig]]
+
+    @model_validator(mode="after")
+    def validate_complete_matrix(self) -> Self:
+        """Require an explicit rule for every category and horizon."""
+        if set(self.rules) != set(ClaimCategory):
+            raise ValueError("claim freshness rules must define every claim category.")
+        for category, horizons in self.rules.items():
+            if set(horizons) != set(HorizonClass):
+                raise ValueError(f"claim freshness rules for {category.value} must define every horizon.")
+        return self
+
+
+class StrategyConfig(BaseModel):
+    """Versioned capital-sensitive strategy and optimizer configuration."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    version: str = Field(min_length=1)
+    portfolio_environment: BrokerEnvironment
+    plan_ttl_seconds: int = Field(gt=0)
+    strategic_core_targets: dict[str, float] = Field(min_length=1)
+    watchlist: tuple[str, ...] = ()
+    benchmark_constituents: tuple[str, ...] = ()
+    benchmark_id: str = Field(min_length=1)
+    benchmark_provider: str = Field(min_length=1)
+    benchmark_weights: dict[str, float] = Field(min_length=1)
+    explicit_proxies: dict[str, str] = Field(default_factory=dict)
+    quantitative_screens: tuple[QuantitativeScreenConfig, ...] = ()
+    sector_taxonomy: dict[str, str] = Field(min_length=1)
+    instrument_asset_classes: dict[str, TradableAssetClass] = Field(default_factory=dict)
+    factor_loadings: dict[str, dict[str, float]] = Field(min_length=1)
+    name_weight_limit: float = Field(gt=0, le=1)
+    sector_weight_limit: float = Field(gt=0, le=1)
+    factor_weight_limit: float = Field(gt=0, le=1)
+    correlated_exposure_limit: float = Field(gt=0, le=1)
+    cash_minimum: float = Field(ge=0, le=1)
+    satellite_weight_limit: float = Field(ge=0, le=1)
+    turnover_limit: float = Field(ge=0, le=1)
+    position_change_limit: float = Field(gt=0, le=1)
+    minimum_trade_notional: float = Field(gt=0)
+    maximum_slippage_fraction: float = Field(ge=0, lt=1)
+    minimum_average_daily_notional: float = Field(gt=0)
+    maximum_daily_volume_participation: float = Field(gt=0, le=1)
+    market_history_period: str = Field(min_length=1)
+    tax_lot_ledger_path: Path
+    tax_lot_policy: str = Field(min_length=1)
+    specific_tax_lot_ids: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+    expected_return_calibration_version: str = Field(min_length=1)
+    expected_return_bounds_version: str = Field(min_length=1)
+    expected_return_uncertainty_multiplier: float = Field(ge=0, le=1)
+    scenario_return_floor: float = Field(ge=-1, le=0)
+    scenario_return_ceiling: float = Field(gt=0)
+    calibrated_return_floor: float = Field(ge=-1, le=0)
+    calibrated_return_ceiling: float = Field(gt=0)
+    return_bound_policy: ReturnBoundPolicy
+    risk_aversion: float = Field(gt=0)
+    turnover_penalty: float = Field(ge=0)
+    tax_penalty: float = Field(ge=0)
+    accept_optimal_inaccurate: bool = False
+    feasibility_tolerance: float = Field(gt=0, le=0.01)
+    correlated_exposure_groups: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+    horizons: dict[str, HorizonPolicy] = Field(min_length=4, max_length=4)
+    research_budget: ResearchBudgetConfig = Field(default_factory=ResearchBudgetConfig)
+    claim_freshness: ClaimFreshnessPolicyConfig
+
+    @model_validator(mode="after")
+    def validate_horizons_and_core(self) -> Self:
+        """Require the canonical horizons and a normalized feasible core."""
+        expected_horizons: set[str] = {"event", "tactical", "medium_term", "structural"}
+        if set(self.horizons) != expected_horizons:
+            raise ValueError("horizons must define event, tactical, medium_term, and structural exactly.")
+        core_total: float = sum(self.strategic_core_targets.values())
+        if any(weight < 0 or weight > 1 for weight in self.strategic_core_targets.values()) or core_total > 1:
+            raise ValueError("strategic_core_targets weights must be in [0, 1] and total no more than 1.")
+        if self.tax_lot_policy == "specific_id" and not self.specific_tax_lot_ids:
+            raise ValueError("specific-ID tax policy requires configured ordered lot IDs")
+        if set(self.benchmark_weights) != set(self.benchmark_constituents):
+            raise ValueError("benchmark weights must exactly cover configured constituents")
+        if any(weight <= 0 or weight > 1 for weight in self.benchmark_weights.values()) or not math.isclose(
+            sum(self.benchmark_weights.values()), 1.0, abs_tol=1e-9
+        ):
+            raise ValueError("benchmark weights must be positive and sum to one")
+        return self
+
+
+class StrategyIntelligenceConfig(BaseModel):
+    """Non-capital research, freshness, and discovery projection of strategy.toml."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="ignore")
+    version: str = Field(min_length=1)
+    watchlist: tuple[str, ...] = ()
+    benchmark_constituents: tuple[str, ...] = ()
+    explicit_proxies: dict[str, str] = Field(default_factory=dict)
+    quantitative_screens: tuple[QuantitativeScreenConfig, ...] = ()
+    horizons: dict[str, HorizonPolicy] = Field(min_length=4, max_length=4)
+    research_budget: ResearchBudgetConfig = Field(default_factory=ResearchBudgetConfig)
+    claim_freshness: ClaimFreshnessPolicyConfig
+
+    @model_validator(mode="after")
+    def validate_horizons(self) -> Self:
+        """Require the canonical investment horizons."""
+        if set(self.horizons) != {"event", "tactical", "medium_term", "structural"}:
+            raise ValueError("horizons must define event, tactical, medium_term, and structural exactly.")
+        return self
+
+
+class AutonomousEligibilityConfig(BaseModel):
+    """Minimum evidence required before autonomous live execution is eligible."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    shadow_trading_days: int = Field(default=60, ge=60)
+    executable_shadow_plans: int = Field(default=30, ge=30)
+    approved_paper_executions: int = Field(default=30, ge=30)
+    approval_required_live_executions: int = Field(default=30, ge=30)
+    maximum_critical_control_failures: int = Field(default=0, ge=0, le=0)
+
+
+class ExecutionConfig(BaseModel):
+    """Versioned broker environment, authority, and execution limits."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    policy_version: str = Field(min_length=1)
+    broker_environment: BrokerEnvironment
+    execution_mode: ExecutionMode = ExecutionMode.APPROVAL_REQUIRED
+    maximum_order_notional: float = Field(gt=0)
+    maximum_daily_turnover: float = Field(ge=0, le=1)
+    maximum_market_drift_fraction: float = Field(ge=0, lt=1)
+    maximum_quote_age_seconds: float = Field(default=300, gt=0)
+    poll_interval_seconds: float = Field(gt=0)
+    poll_timeout_seconds: float = Field(gt=0)
+    allowed_asset_classes: tuple[TradableAssetClass, ...] = (
+        TradableAssetClass.US_EQUITY,
+        TradableAssetClass.US_ETF,
+    )
+    autonomous_eligibility: AutonomousEligibilityConfig = Field(default_factory=AutonomousEligibilityConfig)
+
+
+@dataclass(frozen=True)
+class ApplicationConfig:
+    """Complete configuration assembled from secrets and three typed documents."""
+
+    environment: Config
+    sources: SourceRegistryDocument
+    intelligence: StrategyIntelligenceConfig
+    strategy: StrategyConfig | None
+    execution: ExecutionConfig | None
+
+    def require_strategy(self) -> StrategyConfig:
+        """Return capital strategy or fail at the capability boundary."""
+        if self.strategy is None:
+            raise ConfigurationValidationError("Portfolio stages require complete capital strategy configuration.")
+        return self.strategy
+
+    def require_execution(self) -> ExecutionConfig:
+        """Return execution authority or fail at the A6 boundary."""
+        if self.execution is None:
+            raise ConfigurationValidationError("A6 requires complete execution configuration.")
+        return self.execution
+
+
+class ConfigurationScope(StrEnum):
+    """Configuration documents required by an application responsibility."""
+
+    INTELLIGENCE = "intelligence"
+    CAPITAL = "capital"
+    EXECUTION = "execution"
+
+
+def _load_toml(path: Path) -> object:
+    try:
+        with path.open("rb") as stream:
+            return tomllib.load(stream)
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise ConfigurationFileError(f"Could not load configuration document {path}.") from error
+
+
+ModelT = TypeVar("ModelT", bound=BaseModel)
+
+
+def _load_model(path: Path, model_type: type[ModelT]) -> ModelT:
+    """Load and validate one required TOML document."""
+    try:
+        return model_type.model_validate(_load_toml(path))
+    except ValidationError as error:
+        raise ConfigurationValidationError(f"Configuration document {path} is invalid.") from error
 
 
 def load_config(path: Path | None = None) -> Config:
-    """Load a fresh, frozen Config, raising CredentialResolutionError on a missing required var and propagating pydantic.ValidationError on a mistyped one."""
+    """Load a fresh secrets-only environment configuration."""
     resolved_path: Path = path or default_config_path()
     _ = load_dotenv(resolved_path)
-    try:
-        config: Config = Config()
-        return config
-    except ValidationError as error:
-        missing: list[str] = _missing_required_env_vars(error)
-        if not missing:
-            raise
-        raise CredentialResolutionError(
-            f"Missing required money_pit config from the environment: {', '.join(missing)}."
-        ) from error
+    return Config()
 
 
-def _require_non_blank_keyring_field(field: str, value: str, credential: str) -> None:
-    """Raise CredentialResolutionError when a keyring lookup key is empty or whitespace-only."""
-    if not value.strip():
-        raise CredentialResolutionError(_BLANK_KEYRING_FIELD_MESSAGE.format(field=field, credential=credential))
-
-
-def resolve_alpaca_credentials(config: Config) -> AlpacaCredentials:
-    """Resolve Alpaca credentials from config plus keyring, failing closed on a blank lookup key or a missing secret."""
-    _require_non_blank_keyring_field("alpaca_service", config.alpaca_service, "Alpaca credentials")
-    _require_non_blank_keyring_field("alpaca_username", config.alpaca_username, "Alpaca credentials")
-    secret_key: str | None = keyring.get_password(config.alpaca_service, config.alpaca_username)
-    if secret_key is None:
-        raise CredentialResolutionError(
-            f"No Alpaca secret in keyring for service {config.alpaca_service!r}, username {config.alpaca_username!r}."
-        )
-    return AlpacaCredentials(
-        api_key=config.alpaca_username,
-        secret_key=SecretStr(secret_key),
-        broker_environment=config.broker_environment,
+def load_application_config(
+    *,
+    environment_path: Path | None = None,
+    sources_path: Path | None = None,
+    strategy_path: Path | None = None,
+    execution_path: Path | None = None,
+    scope: ConfigurationScope = ConfigurationScope.EXECUTION,
+) -> ApplicationConfig:
+    """Load only configuration required by the requested responsibility."""
+    strategy_document = _load_toml(strategy_path or default_strategy_config_path())
+    return ApplicationConfig(
+        environment=load_config(environment_path),
+        sources=_load_model(sources_path or default_sources_config_path(), SourceRegistryDocument),
+        intelligence=StrategyIntelligenceConfig.model_validate(strategy_document),
+        strategy=(
+            None if scope is ConfigurationScope.INTELLIGENCE else StrategyConfig.model_validate(strategy_document)
+        ),
+        execution=(
+            _load_model(execution_path or default_execution_config_path(), ExecutionConfig)
+            if scope is ConfigurationScope.EXECUTION
+            else None
+        ),
     )
 
 
-def resolve_gmail_app_password(config: Config) -> SecretStr:
-    """Resolve the Gmail app password from keyring, failing closed if the address is unset or blank, the service is blank, or the stored secret is absent."""
-    if config.gmail_address is None:
-        raise CredentialResolutionError("No gmail_address configured; cannot resolve a Gmail app password.")
-    _require_non_blank_keyring_field("gmail_service", config.gmail_service, "a Gmail app password")
-    _require_non_blank_keyring_field("gmail_address", config.gmail_address, "a Gmail app password")
-    app_password: str | None = keyring.get_password(config.gmail_service, config.gmail_address)
-    if app_password is None:
-        raise CredentialResolutionError(
-            f"No Gmail app password in keyring for service {config.gmail_service!r}, username {config.gmail_address!r}."
-        )
-    return SecretStr(app_password)
+def canonical_config_hash(config: BaseModel) -> str:
+    """Return a stable digest of one validated configuration document."""
+    encoded: bytes = json.dumps(
+        config.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def claim_refresh_policy(strategy: StrategyConfig | StrategyIntelligenceConfig) -> "ClaimRefreshPolicy":
+    """Build runtime claim freshness from validated strategy configuration."""
+    from money_pit.claims.projection import ClaimFreshnessRule
+    from money_pit.claims.projection import ClaimRefreshPolicy
+
+    return ClaimRefreshPolicy(
+        policy_version=strategy.claim_freshness.version,
+        rules={
+            category: {
+                horizon: ClaimFreshnessRule(
+                    review_interval=timedelta(days=rule.review_interval_days),
+                    freshness_interval=timedelta(days=rule.freshness_days),
+                )
+                for horizon, rule in horizons.items()
+            }
+            for category, horizons in strategy.claim_freshness.rules.items()
+        },
+    )
+
+
+def _require_non_blank_keyring_field(field: str, value: str | None, credential: str) -> str:
+    if value is None or not value.strip():
+        raise CredentialResolutionError(_BLANK_KEYRING_FIELD_MESSAGE.format(field=field, credential=credential))
+    return value
+
+
+def resolve_alpaca_credentials(config: Config, broker_environment: BrokerEnvironment) -> AlpacaCredentials:
+    """Resolve Alpaca credentials only when the execution boundary requests them."""
+    service: str = _require_non_blank_keyring_field("alpaca_service", config.alpaca_service, "Alpaca credentials")
+    username: str = _require_non_blank_keyring_field("alpaca_username", config.alpaca_username, "Alpaca credentials")
+    secret_key: str | None = keyring.get_password(service, username)
+    if secret_key is None:
+        raise CredentialResolutionError(f"No Alpaca secret in keyring for service {service!r}, username {username!r}.")
+    return AlpacaCredentials(api_key=username, secret_key=SecretStr(secret_key), broker_environment=broker_environment)

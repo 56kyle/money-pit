@@ -31,3 +31,27 @@ class PreflightDeniedError(ExecutionControlError):
 
 class StateCheckUnavailableError(ExecutionControlError):
     """Raised when current portfolio or market state cannot be read."""
+
+
+class BrokerWriteUnavailableError(ExecutionControlError):
+    """Raised when the scoped A6 broker writer cannot be constructed."""
+
+
+class BrokerSubmissionError(ExecutionControlError):
+    """Raised when the broker rejects or cannot confirm an order submission."""
+
+
+class BrokerObservationUnavailableError(ExecutionControlError):
+    """Raised when the broker cannot provide current order state."""
+
+
+class BrokerOrderNotVisibleError(BrokerObservationUnavailableError):
+    """Raised when a submitted client order identifier is not indexed yet."""
+
+
+class ExecutionJournalError(ExecutionControlError):
+    """Raised when durable execution evidence cannot be written or read."""
+
+
+class RecoveryRequiredError(ExecutionControlError):
+    """Raised when a nonterminal prior claim prevents new capital writes."""

@@ -1,95 +1,44 @@
-# money-pit
+# money-pit 0.0.2
 
-money_pit
+`money-pit` is a persistent, point-in-time investment-research harness for long-only US equities and ETFs. It discovers theses from configured sources and a layered universe, performs bounded research, preserves immutable claim and thesis history, and produces optimizer-derived portfolio plans.
 
----
+Nothing has reached production. Release 0.0.2 uses one SQLite baseline and one A1–A6 workflow. Live execution requires an exact, unexpired plan approval by default.
 
-**[📚 View Documentation](https://money-pit.readthedocs.io/)** | **[🐛 Report a Bug](https://github.com/56kyle/money-pit/issues)** | **[✨ Request a Feature](https://github.com/56kyle/money-pit/issues)**
+## Configuration
 
----
+Copy the sanitized examples from `config/examples/` to the repository root as `.env`, `sources.toml`, `strategy.toml`, and `execution.toml`. Complete every capital-sensitive value before running the system. These local files and all runtime state under `data/` are ignored.
 
-## Installation
+Existing caches are not imported or read. In particular, `data/daily_show/` remains untouched historical material.
 
-You can install `money_pit` via [pip](pip-documentation) from PyPI:
+## CLI
+
+```text
+money-pit source list|sync|backfill|ingest
+money-pit run [--source ID] [--as-of TIME] [--through A1|A2|A3|A4|A5|A6]
+money-pit research list|show
+money-pit claims list|show|refresh|verify
+money-pit theses list|show|review
+money-pit portfolio snapshot|review
+money-pit plan show|approve|reject|execute
+money-pit execution status|disable|enable
+money-pit replay RUN_ID
+```
+
+Execution enablement requires an actor, reason, policy version, and explicit confirmation. Replay never constructs a broker-write client.
+
+## Development
+
+Use temporary data roots for development and tests. Do not point test commands at the repository `data/` directory.
 
 ```bash
-pip install money_pit
+uv sync
+uvx nox -s lint-python
+uvx nox -s typecheck
+uvx nox -s tests-python
+uvx nox -s security-python
+uvx nox -s build-docs
+uvx nox -s build-python
+uvx nox -s pre-commit
 ```
 
-### Installation for Development
-
-To set up `money_pit` for local development:
-
-1.  Clone the repository:
-    ```bash
-    git clone https://github.com/56kyle/money-pit.git
-    cd money-pit
-    ```
-2.  Install dependencies using [:term:`uv`](uv-documentation):
-    ```bash
-    uv sync
-    ```
-3.  Install pre-commit hooks:
-    ```bash
-    uvx nox -s pre-commit -- install
-    ```
-
-This sets up a virtual environment and installs core, development, and quality check dependencies.
-
-## Usage
-
-(This section should explain how to use the generated application. Replace the content below with instructions specific to your project's functionality. If your project is a library, show import examples. If it's a CLI application, show command examples. Link to the full documentation for details.)
-
-### As a Library
-
-```python
-# Example usage of your package as a library
-# from money_pit import some_function
-# result = some_function()
-# print(result)
-```
-
-### As a Command-Line Application
-
-If your project defines command-line entry points in `pyproject.toml`:
-
-```bash
-# Example usage of your CLI application
-# money-pit --help
-# money-pit do-something --input file.txt
-```
-
-For detailed API documentation and CLI command references, see the **[Documentation][documentation]**.
-
-## Development Workflow
-
-This project uses a robust set of tools for development, testing, and quality assurance. All significant automated tasks are run via [:term:`Nox`](nox-documentation), orchestrated by the central `noxfile.py`.
-
-- **Run all checks (lint, typecheck, security):** `uvx nox -s check`
-- **Run test suite with coverage:** `uvx nox -s test`
-- **Build documentation:** `uvx nox -s docs`
-- **Build package:** `uvx nox -s build`
-- **See all available tasks:** `uvx nox -l`
-
-Explore the `noxfile.py` and the project documentation for detailed information on the automated workflow.
-
-## Contributing
-
-(This section should guide contributions _to this specific generated project_, not the template. It should refer to the project's `CODE_OF_CONDUCT.md` and link to a `CONTRIBUTING.md` specific to the project, if you choose to generate one.)
-
-Report bugs or suggest features via the [issue tracker](https://github.com/56kyle/money-pit/issues).
-
-See [CONTRIBUTING.md](#) for contribution guidelines.
-
-## License
-
-Distributed under the terms of the **MIT** license. See [LICENSE](LICENSE) for details.
-
----
-
-**This project was generated from the [cookiecutter-robust-python template][cookiecutter-robust-python].**
-
-<!-- Reference Links -->
-
-[cookiecutter-robust-python]: https://github.com/robust-python/cookiecutter-robust-python
-[documentation]: https://money-pit.readthedocs.io/
+See `docs/architecture.md` and `docs/usage.md` for system and operating details.

@@ -38,4 +38,4 @@ def test_execution_parameters_for_trade_rejects_invalid_order_side(
     trade = portfolio_plan.payload.proposed_trades[0].model_copy(update={"side": "hold"})
 
     with pytest.raises(ValueError, match="Unsupported order side"):
-        execution_parameters_for_trade(portfolio_plan, 0, trade)
+        _ = execution_parameters_for_trade(portfolio_plan, 0, trade)

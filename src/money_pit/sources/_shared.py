@@ -1,6 +1,7 @@
 """Module containing shared bounded connector behavior."""
 
 import hashlib
+import json
 import mimetypes
 from datetime import UTC
 from datetime import datetime
@@ -47,6 +48,16 @@ def parse_config(
 def sha256_bytes(content: bytes) -> str:
     """Return the lowercase SHA-256 digest of content."""
     return hashlib.sha256(content).hexdigest()
+
+
+def source_definition_hash(definition: SourceDefinition) -> str:
+    """Return the canonical identity of one complete source definition revision."""
+    canonical_json: str = json.dumps(
+        definition.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return sha256_bytes(canonical_json.encode("utf-8"))
 
 
 def read_bounded(path: Path, maximum_bytes: int) -> bytes:

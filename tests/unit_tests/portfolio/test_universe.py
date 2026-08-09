@@ -4,9 +4,11 @@ import pytest
 from pydantic import ValidationError
 
 from money_pit.portfolio.universe import CandidateReference
-from money_pit.portfolio.universe import UniverseLayer
-from money_pit.portfolio.universe import _canonical_instrument
+from money_pit.portfolio.universe import (
+    _canonical_instrument,  # pyright: ignore[reportPrivateUsage]  # Contract test pins canonical symbol normalization.
+)
 from money_pit.portfolio.universe import build_layered_universe
+from money_pit.schemas.universe import UniverseLayer
 
 
 def _tradable(reference: str, instrument: str, *, proxy_for: str | None = None) -> CandidateReference:
@@ -25,7 +27,7 @@ def test__canonical_instrument_normalizes_symbol() -> None:
 
 def test__canonical_instrument_with_blank_rejects_value() -> None:
     with pytest.raises(ValueError, match="instrument cannot be blank"):
-        _canonical_instrument(" ")
+        _ = _canonical_instrument(" ")
 
 
 def test_build_layered_universe_preserves_all_contributing_layers() -> None:
@@ -63,7 +65,7 @@ def test_build_layered_universe_preserves_explicit_proxy_provenance() -> None:
 
 def test_candidate_reference_with_unresolved_tradability_rejects_value() -> None:
     with pytest.raises(ValidationError):
-        CandidateReference(
+        _ = CandidateReference(
             reference="Ambiguous Co.",
             instrument=None,
             tradable=True,

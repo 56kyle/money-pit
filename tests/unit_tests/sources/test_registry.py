@@ -1,6 +1,18 @@
+from pathlib import Path
+
 import pytest
 
+from money_pit.schemas.evidence import EvidenceDocument
+from money_pit.schemas.sources import AllowedUse
+from money_pit.schemas.sources import DiscoveryBatch
+from money_pit.schemas.sources import RawArtifact
+from money_pit.schemas.sources import SourceCursor
+from money_pit.schemas.sources import SourceCursorPurpose
 from money_pit.schemas.sources import SourceDefinition
+from money_pit.schemas.sources import SourceItem
+from money_pit.schemas.sources import SourceTrustSetting
+from money_pit.schemas.sources import TrustCategory
+from money_pit.schemas.sources import TrustLevel
 from money_pit.sources.errors import AdapterAlreadyRegisteredError
 from money_pit.sources.errors import DuplicateSourceIdError
 from money_pit.sources.errors import SourceRegistryReadError
@@ -9,19 +21,42 @@ from money_pit.sources.registry import AdapterRegistry
 from money_pit.sources.registry import load_source_registry
 
 
-def _factory(definition):
-    return definition
+class _Connector:
+    def discover(
+        self,
+        cursor: SourceCursor | None,
+        *,
+        purpose: SourceCursorPurpose = SourceCursorPurpose.SYNC,
+    ) -> DiscoveryBatch:
+        del cursor, purpose
+        raise AssertionError("registry loading must not invoke connectors")
+
+    def fetch(self, item: SourceItem) -> RawArtifact:
+        del item
+        raise AssertionError("registry loading must not invoke connectors")
+
+    def extract(self, artifact: RawArtifact) -> EvidenceDocument:
+        del artifact
+        raise AssertionError("registry loading must not invoke connectors")
 
 
-def test_load_source_registry_with_valid_document(tmp_path):
+def _factory(definition: SourceDefinition) -> _Connector:
+    del definition
+    return _Connector()
+
+
+def test_load_source_registry_with_valid_document(tmp_path: Path) -> None:
     registry_path = tmp_path / "sources.toml"
-    registry_path.write_text(
+    _ = registry_path.write_text(
         """
-version = 1
+version = "0.0.2"
 [[sources]]
 source_id = "market-news"
 adapter_name = "test"
 locator = "https://example.com/feed"
+provenance_group = "market-news"
+allowed_uses = ["interpretation"]
+trust_settings = [{ category = "factual", level = "commentary" }]
 tags = ["macro"]
 """.strip(),
         encoding="utf-8",
@@ -36,24 +71,38 @@ tags = ["macro"]
             source_id="market-news",
             adapter_name="test",
             locator="https://example.com/feed",
+            provenance_group="market-news",
+            allowed_uses=(AllowedUse.INTERPRETATION,),
+            trust_settings=(
+                SourceTrustSetting(
+                    category=TrustCategory.FACTUAL,
+                    level=TrustLevel.COMMENTARY,
+                ),
+            ),
             tags=("macro",),
         ),
     )
 
 
-def test_load_source_registry_rejects_duplicate_source_id(tmp_path):
+def test_load_source_registry_rejects_duplicate_source_id(tmp_path: Path) -> None:
     registry_path = tmp_path / "sources.toml"
-    registry_path.write_text(
+    _ = registry_path.write_text(
         """
-version = 1
+version = "0.0.2"
 [[sources]]
 source_id = "same"
 adapter_name = "test"
 locator = "https://example.com/one"
+provenance_group = "same-one"
+allowed_uses = ["interpretation"]
+trust_settings = [{ category = "factual", level = "commentary" }]
 [[sources]]
 source_id = "same"
 adapter_name = "test"
 locator = "https://example.com/two"
+provenance_group = "same-two"
+allowed_uses = ["interpretation"]
+trust_settings = [{ category = "factual", level = "commentary" }]
 """.strip(),
         encoding="utf-8",
     )
@@ -61,35 +110,38 @@ locator = "https://example.com/two"
     adapters.register("test", _factory)
 
     with pytest.raises(DuplicateSourceIdError):
-        load_source_registry(registry_path, adapters)
+        _ = load_source_registry(registry_path, adapters)
 
 
-def test_load_source_registry_rejects_unknown_adapter(tmp_path):
+def test_load_source_registry_rejects_unknown_adapter(tmp_path: Path) -> None:
     registry_path = tmp_path / "sources.toml"
-    registry_path.write_text(
+    _ = registry_path.write_text(
         """
-version = 1
+version = "0.0.2"
 [[sources]]
 source_id = "source"
 adapter_name = "missing"
 locator = "https://example.com"
+provenance_group = "source"
+allowed_uses = ["interpretation"]
+trust_settings = [{ category = "factual", level = "commentary" }]
 """.strip(),
         encoding="utf-8",
     )
 
     with pytest.raises(UnknownAdapterError):
-        load_source_registry(registry_path, AdapterRegistry())
+        _ = load_source_registry(registry_path, AdapterRegistry())
 
 
-def test_load_source_registry_rejects_malformed_toml(tmp_path):
+def test_load_source_registry_rejects_malformed_toml(tmp_path: Path) -> None:
     registry_path = tmp_path / "sources.toml"
-    registry_path.write_text("version = [", encoding="utf-8")
+    _ = registry_path.write_text("version = [", encoding="utf-8")
 
     with pytest.raises(SourceRegistryReadError):
-        load_source_registry(registry_path, AdapterRegistry())
+        _ = load_source_registry(registry_path, AdapterRegistry())
 
 
-def test_register_rejects_duplicate_adapter():
+def test_register_rejects_duplicate_adapter() -> None:
     adapters = AdapterRegistry()
     adapters.register("test", _factory)
 

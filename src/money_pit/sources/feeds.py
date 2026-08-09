@@ -19,16 +19,18 @@ from pydantic import ConfigDict
 from money_pit.schemas.sources import DiscoveryBatch
 from money_pit.schemas.sources import RawArtifact
 from money_pit.schemas.sources import SourceCursor
+from money_pit.schemas.sources import SourceCursorPurpose
 from money_pit.schemas.sources import SourceDefinition
 from money_pit.schemas.sources import SourceItem
 from money_pit.sources._shared import BoundedConnectorConfig
 from money_pit.sources._shared import parse_config
 from money_pit.sources._shared import require_media_type
+from money_pit.sources._shared import source_definition_hash
 from money_pit.sources._shared import utc_now
 from money_pit.sources.errors import SourceDiscoveryError
+from money_pit.sources.http import AddressPinnedHttpTransport
 from money_pit.sources.http import HttpResponse
 from money_pit.sources.http import HttpTransport
-from money_pit.sources.http import UrllibHttpTransport
 from money_pit.sources.http import WebConnector
 
 
@@ -73,14 +75,20 @@ class FeedConnector:
         self._config: FeedConnectorConfig = FeedConnectorConfig.model_validate(
             parse_config(definition, FeedConnectorConfig).model_dump(),
         )
-        self._transport: HttpTransport = transport or UrllibHttpTransport()
+        self._transport: HttpTransport = transport or AddressPinnedHttpTransport()
         self._web: WebConnector = WebConnector(
             definition.model_copy(update={"adapter_config": definition.adapter_config}),
             self._transport,
         )
 
-    def discover(self, cursor: SourceCursor | None) -> DiscoveryBatch:
+    def discover(
+        self,
+        cursor: SourceCursor | None,
+        *,
+        purpose: SourceCursorPurpose = SourceCursorPurpose.SYNC,
+    ) -> DiscoveryBatch:
         """Fetch and parse a bounded feed, returning only entries after the cursor."""
+        del purpose
         response: HttpResponse = self._transport.get(
             self._definition.locator,
             maximum_bytes=self._config.max_content_bytes,
@@ -97,7 +105,7 @@ class FeedConnector:
             root: XmlElement = parsed_root
         except (ParseError, DefusedXmlException) as error:
             raise SourceDiscoveryError("Feed XML cannot be parsed") from error
-        entries: list[SourceItem] = _parse_feed_entries(root, self._definition.source_id)
+        entries: list[SourceItem] = _parse_feed_entries(root, self._definition)
         unseen: tuple[SourceItem, ...] = _entries_before_cursor(entries, cursor)
         next_cursor: SourceCursor | None = SourceCursor(value=entries[0].source_item_id) if entries else cursor
         return DiscoveryBatch(items=unseen, next_cursor=next_cursor, discovered_at=utc_now())
@@ -111,7 +119,7 @@ class FeedConnector:
         return self._web.extract(artifact)
 
 
-def _parse_feed_entries(root: XmlElement, source_id: str) -> list[SourceItem]:
+def _parse_feed_entries(root: XmlElement, definition: SourceDefinition) -> list[SourceItem]:
     now: datetime = utc_now()
     entries: list[SourceItem] = []
     for element in root.findall(".//item") + root.findall(".//{*}entry"):
@@ -125,8 +133,9 @@ def _parse_feed_entries(root: XmlElement, source_id: str) -> list[SourceItem]:
         )
         entries.append(
             SourceItem(
-                source_item_id=f"{source_id}:{stable_id}",
-                source_id=source_id,
+                source_item_id=f"{definition.source_id}:{stable_id}",
+                source_id=definition.source_id,
+                source_definition_hash=source_definition_hash(definition),
                 canonical_uri=link,
                 published_at=published,
                 updated_at=published,

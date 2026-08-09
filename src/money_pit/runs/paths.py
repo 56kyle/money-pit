@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from money_pit.constants import ASSETS_DIRNAME
-from money_pit.constants import DAILY_SHOW_ROOT
 from money_pit.constants import DATA_ROOT
 from money_pit.constants import REPORTS_DIRNAME
 from money_pit.constants import RUNS_DIRNAME
@@ -20,14 +19,11 @@ class RepositoryPaths:
     runs_root: Path
     reports_root: Path
     database_path: Path
-    legacy_daily_show_root: Path
 
     @classmethod
     def from_data_root(
         cls,
         data_root: Path = DATA_ROOT,
-        *,
-        legacy_daily_show_root: Path = DAILY_SHOW_ROOT,
     ) -> "RepositoryPaths":
         """Build repository paths without creating filesystem state."""
         return cls(
@@ -36,7 +32,6 @@ class RepositoryPaths:
             runs_root=data_root / RUNS_DIRNAME,
             reports_root=data_root / REPORTS_DIRNAME,
             database_path=data_root / STATE_DATABASE_FILENAME,
-            legacy_daily_show_root=legacy_daily_show_root,
         )
 
     def ensure_writable_roots(self) -> None:

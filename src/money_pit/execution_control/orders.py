@@ -1,9 +1,13 @@
 """Module containing stable plan-aware order parameter construction."""
 
 import re
+from typing import ClassVar
 from typing import Literal
 
-from money_pit.schemas.action_steps import ExecutionParameters
+from pydantic import BaseModel
+from pydantic import ConfigDict
+from pydantic import model_validator
+
 from money_pit.schemas.portfolio_plan import PortfolioPlan
 from money_pit.schemas.portfolio_plan import ProposedTrade
 
@@ -11,6 +15,41 @@ from money_pit.schemas.portfolio_plan import ProposedTrade
 _MAX_CLIENT_ORDER_ID_LENGTH: int = 48
 _SYMBOL_COMPONENT_PATTERN: re.Pattern[str] = re.compile(r"[^A-Za-z0-9]")
 OrderSide = Literal["buy", "sell"]
+
+
+class OrderIntent(BaseModel):
+    """Exact broker order intent derived from one hashed plan trade."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+    symbol: str
+    notional: str | None
+    qty: str | None
+    side: OrderSide
+    type: Literal["market"]
+    time_in_force: Literal["day"]
+    client_order_id: str
+
+    @model_validator(mode="after")
+    def require_exactly_one_amount(self) -> "OrderIntent":
+        """Require exactly one broker-supported amount representation."""
+        if (self.notional is None) == (self.qty is None):
+            raise ValueError("OrderIntent requires exactly one of notional or qty")
+        return self
+
+    def to_order_payload(self) -> dict[str, object]:
+        """Return the broker payload while omitting the unused amount field."""
+        payload: dict[str, object] = {
+            "symbol": self.symbol,
+            "side": self.side,
+            "type": self.type,
+            "time_in_force": self.time_in_force,
+            "client_order_id": self.client_order_id,
+        }
+        if self.notional is not None:
+            payload["notional"] = self.notional
+        if self.qty is not None:
+            payload["qty"] = self.qty
+        return payload
 
 
 def plan_client_order_id(plan: PortfolioPlan, trade_index: int, instrument: str) -> str:
@@ -26,10 +65,10 @@ def execution_parameters_for_trade(
     plan: PortfolioPlan,
     trade_index: int,
     trade: ProposedTrade,
-) -> ExecutionParameters:
+) -> OrderIntent:
     """Convert a portfolio-plan trade into deterministic market-day order parameters."""
     side: OrderSide = _order_side(trade.side)
-    return ExecutionParameters(
+    return OrderIntent(
         symbol=trade.instrument,
         notional=None,
         qty=format(trade.quantity, ".15g"),

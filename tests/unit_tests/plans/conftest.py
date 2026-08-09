@@ -6,10 +6,11 @@ from datetime import timedelta
 
 import pytest
 
-from money_pit.plans.lifecycle import AuthorizationContext
 from money_pit.schemas.execution_policy import BrokerEnvironment
 from money_pit.schemas.execution_policy import ExecutionMode
 from money_pit.schemas.execution_policy import ExecutionPolicy
+from money_pit.schemas.execution_policy import TradableAssetClass
+from money_pit.schemas.portfolio_plan import PlanTaxEstimate
 from money_pit.schemas.portfolio_plan import PortfolioPlan
 from money_pit.schemas.portfolio_plan import PortfolioPlanPayload
 from money_pit.schemas.portfolio_plan import ProposedTrade
@@ -28,11 +29,16 @@ def portfolio_plan_payload(now: datetime) -> PortfolioPlanPayload:
         expires_at=now + timedelta(minutes=30),
         portfolio_snapshot_id="portfolio-1",
         market_snapshot_id="market-1",
+        decision_snapshot_id="decision-1",
+        decision_snapshot_hash="1" * 64,
+        account_id="paper-account",
+        broker_environment=BrokerEnvironment.PAPER,
         policy_version="policy-1",
         target_weights={"AAPL": 0.2, "SPY": 0.6},
         proposed_trades=(
             ProposedTrade(
                 instrument="AAPL",
+                asset_class=TradableAssetClass.US_EQUITY,
                 side="buy",
                 quantity=2.0,
                 estimated_notional=400.0,
@@ -40,6 +46,7 @@ def portfolio_plan_payload(now: datetime) -> PortfolioPlanPayload:
             ),
         ),
         turnover_estimate=0.1,
+        tax_estimate=PlanTaxEstimate(currency="USD", estimated_cost=0.0, known=True),
         evidence_gate_results={"independent_support": True},
         constraint_results={"position_limit": True},
     )
@@ -48,24 +55,6 @@ def portfolio_plan_payload(now: datetime) -> PortfolioPlanPayload:
 @pytest.fixture
 def portfolio_plan(portfolio_plan_payload: PortfolioPlanPayload) -> PortfolioPlan:
     return PortfolioPlan.from_payload(portfolio_plan_payload)
-
-
-@pytest.fixture
-def authorization_context(
-    portfolio_plan_payload: PortfolioPlanPayload,
-    now: datetime,
-) -> AuthorizationContext:
-    return AuthorizationContext(
-        evaluated_at=now + timedelta(minutes=1),
-        portfolio_snapshot_id=portfolio_plan_payload.portfolio_snapshot_id,
-        market_snapshot_id=portfolio_plan_payload.market_snapshot_id,
-        policy_version=portfolio_plan_payload.policy_version,
-        evidence_gate_results=portfolio_plan_payload.evidence_gate_results,
-        constraint_results=portfolio_plan_payload.constraint_results,
-        asset_classes={"AAPL": "us_equity"},
-        committed_turnover=0.0,
-        execution_enabled=True,
-    )
 
 
 @pytest.fixture

@@ -2,32 +2,41 @@
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import cast
 
 import pytest
 
 from money_pit.execution_control.models import ExecutionControlState
 from money_pit.execution_control.models import PreflightDenialCode
-from money_pit.execution_control.preflight import _approval_denials
 from money_pit.execution_control.preflight import validate_pre_execution
 from money_pit.execution_control.repository import SqliteExecutionAuthorityRepository
 from money_pit.plans.lifecycle import ApprovalRecord
 from money_pit.plans.lifecycle import PlanDecision
+from money_pit.plans.lifecycle import RejectionRecord
 from money_pit.plans.lifecycle import approve_plan
 from money_pit.plans.lifecycle import reject_plan
 from money_pit.schemas.execution_policy import BrokerEnvironment
 from money_pit.schemas.execution_policy import ExecutionMode
 from money_pit.schemas.execution_policy import ExecutionPolicy
+from money_pit.schemas.execution_policy import TradableAssetClass
 from money_pit.schemas.portfolio_plan import PortfolioPlan
-from money_pit.schemas.portfolio_plan import ProposedTrade
 
 
 @dataclass(frozen=True)
 class _DecisionStore:
     decision: PlanDecision | None
+    rejection: RejectionRecord | None = None
 
-    def latest_for(self, _plan_id: str) -> PlanDecision | None:
+    def append(self, record: PlanDecision) -> None:
+        raise AssertionError(record)
+
+    def latest_for(self, plan_id: str) -> PlanDecision | None:
+        del plan_id
         return self.decision
+
+    def rejection_for(self, plan_id: str, plan_hash: str) -> RejectionRecord | None:
+        if self.rejection is None:
+            return None
+        return self.rejection if (self.rejection.plan_id, self.rejection.plan_hash) == (plan_id, plan_hash) else None
 
 
 def _policy(mode: ExecutionMode = ExecutionMode.APPROVAL_REQUIRED) -> ExecutionPolicy:
@@ -49,7 +58,14 @@ def _changed(_plan: PortfolioPlan) -> bool:
 
 
 def _enable(repository: SqliteExecutionAuthorityRepository, now: datetime) -> None:
-    repository.enable(ExecutionControlState(disabled=False, changed_at=now, actor="operator"))
+    repository.enable(
+        ExecutionControlState(
+            disabled=False,
+            changed_at=now,
+            actor="operator",
+            policy_version="policy-1",
+        ),
+    )
 
 
 def _validate(
@@ -59,17 +75,19 @@ def _validate(
     now: datetime,
     *,
     decision: PlanDecision | None = None,
+    rejection: RejectionRecord | None = None,
     portfolio_unchanged: bool = True,
     market_unchanged: bool = True,
 ) -> set[PreflightDenialCode]:
     result = validate_pre_execution(
         plan,
         policy,
-        _DecisionStore(decision),
+        _DecisionStore(decision, rejection),
         repository,
         now=now,
         portfolio_unchanged=_unchanged if portfolio_unchanged else _changed,
         market_unchanged=_unchanged if market_unchanged else _changed,
+        execution_config_hash="e" * 64,
     )
     return {denial.code for denial in result.denials}
 
@@ -85,6 +103,10 @@ def test_validate_pre_execution_with_exact_approval_allows_plan(
         decision_id="decision-1",
         decided_at=now,
         decided_by="operator",
+        execution_config_hash="e" * 64,
+        execution_policy=_policy(),
+        account_id=portfolio_plan.payload.account_id,
+        committed_turnover_at_approval=0.0,
     )
 
     codes = _validate(execution_repository, portfolio_plan, _policy(), now, decision=decision)
@@ -139,7 +161,7 @@ def test_validate_pre_execution_reports_each_failed_gate(  # noqa: C901
         trade = plan.payload.proposed_trades[0].model_copy(update={"estimated_notional": 1_001.0})
         plan = PortfolioPlan.from_payload(plan.payload.model_copy(update={"proposed_trades": (trade,)}))
     elif case == "asset-class":
-        policy = policy.model_copy(update={"allowed_asset_classes": ("crypto",)})
+        policy = policy.model_copy(update={"allowed_asset_classes": (TradableAssetClass.US_ETF,)})
     elif case == "turnover":
         plan = PortfolioPlan.from_payload(plan.payload.model_copy(update={"turnover_estimate": 0.3}))
     elif case == "portfolio-drift":
@@ -151,6 +173,10 @@ def test_validate_pre_execution_reports_each_failed_gate(  # noqa: C901
         decision_id="decision-1",
         decided_at=now,
         decided_by="operator",
+        execution_config_hash="e" * 64,
+        execution_policy=_policy(),
+        account_id=portfolio_plan.payload.account_id,
+        committed_turnover_at_approval=0.0,
     )
 
     codes = _validate(
@@ -178,6 +204,12 @@ def test_validate_pre_execution_rejects_mismatched_approval_hash(
         plan_hash="0" * 64,
         decided_at=now,
         decided_by="operator",
+        execution_config_hash="e" * 64,
+        execution_policy_hash=_policy().fingerprint(),
+        execution_policy_version=_policy().policy_version,
+        broker_environment=_policy().broker_environment,
+        account_id=portfolio_plan.payload.account_id,
+        committed_turnover_at_approval=0.0,
     )
 
     codes = _validate(execution_repository, portfolio_plan, _policy(), now, decision=decision)
@@ -204,38 +236,37 @@ def test_validate_pre_execution_respects_exact_rejection(
     assert PreflightDenialCode.PLAN_REJECTED in codes
 
 
-def test_validate_pre_execution_autonomous_tax_unknown_sell_fails_closed(
+def test_validate_pre_execution_keeps_exact_rejection_as_terminal_veto_after_later_approval(
     execution_repository: SqliteExecutionAuthorityRepository,
     portfolio_plan: PortfolioPlan,
     now: datetime,
 ) -> None:
     _enable(execution_repository, now)
-    trade = ProposedTrade(
-        instrument="AAPL",
-        side="sell",
-        quantity=1.0,
-        estimated_notional=200.0,
-        tax_cost_known=False,
+    rejection = reject_plan(
+        portfolio_plan,
+        decision_id="decision-reject",
+        decided_at=now,
+        decided_by="operator",
+        reason="risk changed",
     )
-    plan = PortfolioPlan.from_payload(portfolio_plan.payload.model_copy(update={"proposed_trades": (trade,)}))
-
-    codes = _validate(execution_repository, plan, _policy(ExecutionMode.AUTONOMOUS), now)
-
-    assert PreflightDenialCode.TAX_COST_UNKNOWN in codes
-
-
-def test__approval_denials_rejects_unknown_execution_mode(
-    execution_repository: SqliteExecutionAuthorityRepository,
-    portfolio_plan: PortfolioPlan,
-) -> None:
-    invalid = ExecutionPolicy.model_construct(
-        policy_version="policy-1",
-        broker_environment=BrokerEnvironment.PAPER,
-        execution_mode="unexpected",
-        allowed_asset_classes=("us_equity",),
-        maximum_order_notional=1_000.0,
-        maximum_daily_turnover=0.2,
+    later_approval = approve_plan(
+        portfolio_plan,
+        decision_id="decision-approve",
+        decided_at=now,
+        decided_by="operator",
+        execution_config_hash="e" * 64,
+        execution_policy=_policy(),
+        account_id=portfolio_plan.payload.account_id,
+        committed_turnover_at_approval=0,
     )
 
-    with pytest.raises(AssertionError, match="Unhandled execution mode"):
-        _approval_denials(portfolio_plan, cast("ExecutionPolicy", invalid), execution_repository)
+    codes = _validate(
+        execution_repository,
+        portfolio_plan,
+        _policy(),
+        now,
+        decision=later_approval,
+        rejection=rejection,
+    )
+
+    assert PreflightDenialCode.PLAN_REJECTED in codes

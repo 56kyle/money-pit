@@ -1,5 +1,7 @@
 """Tests for deterministic constrained portfolio optimization."""
 
+import math
+
 import pytest
 
 from money_pit.portfolio.errors import IncompletePortfolioPolicyError
@@ -20,7 +22,7 @@ def optimization_result(
 
 def test_optimize_conserves_cash(optimization_result: OptimizationResult) -> None:
     invested: float = sum(optimization_result.target_weights.values())
-    assert invested + optimization_result.cash_weight == pytest.approx(1.0, abs=1e-9)
+    assert math.isclose(invested + optimization_result.cash_weight, 1.0, abs_tol=1e-9)
 
 
 def test_optimize_respects_position_bounds(
@@ -48,8 +50,9 @@ def test_optimize_turnover_includes_cash_change(
         for instrument, weight in optimization_input.current_weights.items()
     )
     current_cash: float = 1.0 - sum(optimization_input.current_weights.values())
-    assert optimization_result.turnover == pytest.approx(
-        0.5 * (risky_turnover + abs(optimization_result.cash_weight - current_cash))
+    assert math.isclose(
+        optimization_result.turnover,
+        0.5 * (risky_turnover + abs(optimization_result.cash_weight - current_cash)),
     )
 
 
@@ -98,7 +101,7 @@ def test_optimize_with_incomplete_sector_policy_fails_closed(
     incomplete: PortfolioPolicy = portfolio_policy.model_copy(update={"maximum_sector_weights": {"technology": 0.3}})
 
     with pytest.raises(IncompletePortfolioPolicyError):
-        ClarabelOptimizer().optimize(optimization_input, incomplete)
+        _ = ClarabelOptimizer().optimize(optimization_input, incomplete)
 
 
 def test_optimize_with_non_finite_expected_return_fails_closed(
@@ -110,4 +113,4 @@ def test_optimize_with_non_finite_expected_return_fails_closed(
     )
 
     with pytest.raises(InvalidOptimizationInputError):
-        ClarabelOptimizer().optimize(invalid, portfolio_policy)
+        _ = ClarabelOptimizer().optimize(invalid, portfolio_policy)

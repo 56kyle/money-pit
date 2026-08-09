@@ -2,17 +2,19 @@
 # pyright: reportAny=false
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from enum import StrEnum
 from pathlib import Path
 from typing import Final
 
-from money_pit.storage.errors import MigrationError
+from money_pit.storage.errors import SchemaIdentityError
 from money_pit.storage.errors import StorageCapabilityError
 from money_pit.storage.errors import StorageConnectionError
 from money_pit.storage.errors import StorageTransactionError
-from money_pit.storage.migrations import apply_pending_migrations
+from money_pit.storage.migrations import apply_baseline
+from money_pit.storage.migrations import is_logically_empty
+from money_pit.storage.migrations import verify_schema_identity
 
 
 DEFAULT_BUSY_TIMEOUT_MS: Final[int] = 5_000
@@ -41,25 +43,28 @@ class Database:
         return self._path
 
     def initialize(self) -> None:
-        """Create and migrate the database after checking required SQLite capabilities."""
+        """Create an empty database or verify an exact existing 0.0.2 schema."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self.transaction(TransactionMode.WRITE) as connection:
-            apply_pending_migrations(connection)
+            if is_logically_empty(connection):
+                apply_baseline(connection)
+            else:
+                verify_schema_identity(connection)
 
     @contextmanager
     def transaction(
         self,
         mode: TransactionMode = TransactionMode.READ,
-    ) -> Iterator[sqlite3.Connection]:
+    ) -> Generator[sqlite3.Connection]:
         """Yield one configured transaction and close it after commit or rollback."""
         connection: sqlite3.Connection = self._connect()
         began: bool = False
         try:
-            connection.execute(f"BEGIN {mode.value}")
+            _ = connection.execute(f"BEGIN {mode.value}")
             began = True
             yield connection
             connection.commit()
-        except (MigrationError, StorageCapabilityError):
+        except (SchemaIdentityError, StorageCapabilityError):
             if began:  # pragma: no branch - failures here occur only after BEGIN succeeds.
                 connection.rollback()
             raise
@@ -94,8 +99,8 @@ class Database:
                 isolation_level=None,
             )
             connection.row_factory = sqlite3.Row
-            connection.execute("PRAGMA foreign_keys = ON")
-            connection.execute(f"PRAGMA busy_timeout = {self._busy_timeout_ms}")
+            _ = connection.execute("PRAGMA foreign_keys = ON")
+            _ = connection.execute(f"PRAGMA busy_timeout = {self._busy_timeout_ms}")
             self._require_capabilities(connection)
         except StorageCapabilityError:
             if connection is not None:  # pragma: no branch - capability checks require a live connection.
@@ -116,7 +121,7 @@ class Database:
             json_row: sqlite3.Row | None = connection.execute("SELECT json_valid('{\"ok\": true}')").fetchone()
             if json_row is None or int(json_row[0]) != 1:
                 raise StorageCapabilityError("SQLite JSON functions are unavailable.")
-            connection.execute("CREATE VIRTUAL TABLE temp.money_pit_fts5_capability USING fts5(content)")
-            connection.execute("DROP TABLE temp.money_pit_fts5_capability")
+            _ = connection.execute("CREATE VIRTUAL TABLE temp.money_pit_fts5_capability USING fts5(content)")
+            _ = connection.execute("DROP TABLE temp.money_pit_fts5_capability")
         except sqlite3.Error as error:
             raise StorageCapabilityError("SQLite FTS5 support is unavailable.") from error

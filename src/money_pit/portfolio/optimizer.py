@@ -49,7 +49,11 @@ class OptimizationInput(BaseModel):
     covariance: dict[str, dict[str, float]]
     sectors: dict[str, str]
     satellite_instruments: frozenset[str]
-    tax_cost_rates: dict[str, float]
+    tax_cost_per_sold_weight: dict[str, float]
+    tax_cost_known: dict[str, bool]
+    maximum_weights: dict[str, float] = Field(default_factory=dict)
+    factor_loadings: dict[str, dict[str, float]] = Field(default_factory=dict)
+    correlated_groups: dict[str, frozenset[str]] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_instruments(self) -> Self:
@@ -61,13 +65,15 @@ class OptimizationInput(BaseModel):
             ("current_weights", set(self.current_weights)),
             ("covariance rows", set(self.covariance)),
             ("sectors", set(self.sectors)),
-            ("tax_cost_rates", set(self.tax_cost_rates)),
+            ("tax_cost_per_sold_weight", set(self.tax_cost_per_sold_weight)),
+            ("tax_cost_known", set(self.tax_cost_known)),
         )
         for name, keys in required_maps:
             if keys != instruments:
                 raise ValueError(f"{name} must cover exactly the expected-return instruments")
         if not self.satellite_instruments <= instruments:
             raise ValueError("satellite_instruments contains an unknown instrument")
+        _validate_optional_constraint_inputs(self, instruments)
         for instrument, row in self.covariance.items():
             if set(row) != instruments:
                 raise ValueError(f"covariance row {instrument!r} is incomplete")
@@ -76,7 +82,7 @@ class OptimizationInput(BaseModel):
             raise ValueError("current weights must be between zero and one")
         if sum(self.current_weights.values()) > 1 + 1e-9:
             raise ValueError("current weights exceed the portfolio")
-        if any(rate < 0 for rate in self.tax_cost_rates.values()):
+        if any(rate < 0 for rate in self.tax_cost_per_sold_weight.values()):
             raise ValueError("tax cost rates cannot be negative")
         return self
 
@@ -85,7 +91,9 @@ class OptimizationInput(BaseModel):
         finite_values: tuple[float, ...] = (
             *self.current_weights.values(),
             *self.expected_returns.values(),
-            *self.tax_cost_rates.values(),
+            *self.tax_cost_per_sold_weight.values(),
+            *self.maximum_weights.values(),
+            *(loading for values in self.factor_loadings.values() for loading in values.values()),
         )
         if not all(math.isfinite(value) for value in finite_values):
             raise ValueError("optimization inputs must contain only finite values")
@@ -163,52 +171,65 @@ class ClarabelOptimizer:
         )
         self._validate_covariance(covariance)
         tax_rates: _FloatArray = np.asarray(
-            [optimization_input.tax_cost_rates[instrument] for instrument in instruments],
+            [optimization_input.tax_cost_per_sold_weight[instrument] for instrument in instruments],
             dtype=np.float64,
         )
 
         weights: cp.Variable = cp.Variable(len(instruments), nonneg=True)
-        delta: cp.Expression = cast("cp.Expression", weights - current)
-        turnover: cp.Expression = cast("cp.Expression", 0.5 * (cp.norm1(delta) + cp.abs(cp.sum(delta))))
+        delta: cp.Expression = weights - current
+        turnover: cp.Expression = 0.5 * (
+            cp.norm1(delta) + cp.abs(cp.sum(delta))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]  # CVXPY's sum wrapper is partially untyped.
+        )
         estimated_tax_cost: cp.Expression = cast(
             "cp.Expression",
-            cp.sum(cp.multiply(tax_rates, cp.pos(-delta))),
+            cp.sum(  # pyright: ignore[reportUnknownMemberType]  # CVXPY's sum wrapper is partially untyped.
+                cp.multiply(
+                    tax_rates,
+                    cp.pos(-delta),  # pyright: ignore[reportUnknownMemberType]  # CVXPY's pos helper lacks complete typing.
+                )
+            ),
         )
         objective_expression: cp.Expression = cast(
             "cp.Expression",
-            cp.sum(cp.multiply(expected_returns, weights))
-            - policy.risk_aversion * cp.quad_form(weights, cp.psd_wrap(covariance))
+            cp.sum(  # pyright: ignore[reportUnknownMemberType]  # CVXPY's sum wrapper is partially untyped.
+                cp.multiply(expected_returns, weights)
+            )
+            - policy.risk_aversion
+            * cp.quad_form(  # pyright: ignore[reportUnknownMemberType]  # CVXPY's quad_form helper lacks complete typing.
+                weights, cp.psd_wrap(covariance)
+            )
             - policy.turnover_penalty * turnover
             - policy.tax_penalty * estimated_tax_cost,
         )
         objective: cp.Maximize = cp.Maximize(objective_expression)
         constraints: list[cp.Constraint] = [
-            cast("cp.Constraint", cp.sum(weights) <= 1 - policy.minimum_cash_weight),
+            cast(
+                "cp.Constraint",
+                cp.sum(weights)  # pyright: ignore[reportUnknownMemberType]  # CVXPY's sum wrapper is partially untyped.
+                <= 1 - policy.minimum_cash_weight,
+            ),
             cast("cp.Constraint", weights <= policy.maximum_position_weight),
             cast("cp.Constraint", turnover <= policy.maximum_turnover),
             cast("cp.Constraint", cp.abs(delta) <= policy.maximum_position_change),
         ]
-        if optimization_input.satellite_instruments:
-            satellite_indices: list[int] = [
-                index_by_instrument[instrument] for instrument in sorted(optimization_input.satellite_instruments)
-            ]
-            constraints.append(
-                cast("cp.Constraint", cp.sum(weights[satellite_indices]) <= policy.maximum_satellite_weight)
+        constraints.extend(
+            self._exposure_constraints(
+                weights,
+                instruments,
+                index_by_instrument,
+                optimization_input,
+                policy,
             )
-        for instrument, minimum_weight in sorted(policy.minimum_core_weights.items()):
-            constraints.append(cast("cp.Constraint", weights[index_by_instrument[instrument]] >= minimum_weight))
-        for sector, maximum_weight in sorted(policy.maximum_sector_weights.items()):
-            sector_indices: list[int] = [
-                index
-                for index, instrument in enumerate(instruments)
-                if optimization_input.sectors[instrument] == sector
-            ]
-            if sector_indices:
-                constraints.append(cast("cp.Constraint", cp.sum(weights[sector_indices]) <= maximum_weight))
+        )
 
         problem: cp.Problem = cp.Problem(objective, constraints)
         try:
-            raw_objective: object = cast("object", problem.solve(solver=cp.CLARABEL, verbose=False))
+            raw_objective: object = cast(
+                "object",
+                problem.solve(  # pyright: ignore[reportUnknownMemberType]  # CVXPY's solver return is incompletely typed.
+                    solver=cp.CLARABEL, verbose=False
+                ),
+            )
         except SolverError as exc:
             raise OptimizationFailedError("CLARABEL failed to solve the portfolio") from exc
         solver_objective_value: float = self._finite_solver_objective(raw_objective)
@@ -246,8 +267,7 @@ class ClarabelOptimizer:
         )
         risky_weight_changes: _FloatArray = canonical_weights - current
         result_turnover: float = 0.5 * (
-            float(cast("np.float64", np.sum(np.abs(risky_weight_changes))))
-            + abs(float(cast("np.float64", np.sum(risky_weight_changes))))
+            float(cast("np.float64", np.sum(np.abs(risky_weight_changes)))) + abs(float(np.sum(risky_weight_changes)))
         )
         result_tax_cost: float = float(np.sum(tax_rates * np.maximum(current - canonical_weights, 0.0)))
         result_expected_return: float = float(expected_returns @ canonical_weights)
@@ -280,6 +300,98 @@ class ClarabelOptimizer:
             portfolio_snapshot_id=optimization_input.portfolio_snapshot_id,
             market_snapshot_id=optimization_input.market_snapshot_id,
         )
+
+    @staticmethod
+    def _exposure_constraints(
+        weights: cp.Variable,
+        instruments: tuple[str, ...],
+        index_by_instrument: dict[str, int],
+        optimization_input: OptimizationInput,
+        policy: PortfolioPolicy,
+    ) -> list[cp.Constraint]:
+        import cvxpy as cp_api
+
+        constraints: list[cp.Constraint] = []
+        if optimization_input.maximum_weights:
+            maximum_weights: _FloatArray = np.asarray(
+                [optimization_input.maximum_weights[instrument] for instrument in instruments], dtype=np.float64
+            )
+            constraints.append(cast("cp.Constraint", weights <= maximum_weights))
+        if optimization_input.satellite_instruments:
+            indices: list[int] = [
+                index_by_instrument[instrument] for instrument in sorted(optimization_input.satellite_instruments)
+            ]
+            constraints.append(
+                cast(
+                    "cp.Constraint",
+                    cp_api.sum(  # pyright: ignore[reportUnknownMemberType]  # CVXPY's sum wrapper is partially untyped.
+                        weights[indices]
+                    )
+                    <= policy.maximum_satellite_weight,
+                )
+            )
+        for instrument, minimum_weight in sorted(policy.minimum_core_weights.items()):
+            constraints.append(cast("cp.Constraint", weights[index_by_instrument[instrument]] >= minimum_weight))
+        constraints.extend(ClarabelOptimizer._group_constraints(weights, instruments, optimization_input, policy))
+        return constraints
+
+    @staticmethod
+    def _group_constraints(
+        weights: cp.Variable,
+        instruments: tuple[str, ...],
+        optimization_input: OptimizationInput,
+        policy: PortfolioPolicy,
+    ) -> list[cp.Constraint]:
+        import cvxpy as cp_runtime
+
+        constraints: list[cp.Constraint] = []
+        for sector, maximum_weight in sorted(policy.maximum_sector_weights.items()):
+            indices: list[int] = [
+                index
+                for index, instrument in enumerate(instruments)
+                if optimization_input.sectors[instrument] == sector
+            ]
+            if indices:
+                constraints.append(
+                    cast(
+                        "cp.Constraint",
+                        cp_runtime.sum(  # pyright: ignore[reportUnknownMemberType]  # CVXPY's sum wrapper is partially untyped.
+                            weights[indices]
+                        )
+                        <= maximum_weight,
+                    )
+                )
+        for factor, maximum_exposure in sorted(policy.maximum_factor_exposures.items()):
+            loadings: _FloatArray = np.asarray(
+                [optimization_input.factor_loadings[instrument][factor] for instrument in instruments], dtype=np.float64
+            )
+            constraints.append(
+                cast(
+                    "cp.Constraint",
+                    cp_runtime.abs(
+                        cp_runtime.sum(  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]  # CVXPY's sum wrapper is partially untyped.
+                            cp_runtime.multiply(loadings, weights)
+                        )
+                    )
+                    <= maximum_exposure,
+                )
+            )
+        for group, maximum_weight in sorted(policy.maximum_correlated_group_weights.items()):
+            indices = [
+                index
+                for index, instrument in enumerate(instruments)
+                if instrument in optimization_input.correlated_groups[group]
+            ]
+            constraints.append(
+                cast(
+                    "cp.Constraint",
+                    cp_runtime.sum(  # pyright: ignore[reportUnknownMemberType]  # CVXPY's sum wrapper is partially untyped.
+                        weights[indices]
+                    )
+                    <= maximum_weight,
+                )
+            )
+        return constraints
 
     @staticmethod
     def _finite_solver_objective(value: object) -> float:
@@ -339,6 +451,18 @@ class ClarabelOptimizer:
             raise IncompletePortfolioPolicyError(
                 f"every instrument must be classified as core or satellite: {sorted(non_satellite_non_core)}"
             )
+        factors: set[str] = {factor for loadings in optimization_input.factor_loadings.values() for factor in loadings}
+        if optimization_input.factor_loadings:
+            if any(set(loadings) != factors for loadings in optimization_input.factor_loadings.values()):
+                raise IncompletePortfolioPolicyError("factor loading rows must cover identical factors")
+            missing_factors: set[str] = factors - set(policy.maximum_factor_exposures)
+            extra_factors: set[str] = set(policy.maximum_factor_exposures) - factors
+            if missing_factors or extra_factors:
+                raise IncompletePortfolioPolicyError("factor exposure policy must exactly cover factor loadings")
+        elif policy.maximum_factor_exposures:
+            raise IncompletePortfolioPolicyError("factor exposure policy requires factor loadings")
+        if set(optimization_input.correlated_groups) != set(policy.maximum_correlated_group_weights):
+            raise IncompletePortfolioPolicyError("correlated-group policy must exactly cover declared groups")
 
     @staticmethod
     def _validate_covariance(covariance: _FloatArray) -> None:
@@ -368,6 +492,11 @@ class ClarabelOptimizer:
             raise OptimizationResultError("solver result violates the cash constraint")
         if float(np.max(weights)) > policy.maximum_position_weight + tolerance:
             raise OptimizationResultError("solver result violates the name constraint")
+        if optimization_input.maximum_weights and any(
+            float(cast("np.float64", weights[index])) > optimization_input.maximum_weights[instrument] + tolerance
+            for index, instrument in enumerate(instruments)
+        ):
+            raise OptimizationResultError("solver result violates a candidate or liquidity limit")
         changes: _FloatArray = np.abs(weights - current)
         if float(np.max(changes)) > policy.maximum_position_change + tolerance:
             raise OptimizationResultError("solver result violates the position-change constraint")
@@ -413,3 +542,32 @@ class ClarabelOptimizer:
             )
             if sector_weight > maximum_weight + tolerance:
                 raise OptimizationResultError("solver result violates a sector constraint")
+        for factor, maximum_exposure in policy.maximum_factor_exposures.items():
+            exposure: float = sum(
+                optimization_input.factor_loadings[instrument][factor] * float(cast("np.float64", weights[index]))
+                for index, instrument in enumerate(instruments)
+            )
+            if abs(exposure) > maximum_exposure + tolerance:
+                raise OptimizationResultError("solver result violates a factor constraint")
+        for group, maximum_weight in policy.maximum_correlated_group_weights.items():
+            group_weight: float = sum(
+                float(cast("np.float64", weights[index]))
+                for index, instrument in enumerate(instruments)
+                if instrument in optimization_input.correlated_groups[group]
+            )
+            if group_weight > maximum_weight + tolerance:
+                raise OptimizationResultError("solver result violates a correlated-group constraint")
+
+
+def _validate_optional_constraint_inputs(
+    optimization_input: OptimizationInput,
+    instruments: set[str],
+) -> None:
+    if optimization_input.maximum_weights and set(optimization_input.maximum_weights) != instruments:
+        raise ValueError("maximum_weights must cover every instrument when provided")
+    if any(weight < 0 or weight > 1 for weight in optimization_input.maximum_weights.values()):
+        raise ValueError("maximum weights must be between zero and one")
+    if optimization_input.factor_loadings and set(optimization_input.factor_loadings) != instruments:
+        raise ValueError("factor_loadings must cover every instrument when provided")
+    if any(not members or not members <= instruments for members in optimization_input.correlated_groups.values()):
+        raise ValueError("correlated groups must contain only known instruments")

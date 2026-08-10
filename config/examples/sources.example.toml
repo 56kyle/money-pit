@@ -136,7 +136,7 @@ level = "authoritative_primary"
 [[sources]]
 source_id = "publisher-alphabet"
 adapter_name = "web"
-enabled = false
+enabled = true
 locator = "https://abc.xyz/investor/"
 provenance_group = "alphabet-primary"
 allowed_uses = ["interpretation", "thesis_generation", "factual_verification", "portfolio_decision"]
@@ -148,7 +148,7 @@ level = "authoritative_primary"
 [[sources]]
 source_id = "publisher-intel"
 adapter_name = "web"
-enabled = false
+enabled = true
 locator = "https://www.intc.com/"
 provenance_group = "intel-primary"
 allowed_uses = ["interpretation", "thesis_generation", "factual_verification", "portfolio_decision"]
@@ -160,7 +160,7 @@ level = "authoritative_primary"
 [[sources]]
 source_id = "publisher-rivian"
 adapter_name = "web"
-enabled = false
+enabled = true
 locator = "https://rivian.com/investors"
 provenance_group = "rivian-primary"
 allowed_uses = ["interpretation", "thesis_generation", "factual_verification", "portfolio_decision"]
@@ -172,7 +172,7 @@ level = "authoritative_primary"
 [[sources]]
 source_id = "publisher-vanguard"
 adapter_name = "web"
-enabled = false
+enabled = true
 locator = "https://investor.vanguard.com/"
 provenance_group = "vanguard-primary"
 allowed_uses = ["interpretation", "thesis_generation", "factual_verification", "portfolio_decision"]
@@ -184,7 +184,7 @@ level = "authoritative_primary"
 [[sources]]
 source_id = "publisher-ishares"
 adapter_name = "web"
-enabled = false
+enabled = true
 locator = "https://www.ishares.com/"
 provenance_group = "ishares-primary"
 allowed_uses = ["interpretation", "thesis_generation", "factual_verification", "portfolio_decision"]
@@ -194,9 +194,21 @@ category = "factual"
 level = "authoritative_primary"
 
 [[sources]]
+source_id = "publisher-state-street"
+adapter_name = "web"
+enabled = true
+locator = "https://www.ssga.com/"
+provenance_group = "state-street-primary"
+allowed_uses = ["interpretation", "thesis_generation", "factual_verification", "portfolio_decision"]
+tags = ["research-publisher", "provider:brave"]
+[[sources.trust_settings]]
+category = "factual"
+level = "authoritative_primary"
+
+[[sources]]
 source_id = "publisher-reuters"
 adapter_name = "web"
-enabled = false
+enabled = true
 locator = "https://www.reuters.com/"
 provenance_group = "reuters"
 allowed_uses = ["interpretation", "thesis_generation", "factual_verification", "portfolio_decision"]

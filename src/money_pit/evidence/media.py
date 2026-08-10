@@ -10,9 +10,11 @@ import hashlib
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
+from typing import Annotated
 from typing import ClassVar
 from typing import Protocol
 
+from pydantic import AfterValidator
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -22,6 +24,7 @@ from pydantic_ai import BinaryContent
 from money_pit.agents.models import openai_chat_model
 from money_pit.evidence.results import DerivedEvidenceDocument
 from money_pit.evidence.results import EvidenceProcessingBundle
+from money_pit.prompt_loader import system_prompt
 from money_pit.schemas.evidence import EvidenceDocument
 from money_pit.schemas.evidence import EvidenceFragment
 from money_pit.schemas.evidence import TimestampLocator
@@ -46,6 +49,27 @@ class TimedTranscriptSegment(BaseModel):
     text: str = Field(min_length=1)
 
 
+def _validate_normalized_bounding_box(
+    bounding_box: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    left, top, right, bottom = bounding_box
+    if left > right or top > bottom:
+        raise ValueError("bounding_box coordinates must define valid geometry.")
+    return bounding_box
+
+
+_NormalizedCoordinate = Annotated[float, Field(ge=0, le=1)]
+_NormalizedBoundingBox = Annotated[
+    tuple[
+        _NormalizedCoordinate,
+        _NormalizedCoordinate,
+        _NormalizedCoordinate,
+        _NormalizedCoordinate,
+    ],
+    AfterValidator(_validate_normalized_bounding_box),
+]
+
+
 class FrameReading(BaseModel):
     """Visible financial evidence extracted from one keyframe."""
 
@@ -54,7 +78,7 @@ class FrameReading(BaseModel):
     timestamp_seconds: float = Field(ge=0)
     on_screen_text: tuple[str, ...] = ()
     cited_sources: tuple[str, ...] = ()
-    bounding_box: tuple[float, float, float, float] | None = None
+    bounding_box: _NormalizedBoundingBox | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
     extraction_model: str | None = None
     image_png: bytes
@@ -82,7 +106,7 @@ class _VisionDraft(BaseModel):
 
     on_screen_text: tuple[str, ...] = ()
     cited_sources: tuple[str, ...] = ()
-    bounding_box: tuple[float, float, float, float] | None = None
+    bounding_box: _NormalizedBoundingBox | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
 
 
@@ -104,11 +128,7 @@ class OpenAIVisionFrameReader:
                 model_name=self._model,
             ),
             output_type=_VisionDraft,
-            system_prompt=(
-                "Extract visible financial text and explicit source attribution from the image. "
-                "Do not infer text that is not visible. Return a normalized bounding box when the "
-                "relevant content occupies a bounded region."
-            ),
+            system_prompt=system_prompt("agent_video_onscreen"),
         )
         return self._agent
 
@@ -117,7 +137,7 @@ class OpenAIVisionFrameReader:
         try:
             result = self._inference_agent().run_sync(
                 [
-                    "Extract the on-screen text and cited source labels.",
+                    "Analyze this keyframe according to the system prompt and return all applicable structured fields.",
                     BinaryContent(data=image, media_type="image/png"),
                 ],
             )

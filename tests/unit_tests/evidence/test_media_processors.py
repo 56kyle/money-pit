@@ -5,15 +5,21 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+from pydantic import SecretStr
+from pydantic import ValidationError
 
+from money_pit.evidence import media as media_module
 from money_pit.evidence.media import FrameReading
 from money_pit.evidence.media import MediaAnalysis
 from money_pit.evidence.media import MediaEvidenceProcessor
+from money_pit.evidence.media import OpenAIVisionFrameReader
 from money_pit.evidence.pdf import PdfEvidenceLimitError
 from money_pit.evidence.pdf import PdfEvidenceProcessor
+from money_pit.prompt_loader import system_prompt
 from money_pit.schemas.evidence import TimestampLocator
 from money_pit.schemas.sources import RawArtifact
 from money_pit.schemas.sources import SourceItem
+from money_pit.secrets import OpenAICredentials
 from money_pit.sources.errors import SourceExtractionError
 
 
@@ -89,6 +95,81 @@ def test_media_evidence_processor_groups_all_frame_entries_in_one_derived_png_do
         and fragment.locator.bounding_box == (0.1, 0.2, 0.8, 0.9)
         for fragment in derived.document.fragments
     )
+
+
+def test__inference_agent_uses_packaged_video_onscreen_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    expected_prompt = "packaged-video-onscreen-prompt"
+    loaded_prompt_names: list[str] = []
+    agent_system_prompts: list[str] = []
+
+    def load_system_prompt(name: str) -> str:
+        loaded_prompt_names.append(name)
+        return expected_prompt
+
+    def construct_agent(
+        model: object,
+        *,
+        output_type: object,
+        system_prompt: str,
+    ) -> object:
+        del model, output_type
+        agent_system_prompts.append(system_prompt)
+        return object()
+
+    monkeypatch.setattr(media_module, "system_prompt", load_system_prompt)
+    monkeypatch.setattr(media_module, "Agent", construct_agent)
+    reader = OpenAIVisionFrameReader(
+        lambda: OpenAICredentials(api_key=SecretStr("test-key")),
+        "test-model",
+    )
+
+    _ = reader._inference_agent()  # pyright: ignore[reportPrivateUsage]
+
+    assert (loaded_prompt_names, agent_system_prompts) == (
+        ["agent_video_onscreen"],
+        [expected_prompt],
+    )
+
+
+def test_agent_video_onscreen_system_prompt_covers_vision_draft_fields() -> None:
+    prompt = system_prompt("agent_video_onscreen")
+    field_names = media_module._VisionDraft.model_fields  # pyright: ignore[reportPrivateUsage]
+
+    assert {name for name in field_names if f"`{name}`" not in prompt} == set()
+
+
+@pytest.mark.parametrize(
+    "bounding_box",
+    [(-0.01, 0.0, 1.0, 1.0), (0.0, 0.0, 1.01, 1.0)],
+)
+def test__vision_draft_with_bounding_box_coordinate_outside_normalized_range(
+    bounding_box: tuple[float, float, float, float],
+) -> None:
+    with pytest.raises(ValidationError):
+        _ = media_module._VisionDraft(  # pyright: ignore[reportPrivateUsage]
+            bounding_box=bounding_box,
+        )
+
+
+@pytest.mark.parametrize(
+    "bounding_box",
+    [(0.75, 0.0, 0.25, 1.0), (0.0, 0.75, 1.0, 0.25)],
+)
+def test__vision_draft_with_reversed_bounding_box_geometry(
+    bounding_box: tuple[float, float, float, float],
+) -> None:
+    with pytest.raises(ValidationError):
+        _ = media_module._VisionDraft(  # pyright: ignore[reportPrivateUsage]
+            bounding_box=bounding_box,
+        )
+
+
+def test__vision_draft_with_exact_normalized_bounding_box_boundary() -> None:
+    draft = media_module._VisionDraft(  # pyright: ignore[reportPrivateUsage]
+        bounding_box=(0.0, 0.0, 1.0, 1.0),
+    )
+
+    assert draft.bounding_box == (0.0, 0.0, 1.0, 1.0)
 
 
 def test_pdf_evidence_processor_enforces_its_byte_bound_before_optional_import() -> None:

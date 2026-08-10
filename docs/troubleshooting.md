@@ -2,7 +2,7 @@
 
 ## SecretSpec cannot resolve a scope
 
-Run `secretspec check --scope SCOPE --reason "Diagnose money-pit credentials"`. Confirm that local use selects the `development` keyring profile; an unset `SECRETSPEC_PROFILE` selects it automatically. For environment-backed automation, set `SECRETSPEC_PROFILE=ci` explicitly and supply only the names declared for that scope. money-pit does not load `.env` files and does not fall back between providers. A blank profile selector is invalid.
+Run `secretspec check --scope SCOPE --reason "Diagnose money-pit credentials"`. Confirm that local use selects the `development` keyring profile; an unset `SECRETSPEC_PROFILE` selects it automatically. For environment-backed automation, set `SECRETSPEC_PROFILE=ci` explicitly and supply every name declared for the requested scope. You do not need names from unrequested scopes. money-pit does not load `.env` files and does not fall back between providers. A blank profile selector is invalid.
 
 ## Database fingerprint rejected
 

@@ -3,7 +3,7 @@
 from money_pit.config import StrategyIntelligenceConfig
 from money_pit.schemas.sources import SourceDefinition
 from money_pit.secrets import CredentialResolutionError
-from money_pit.secrets import OpenAICredentials
+from money_pit.secrets import InferenceCredentialResolver
 from money_pit.secrets import SourceCredentialResolver
 from money_pit.sources.feeds import FeedConnector
 from money_pit.sources.http import WebConnector
@@ -20,6 +20,8 @@ from money_pit.sources.sec import SecFilingsConnector
 def builtin_adapter_registry(
     credentials: SourceCredentialResolver | None,
     strategy: StrategyIntelligenceConfig,
+    *,
+    inference_credentials: InferenceCredentialResolver | None = None,
 ) -> AdapterRegistry:
     """Return a fresh registry containing every bundled connector."""
     registry = AdapterRegistry()
@@ -49,13 +51,20 @@ def builtin_adapter_registry(
 
         if credentials is None:
             raise CredentialResolutionError("YouTube synchronization requires a credential resolver.")
-        resolved = credentials.youtube_media(reason=f"Synchronize YouTube source {definition.source_id}")
+        if inference_credentials is None:
+            raise CredentialResolutionError("YouTube ingestion requires an inference credential resolver.")
+        source_credentials: SourceCredentialResolver = credentials
+        media_inference_credentials: InferenceCredentialResolver = inference_credentials
         return YouTubeConnector(
             definition,
-            resolved.youtube_api_key,
+            lambda: source_credentials.youtube_discovery(
+                reason=f"Discover uploads for YouTube source {definition.source_id}",
+            ).youtube_api_key,
             DefaultMediaAnalyzer(
                 frame_reader=OpenAIVisionFrameReader(
-                    lambda: OpenAICredentials(api_key=resolved.openai_api_key),
+                    lambda: media_inference_credentials.openai(
+                        reason="Interpret financial evidence in a video frame",
+                    ),
                     strategy.llm_model,
                 )
             ),

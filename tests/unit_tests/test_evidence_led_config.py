@@ -15,9 +15,11 @@ from money_pit.config import canonical_config_hash
 from money_pit.evidence.media import OpenAIVisionFrameReader
 from money_pit.portfolio.runtime import ConfiguredTaxLotProvider
 from money_pit.schemas.sources import SourceRegistryDocument
+from money_pit.secrets import InferenceCredentialResolver
 from money_pit.secrets import OpenAICredentials
-from money_pit.secrets import YouTubeMediaCredentials
+from money_pit.secrets import YouTubeDiscoveryCredentials
 from money_pit.sources.builtin import builtin_adapter_registry
+from money_pit.sources.local import LocalFileConnector
 from money_pit.sources.youtube import YouTubeConnector
 from money_pit.sources.youtube import YouTubeConnectorConfig
 
@@ -115,12 +117,28 @@ class _YouTubeCredentials:
     def __init__(self) -> None:
         self.reasons: list[str] = []
 
-    def youtube_media(self, *, reason: str) -> YouTubeMediaCredentials:
+    def youtube_discovery(self, *, reason: str) -> YouTubeDiscoveryCredentials:
         self.reasons.append(reason)
-        return YouTubeMediaCredentials(
+        return YouTubeDiscoveryCredentials(
             youtube_api_key=SecretStr("youtube-key"),
-            openai_api_key=SecretStr("frame-key"),
         )
+
+
+class _InferenceCredentials:
+    def __init__(self) -> None:
+        self.reasons: list[str] = []
+
+    def openai(self, *, reason: str) -> OpenAICredentials:
+        self.reasons.append(reason)
+        return OpenAICredentials(api_key=SecretStr("frame-key"))
+
+
+class _RejectSourceCredentials:
+    def imap(self, *, reason: str) -> None:
+        raise AssertionError(f"non-credential source path resolved IMAP credentials: {reason}")
+
+    def youtube_discovery(self, *, reason: str) -> None:
+        raise AssertionError(f"non-credential source path resolved YouTube credentials: {reason}")
 
 
 def test_builtin_adapter_registry_resolves_youtube_only_when_connector_is_requested() -> None:
@@ -128,15 +146,39 @@ def test_builtin_adapter_registry_resolves_youtube_only_when_connector_is_reques
     strategy = StrategyIntelligenceConfig.model_validate(_toml(_EXAMPLES / "strategy.example.toml"))
     definition = next(source for source in sources.sources if source.adapter_name == "youtube")
     credentials = _YouTubeCredentials()
+    inference_credentials = _InferenceCredentials()
     # The focused test double intentionally implements only the capability exercised by this factory.
     credential_resolver = cast("SourceCredentialResolver", cast("object", credentials))
-    registry = builtin_adapter_registry(credential_resolver, strategy)
-    assert credentials.reasons == []
+    inference_resolver = cast("InferenceCredentialResolver", cast("object", inference_credentials))
+    registry = builtin_adapter_registry(
+        credential_resolver,
+        strategy,
+        inference_credentials=inference_resolver,
+    )
 
     connector = registry.create(definition)
-
     assert isinstance(connector, YouTubeConnector)
-    assert credentials.reasons == [f"Synchronize YouTube source {definition.source_id}"]
+    assert (credentials.reasons, inference_credentials.reasons) == ([], [])
+
+    _ = connector._api_key()  # pyright: ignore[reportPrivateUsage]  # Pins lazy discovery authority.
+
+    assert (credentials.reasons, inference_credentials.reasons) == (
+        [f"Discover uploads for YouTube source {definition.source_id}"],
+        [],
+    )
+
+
+def test_builtin_adapter_registry_noncredential_source_does_not_resolve_imap_or_youtube() -> None:
+    sources = SourceRegistryDocument.model_validate(_toml(_EXAMPLES / "sources.example.toml"))
+    strategy = StrategyIntelligenceConfig.model_validate(_toml(_EXAMPLES / "strategy.example.toml"))
+    definition = sources.sources[0].model_copy(
+        update={"source_id": "local", "adapter_name": "local_text", "locator": "local.txt", "adapter_config": {}}
+    )
+    credentials = cast("SourceCredentialResolver", cast("object", _RejectSourceCredentials()))
+
+    connector = builtin_adapter_registry(credentials, strategy).create(definition)
+
+    assert isinstance(connector, LocalFileConnector)
 
 
 def test_youtube_connector_config_has_no_ambient_environment_contract() -> None:

@@ -27,11 +27,15 @@ from money_pit.schemas.sources import SourceTrustSetting
 from money_pit.schemas.sources import TrustCategory
 from money_pit.schemas.sources import TrustLevel
 from money_pit.sources._shared import source_definition_hash
+from money_pit.sources.errors import ConnectorConfigurationError
+from money_pit.sources.errors import InvalidYouTubeVideoUrlError
 from money_pit.sources.errors import SourceDiscoveryError
 from money_pit.sources.errors import SourceFetchError
+from money_pit.sources.errors import YouTubeSourceMembershipError
 from money_pit.sources.http import HttpResponse
 from money_pit.sources.http import HttpTransport
 from money_pit.sources.youtube import YouTubeConnector
+from money_pit.sources.youtube import YouTubeMediaAcquisition
 from money_pit.sources.youtube import YtDlpMediaTransport
 
 
@@ -67,12 +71,25 @@ class _SequenceHttpTransport:
 
 
 class _MediaTransport:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        video_id: str = "dQw4w9WgXcQ",
+        channel_id: str = "UCAAAAAAAAAAAAAAAAAAAAAA",
+    ) -> None:
         self.calls: list[tuple[str, int, float]] = []
+        self._video_id: str = video_id
+        self._channel_id: str = channel_id
 
-    def fetch(self, url: str, *, maximum_bytes: int, timeout_seconds: float) -> tuple[bytes, str, str]:
+    def fetch(self, url: str, *, maximum_bytes: int, timeout_seconds: float) -> YouTubeMediaAcquisition:
         self.calls.append((url, maximum_bytes, timeout_seconds))
-        return VIDEO, "video/mp4", "video.mp4"
+        return YouTubeMediaAcquisition(
+            content=VIDEO,
+            media_type="video/mp4",
+            filename=Path("video.mp4"),
+            video_id=self._video_id,
+            channel_id=self._channel_id,
+        )
 
 
 class _UnusedMediaAnalyzer:
@@ -84,7 +101,7 @@ def _definition() -> SourceDefinition:
     return SourceDefinition(
         source_id="youtube",
         adapter_name="youtube",
-        locator="uploads-playlist",
+        locator="UUAAAAAAAAAAAAAAAAAAAAAA",
         provenance_group="channel",
         allowed_uses=(AllowedUse.INTERPRETATION,),
         trust_settings=(SourceTrustSetting(category=TrustCategory.FACTUAL, level=TrustLevel.COMMENTARY),),
@@ -102,7 +119,7 @@ def _connector(
 ) -> YouTubeConnector:
     return YouTubeConnector(
         definition,
-        SecretStr("configured-key"),
+        lambda: SecretStr("configured-key"),
         _UnusedMediaAnalyzer(),
         transport,
         media_transport,
@@ -116,12 +133,12 @@ def _item(
     definition_hash: str | None = None,
 ) -> SourceItem:
     return SourceItem(
-        source_item_id="youtube:playlist-item",
+        source_item_id="youtube:dQw4w9WgXcQ",
         source_id=source_id,
         source_definition_hash=definition_hash or source_definition_hash(definition),
-        canonical_uri="https://www.youtube.com/watch?v=video-id",
+        canonical_uri="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
         discovered_at=NOW,
-        content_version="playlist-item",
+        content_version="dQw4w9WgXcQ",
     )
 
 
@@ -140,7 +157,7 @@ def test_youtube_connector_fetch_returns_injected_video_media_not_watch_html() -
     assert b"<html" not in artifact.content
     assert artifact.source_item.content_version == hashlib.sha256(VIDEO).hexdigest()
     assert media_transport.calls == [
-        ("https://www.youtube.com/watch?v=video-id", 1_024, 7.0),
+        ("https://www.youtube.com/watch?v=dQw4w9WgXcQ", 1_024, 7.0),
     ]
 
 
@@ -166,6 +183,109 @@ def test_youtube_connector_fetch_rejects_an_item_outside_its_source_identity(
         )
 
     assert media_transport.calls == []
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        "https://youtu.be/dQw4w9WgXcQ",
+    ],
+)
+def test_source_item_from_url_canonicalizes_video_identity_without_discovery_credentials(
+    url: str,
+) -> None:
+    credential_calls = 0
+
+    def discovery_api_key() -> SecretStr:
+        nonlocal credential_calls
+        credential_calls += 1
+        raise AssertionError("direct ingestion must not resolve discovery credentials")
+
+    connector = YouTubeConnector(
+        _definition(),
+        discovery_api_key,
+        _UnusedMediaAnalyzer(),
+        _UnusedHttpTransport(),
+        _MediaTransport(),
+    )
+
+    item = connector.source_item_from_url(url)
+
+    assert (item.source_item_id, item.content_version, str(item.canonical_uri)) == (
+        "youtube:dQw4w9WgXcQ",
+        "dQw4w9WgXcQ",
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    )
+    assert credential_calls == 0
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        "https://www.youtube.com/channel/dQw4w9WgXcQ",
+        "https://www.youtube.com/playlist?list=dQw4w9WgXcQ",
+        "https://www.youtube.com/watch?v=short",
+        "https://example.com/watch?v=dQw4w9WgXcQ",
+        "https://[::1/watch?v=dQw4w9WgXcQ",
+        "https://www.youtube.com:invalid/watch?v=dQw4w9WgXcQ",
+    ],
+)
+def test_source_item_from_url_with_invalid_video_url(url: str) -> None:
+    connector = _connector(_definition(), _UnusedHttpTransport(), _MediaTransport())
+
+    with pytest.raises(InvalidYouTubeVideoUrlError):
+        _ = connector.source_item_from_url(url)
+
+
+def test_discover_resolves_and_uses_the_discovery_api_key() -> None:
+    credential_calls = 0
+    transport = _StaticHttpTransport(
+        HttpResponse(b'{"items":[]}', "application/json", "https://example.test"),
+    )
+
+    def discovery_api_key() -> SecretStr:
+        nonlocal credential_calls
+        credential_calls += 1
+        return SecretStr("playlist-key")
+
+    connector = YouTubeConnector(
+        _definition(),
+        discovery_api_key,
+        _UnusedMediaAnalyzer(),
+        transport,
+        _MediaTransport(),
+    )
+
+    _ = connector.discover(None)
+
+    assert (credential_calls, "key=playlist-key" in transport.calls[0]) == (1, True)
+
+
+def test_discover_with_blank_discovery_api_key() -> None:
+    connector = YouTubeConnector(
+        _definition(),
+        lambda: SecretStr(""),
+        _UnusedMediaAnalyzer(),
+        _UnusedHttpTransport(),
+        _MediaTransport(),
+    )
+
+    with pytest.raises(ConnectorConfigurationError):
+        _ = connector.discover(None)
+
+
+def test_fetch_rejects_media_reported_by_yt_dlp_from_another_channel() -> None:
+    definition = _definition()
+    connector = _connector(
+        definition,
+        _UnusedHttpTransport(),
+        _MediaTransport(channel_id="UCBBBBBBBBBBBBBBBBBBBBBB"),
+    )
+
+    with pytest.raises(YouTubeSourceMembershipError):
+        _ = connector.fetch(_item(definition))
 
 
 def test_youtube_discovery_uses_the_stable_video_id_not_playlist_item_identity() -> None:
@@ -301,7 +421,11 @@ class _FakeYoutubeDl:
                 _ = hook({})
         output = str(self._options["outtmpl"]).replace("%(ext)s", self.extension)
         _ = Path(output).write_bytes(VIDEO)
-        return {}
+        return {
+            "id": "dQw4w9WgXcQ",
+            "channel_id": "UCAAAAAAAAAAAAAAAAAAAAAA",
+            "upload_date": "20260809",
+        }
 
 
 @pytest.mark.parametrize(
@@ -317,13 +441,13 @@ def test_yt_dlp_media_transport_maps_the_downloaded_container_mime(
     _FakeYoutubeDl.invoke_hook = False
     monkeypatch.setitem(sys.modules, "yt_dlp", SimpleNamespace(YoutubeDL=_FakeYoutubeDl))
 
-    _, media_type, filename = YtDlpMediaTransport().fetch(
+    acquisition = YtDlpMediaTransport().fetch(
         "https://www.youtube.com/watch?v=video-id",
         maximum_bytes=1_024,
         timeout_seconds=7,
     )
 
-    assert (media_type, Path(filename).suffix) == (expected_media_type, f".{extension}")
+    assert (acquisition.media_type, acquisition.filename.suffix) == (expected_media_type, f".{extension}")
 
 
 def test_yt_dlp_media_transport_normalizes_elapsed_hook_timeout(

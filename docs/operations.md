@@ -4,7 +4,7 @@ All development and automated tests must use a temporary data root. Never run de
 
 Database initialization is fail-closed. An unknown non-empty schema is an operator error; the application does not upgrade or rewrite it. Back up runtime state before changing deployed configuration.
 
-Before a credential-dependent operation, run `secretspec check --scope SCOPE --reason "REASON"`. Use `inference`, `youtube_media`, `imap`, `brave`, `edgar`, `fred`, `portfolio_paper`, `portfolio_live`, `execution_paper`, or `execution_live`. Do not pass credential values on command lines or store them in configuration files.
+Before a credential-dependent operation, run `secretspec check --scope SCOPE --reason "REASON"`. Use `inference`, `youtube_discovery`, `imap`, `brave`, `edgar`, `fred`, `portfolio_paper`, `portfolio_live`, `execution_paper`, or `execution_live`. Supply every credential in the requested scope. Credentials in scopes that the operation does not request are not prerequisites. Direct YouTube URL ingestion does not request `youtube_discovery`; its media processing requests `inference` only when frame interpretation needs it. Do not pass credential values on command lines or store them in configuration files.
 
 Before execution, inspect the exact plan hash, expiry, trades, rejected candidates, evidence gates, and constraint results. Approval covers only that hash. A changed plan requires a new approval.
 

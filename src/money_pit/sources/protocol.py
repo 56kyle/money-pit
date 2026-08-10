@@ -1,6 +1,7 @@
 """Module containing transport-neutral source connector protocols."""
 
 from typing import Protocol
+from typing import runtime_checkable
 
 from money_pit.schemas.evidence import EvidenceDocument
 from money_pit.schemas.sources import DiscoveryBatch
@@ -28,4 +29,13 @@ class SourceConnector(Protocol):
 
     def extract(self, artifact: RawArtifact) -> EvidenceDocument:
         """Extract traceable evidence without granting execution capabilities."""
+        ...
+
+
+@runtime_checkable
+class DirectUrlSourceConnector(Protocol):
+    """Connector capability for one caller-selected URL."""
+
+    def source_item_from_url(self, url: str) -> SourceItem:
+        """Validate a URL and return its stable configured-source identity."""
         ...

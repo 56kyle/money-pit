@@ -42,7 +42,7 @@ class SecretScope(StrEnum):
     """Named SecretSpec allowlists aligned with runtime capabilities."""
 
     INFERENCE = "inference"
-    YOUTUBE_MEDIA = "youtube_media"
+    YOUTUBE_DISCOVERY = "youtube_discovery"
     IMAP = "imap"
     BRAVE = "brave"
     EDGAR = "edgar"
@@ -61,11 +61,10 @@ class OpenAICredentials:
 
 
 @dataclass(frozen=True)
-class YouTubeMediaCredentials:
-    """Credentials required to acquire and interpret YouTube media."""
+class YouTubeDiscoveryCredentials:
+    """Credential delivered only to YouTube playlist discovery."""
 
     youtube_api_key: SecretStr
-    openai_api_key: SecretStr
 
 
 @dataclass(frozen=True)
@@ -122,8 +121,8 @@ class InferenceCredentialResolver(Protocol):
 class SourceCredentialResolver(Protocol):
     """Credential authority available to durable source acquisition."""
 
-    def youtube_media(self, *, reason: str) -> YouTubeMediaCredentials:
-        """Resolve YouTube acquisition and frame-inference credentials."""
+    def youtube_discovery(self, *, reason: str) -> YouTubeDiscoveryCredentials:
+        """Resolve YouTube playlist-discovery credentials."""
         ...
 
     def imap(self, *, reason: str) -> ImapCredentials:
@@ -240,12 +239,11 @@ class SecretSpecInferenceResolver(SecretSpecResolver):
 class SecretSpecSourceResolver(SecretSpecResolver):
     """SecretSpec resolver exposing only source-acquisition authority."""
 
-    def youtube_media(self, *, reason: str) -> YouTubeMediaCredentials:
-        """Resolve YouTube and OpenAI credentials from their joint scope."""
-        fields = self._resolve(SecretScope.YOUTUBE_MEDIA, reason=reason)
-        return YouTubeMediaCredentials(
+    def youtube_discovery(self, *, reason: str) -> YouTubeDiscoveryCredentials:
+        """Resolve the YouTube Data API credential from its discovery scope."""
+        fields = self._resolve(SecretScope.YOUTUBE_DISCOVERY, reason=reason)
+        return YouTubeDiscoveryCredentials(
             youtube_api_key=SecretStr(_required(fields, "YOUTUBE_API_KEY")),
-            openai_api_key=SecretStr(_required(fields, "OPENAI_API_KEY")),
         )
 
     def imap(self, *, reason: str) -> ImapCredentials:

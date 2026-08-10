@@ -13,7 +13,7 @@ money-pit 0.0.2 is one persistent staged system. SQLite owns cross-run intellige
 
 Agents receive typed outputs and only the capabilities required by their stage. A1–A5 cannot construct a broker writer. Deterministic code owns identity, freshness, temporal admission, capital eligibility, optimization, hashes, approvals, and execution controls.
 
-SecretSpec resolves credentials at the outer capability boundary. The application converts each allowlisted result into a frozen typed credential and closes the SDK result. It does not export credentials into process state. Paper and live portfolio and execution scopes are separate. Replay constructs no credential resolver.
+SecretSpec resolves credentials at the outer capability boundary. Each credential is required within its scope, not across the complete manifest. Disabled providers and adapters do not request their scopes. If the application invokes an enabled capability, a missing or blank credential causes a typed error that does not include credential values. The application converts each allowlisted result into a frozen typed credential and closes the SDK result. It does not export credentials into process state. Paper and live portfolio and execution scopes are separate. Replay constructs no credential resolver.
 
 ## Persistence and replay
 

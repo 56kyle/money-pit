@@ -20,17 +20,21 @@ from pydantic import Field
 from money_pit.evidence.admission import materialize_processing_bundle
 from money_pit.evidence.errors import EvidenceProcessingError
 from money_pit.evidence.errors import EvidenceProcessorNotFoundError
+from money_pit.evidence.repository import persist_processing_attempt
 from money_pit.evidence.results import EvidenceProcessingBundle
 from money_pit.schemas.evidence import EvidenceDocument
 from money_pit.schemas.evidence import EvidenceProcessingAttempt
 from money_pit.schemas.evidence import EvidenceProcessingStatus
 from money_pit.schemas.sources import SourceCursor
 from money_pit.schemas.sources import SourceCursorPurpose
+from money_pit.schemas.sources import SourceItem
 from money_pit.sources._shared import evidence_asset
 from money_pit.sources._shared import utc_now
 from money_pit.sources.errors import SourceDiscoveryError
 from money_pit.sources.errors import SourceError
 from money_pit.sources.errors import SourceExtractionError
+from money_pit.sources.errors import UnsupportedDirectIngestionError
+from money_pit.sources.protocol import DirectUrlSourceConnector
 from money_pit.storage.database import Database
 from money_pit.storage.database import TransactionMode
 
@@ -44,7 +48,6 @@ if TYPE_CHECKING:
     from money_pit.schemas.evidence import EvidenceFragment
     from money_pit.schemas.sources import RawArtifact
     from money_pit.schemas.sources import SourceDefinition
-    from money_pit.schemas.sources import SourceItem
     from money_pit.schemas.sources import SourceRegistryDocument
     from money_pit.sources.protocol import SourceConnector
     from money_pit.sources.registry import AdapterRegistry
@@ -82,7 +85,6 @@ class SourceStateRepository(Protocol):
         """Delete one cursor timeline, returning whether it existed."""
         ...
 
-
 class SourceSyncResult(BaseModel):
     """Durable outcome of synchronizing one configured source."""
 
@@ -93,6 +95,17 @@ class SourceSyncResult(BaseModel):
     persisted_count: int = Field(ge=0)
     evidence_document_count: int = Field(ge=0)
     next_cursor: SourceCursor | None
+
+
+class SourceIngestResult(BaseModel):
+    """Durable outcome of ingesting one caller-selected source item."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    source_id: str
+    source_item_id: str
+    ingested_count: int = Field(default=1, ge=1, le=1)
+    evidence_document_count: int = Field(ge=0)
 
 
 @dataclass(frozen=True)
@@ -110,6 +123,7 @@ class SourceIngestionPersistenceResult(BaseModel):
 
     persisted_item_count: int = Field(ge=0)
     changed_evidence_document_count: int = Field(ge=0)
+    normalized_source_items: tuple[SourceItem, ...]
 
 
 class EvidenceRepository:
@@ -148,10 +162,12 @@ class EvidenceRepository:
         next_cursor: SourceCursor | None,
         updated_at: datetime,
         cursor_purpose: SourceCursorPurpose = SourceCursorPurpose.SYNC,
+        attempts: tuple[EvidenceProcessingAttempt, ...] = (),
     ) -> SourceIngestionPersistenceResult:
         """Persist item versions, evidence, search rows, and cursor atomically."""
         persisted_item_count: int = 0
         changed_evidence_document_count: int = 0
+        normalized_source_items: list[SourceItem] = []
         with self._database.transaction(TransactionMode.WRITE) as connection:
             for record in records:
                 item: SourceItem = record.source_item
@@ -159,7 +175,9 @@ class EvidenceRepository:
                     raise SourceDiscoveryError(
                         f"Item {item.source_item_id!r} belongs to {item.source_id!r}, not {source_id!r}"
                     )
-                if self._persist_source_item(connection, item):
+                inserted, item = self._persist_source_item(connection, item)
+                normalized_source_items.append(item)
+                if inserted:
                     persisted_item_count += 1
                 document: EvidenceDocument = record.evidence_document
                 changed: bool = self._persist_asset(connection, document)
@@ -182,16 +200,19 @@ class EvidenceRepository:
                 updated_at=updated_at,
                 cursor_purpose=cursor_purpose,
             )
+            for attempt in attempts:
+                _ = persist_processing_attempt(connection, attempt)
         return SourceIngestionPersistenceResult(
             persisted_item_count=persisted_item_count,
             changed_evidence_document_count=changed_evidence_document_count,
+            normalized_source_items=tuple(normalized_source_items),
         )
 
     @staticmethod
     def _persist_source_item(
         connection: sqlite3.Connection,
         item: SourceItem,
-    ) -> bool:
+    ) -> tuple[bool, SourceItem]:
         existing: sqlite3.Row | None = cast(
             "sqlite3.Row | None",
             connection.execute(
@@ -204,26 +225,40 @@ class EvidenceRepository:
                 (item.source_item_id, item.content_version),
             ).fetchone(),
         )
-        values: tuple[str, str, str, str | None, str | None, str] = (
+        invariant_values: tuple[str, str, str] = (
             item.source_id,
             item.source_definition_hash,
             item.canonical_uri,
+        )
+        temporal_values: tuple[str | None, str | None, str] = (
             _optional_utc_text(item.published_at),
             _optional_utc_text(item.updated_at),
             _utc_text(item.discovered_at),
         )
         if existing is not None:
-            durable_values: tuple[str, str, str, str | None, str | None, str] = (
+            durable_invariant_values: tuple[str, str, str] = (
                 str(_column(existing, "source_id")),
                 str(_column(existing, "source_definition_hash")),
                 str(_column(existing, "canonical_uri")),
-                _optional_text(_column(existing, "published_at")),
-                _optional_text(_column(existing, "updated_at")),
-                str(_column(existing, "discovered_at")),
             )
-            if durable_values != values:
+            if durable_invariant_values != invariant_values:
                 raise SourceDiscoveryError("Source item version identity collision")
-            return False
+            try:
+                durable_item = SourceItem.model_validate(
+                    {
+                        "source_item_id": item.source_item_id,
+                        "source_id": durable_invariant_values[0],
+                        "source_definition_hash": durable_invariant_values[1],
+                        "canonical_uri": durable_invariant_values[2],
+                        "published_at": _optional_text(_column(existing, "published_at")),
+                        "updated_at": _optional_text(_column(existing, "updated_at")),
+                        "discovered_at": str(_column(existing, "discovered_at")),
+                        "content_version": item.content_version,
+                    },
+                )
+            except ValueError as error:
+                raise SourceDiscoveryError("Stored source item version is malformed") from error
+            return False, durable_item
         _ = connection.execute(
             """
             INSERT INTO source_items (
@@ -232,9 +267,9 @@ class EvidenceRepository:
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (item.source_item_id, *values, item.content_version),
+            (item.source_item_id, *invariant_values, *temporal_values, item.content_version),
         )
-        return True
+        return True, item
 
     @staticmethod
     def _require_source_item(
@@ -538,6 +573,36 @@ class SourceSyncService:
                 break
         return tuple(results)
 
+    def ingest(self, source_id: str, url: str) -> SourceIngestResult:
+        """Ingest one caller-selected URL without reading or changing discovery cursors."""
+        definition: SourceDefinition = self._definition(source_id)
+        connector: SourceConnector = self._adapters.create(definition)
+        if not isinstance(connector, DirectUrlSourceConnector):
+            raise UnsupportedDirectIngestionError(
+                f"Source adapter does not support direct URL ingestion: {definition.adapter_name}",
+            )
+        item: SourceItem = connector.source_item_from_url(url)
+        artifact: RawArtifact = connector.fetch(item)
+        records, attempts = self._process_artifact(
+            definition.source_id,
+            connector,
+            artifact,
+            cursor_purpose=SourceCursorPurpose.SYNC,
+        )
+        persistence: SourceIngestionPersistenceResult = self._evidence_repository.persist_ingestion_batch(
+            definition.source_id,
+            records,
+            next_cursor=None,
+            updated_at=utc_now(),
+            cursor_purpose=SourceCursorPurpose.SYNC,
+            attempts=attempts,
+        )
+        return SourceIngestResult(
+            source_id=definition.source_id,
+            source_item_id=artifact.source_item.source_item_id,
+            evidence_document_count=persistence.changed_evidence_document_count,
+        )
+
     def _definition(self, source_id: str) -> SourceDefinition:
         for definition in self._registry_document.sources:
             if definition.source_id == source_id:
@@ -573,9 +638,8 @@ class SourceSyncService:
             next_cursor=batch.next_cursor,
             updated_at=utc_now(),
             cursor_purpose=cursor_purpose,
+            attempts=tuple(attempts),
         )
-        for attempt in attempts:
-            _ = self._attempt_repository.persist(attempt)
         return SourceSyncResult(
             source_id=definition.source_id,
             discovered_count=len(batch.items),
@@ -599,12 +663,17 @@ class SourceSyncService:
             asset=evidence_asset(artifact).model_copy(update={"local_path": stored.path}),
             fragments=(),
         )
-        _ = self._evidence_repository.persist_ingestion_batch(
+        raw_persistence = self._evidence_repository.persist_ingestion_batch(
             source_id,
             (SourceIngestionRecord(source_item=artifact.source_item, evidence_document=raw_document),),
             next_cursor=None,
             updated_at=utc_now(),
             cursor_purpose=cursor_purpose,
+        )
+        if len(raw_persistence.normalized_source_items) != 1:
+            raise SourceDiscoveryError("Raw source ingestion returned an invalid normalized identity")
+        artifact = artifact.model_copy(
+            update={"source_item": raw_persistence.normalized_source_items[0]},
         )
         started_at = utc_now()
         processor_identity = self._processor_identity(connector, artifact)

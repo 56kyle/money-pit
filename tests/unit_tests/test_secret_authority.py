@@ -21,7 +21,7 @@ _CREDENTIAL_METHODS = {
     "fred",
     "imap",
     "openai",
-    "youtube_media",
+    "youtube_discovery",
 }
 
 
@@ -29,7 +29,7 @@ _CREDENTIAL_METHODS = {
     ("protocol", "expected_methods"),
     [
         pytest.param(InferenceCredentialResolver, {"openai"}, id="inference"),
-        pytest.param(SourceCredentialResolver, {"imap", "youtube_media"}, id="source"),
+        pytest.param(SourceCredentialResolver, {"imap", "youtube_discovery"}, id="source"),
         pytest.param(ResearchCredentialResolver, {"brave", "edgar", "fred"}, id="research"),
         pytest.param(PortfolioCredentialResolver, {"alpaca_portfolio"}, id="portfolio"),
         pytest.param(ExecutionCredentialResolver, {"alpaca_execution"}, id="execution"),
@@ -49,7 +49,7 @@ def test_credential_resolver_protocol_exposes_only_its_capability(
     [
         pytest.param(SecretSpecResolver, set[str](), id="base"),
         pytest.param(SecretSpecInferenceResolver, {"openai"}, id="inference"),
-        pytest.param(SecretSpecSourceResolver, {"imap", "youtube_media"}, id="source"),
+        pytest.param(SecretSpecSourceResolver, {"imap", "youtube_discovery"}, id="source"),
         pytest.param(SecretSpecResearchResolver, {"brave", "edgar", "fred"}, id="research"),
         pytest.param(SecretSpecPortfolioResolver, {"alpaca_portfolio"}, id="portfolio"),
         pytest.param(SecretSpecExecutionResolver, {"alpaca_execution"}, id="execution"),

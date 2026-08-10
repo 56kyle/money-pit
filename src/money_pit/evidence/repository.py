@@ -28,50 +28,58 @@ class EvidenceProcessingAttemptRepository:
     def persist(self, attempt: EvidenceProcessingAttempt) -> bool:
         """Persist one exact attempt, returning whether it was new."""
         with self._database.transaction(TransactionMode.WRITE) as connection:
-            existing: sqlite3.Row | None = cast(
-                "sqlite3.Row | None",
-                connection.execute(
-                    """
-                    SELECT source_item_id, content_version, asset_id, processor_name,
-                           processor_version, started_at, completed_at, status,
-                           failure_kind, document_id, fragment_ids_json
-                    FROM evidence_processing_attempts WHERE attempt_id = ?
-                    """,
-                    (attempt.attempt_id,),
-                ).fetchone(),
+            return persist_processing_attempt(connection, attempt)
+
+
+def persist_processing_attempt(
+    connection: sqlite3.Connection,
+    attempt: EvidenceProcessingAttempt,
+) -> bool:
+    """Persist one attempt within a caller-owned database transaction."""
+    existing: sqlite3.Row | None = cast(
+        "sqlite3.Row | None",
+        connection.execute(
+            """
+            SELECT source_item_id, content_version, asset_id, processor_name,
+                   processor_version, started_at, completed_at, status,
+                   failure_kind, document_id, fragment_ids_json
+            FROM evidence_processing_attempts WHERE attempt_id = ?
+            """,
+            (attempt.attempt_id,),
+        ).fetchone(),
+    )
+    values: tuple[object, ...] = _attempt_values(attempt)
+    if existing is not None:
+        durable: tuple[object, ...] = tuple(
+            _column(existing, column)
+            for column in (
+                "source_item_id",
+                "content_version",
+                "asset_id",
+                "processor_name",
+                "processor_version",
+                "started_at",
+                "completed_at",
+                "status",
+                "failure_kind",
+                "document_id",
+                "fragment_ids_json",
             )
-            values: tuple[object, ...] = _attempt_values(attempt)
-            if existing is not None:
-                durable: tuple[object, ...] = tuple(
-                    _column(existing, column)
-                    for column in (
-                        "source_item_id",
-                        "content_version",
-                        "asset_id",
-                        "processor_name",
-                        "processor_version",
-                        "started_at",
-                        "completed_at",
-                        "status",
-                        "failure_kind",
-                        "document_id",
-                        "fragment_ids_json",
-                    )
-                )
-                if durable != values:
-                    raise ValueError("Evidence processing attempt identity collision")
-                return False
-            _ = connection.execute(
-                """
-                INSERT INTO evidence_processing_attempts (
-                    attempt_id, source_item_id, content_version, asset_id, processor_name,
-                    processor_version, started_at, completed_at, status,
-                    failure_kind, document_id, fragment_ids_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (attempt.attempt_id, *values),
-            )
-        return True
+        )
+        if durable != values:
+            raise ValueError("Evidence processing attempt identity collision")
+        return False
+    _ = connection.execute(
+        """
+        INSERT INTO evidence_processing_attempts (
+            attempt_id, source_item_id, content_version, asset_id, processor_name,
+            processor_version, started_at, completed_at, status,
+            failure_kind, document_id, fragment_ids_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (attempt.attempt_id, *values),
+    )
+    return True
 
 
 def _attempt_values(attempt: EvidenceProcessingAttempt) -> tuple[object, ...]:

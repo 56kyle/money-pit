@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import cast
 
 import pytest
 import tomllib
@@ -25,7 +26,7 @@ from money_pit.secrets import SecretSpecPortfolioResolver
 from money_pit.secrets import SecretSpecResearchResolver
 from money_pit.secrets import SecretSpecResolver
 from money_pit.secrets import SecretSpecSourceResolver
-from money_pit.secrets import YouTubeMediaCredentials
+from money_pit.secrets import YouTubeDiscoveryCredentials
 from money_pit.storage.database import Database
 
 
@@ -92,13 +93,13 @@ def execution_resolver(secretspec_manifest: Path, secret_environment: dict[str, 
 
 
 @pytest.fixture
-def later_research_config() -> ApplicationConfig:
+def edgar_research_config() -> ApplicationConfig:
     sources = SourceRegistryDocument.model_validate(
         tomllib.loads((_REPOSITORY_ROOT / "config" / "examples" / "sources.example.toml").read_text(encoding="utf-8"))
     )
     enabled_sources = tuple(
         source.model_copy(update={"enabled": True})
-        if {"research-provider", "research-publisher"}.intersection(source.tags)
+        if {"research-provider", "provider:edgar"}.issubset(source.tags)
         else source
         for source in sources.sources
     )
@@ -114,24 +115,22 @@ def later_research_config() -> ApplicationConfig:
 
 
 @pytest.fixture
-def inference_only_resolver(
+def missing_edgar_inference_resolver(
     secretspec_manifest: Path,
+    secret_environment: dict[str, str],
     monkeypatch: MonkeyPatch,
-    tmp_path: Path,
 ) -> SecretSpecInferenceResolver:
-    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
-    for name in _SECRET_NAMES:
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("OPENAI_API_KEY", "dummy-inference-only-key")
+    del secret_environment
+    monkeypatch.delenv("SEC_USER_AGENT")
     return SecretSpecInferenceResolver(secretspec_manifest, profile="ci")
 
 
 @pytest.fixture
-def missing_research_resolver(
+def missing_edgar_research_resolver(
     secretspec_manifest: Path,
-    inference_only_resolver: SecretSpecInferenceResolver,
+    missing_edgar_inference_resolver: SecretSpecInferenceResolver,
 ) -> SecretSpecResearchResolver:
-    del inference_only_resolver
+    del missing_edgar_inference_resolver
     return SecretSpecResearchResolver(secretspec_manifest, profile="ci")
 
 
@@ -144,13 +143,12 @@ def test_secret_spec_resolver_openai_scope(
     )
 
 
-def test_secret_spec_resolver_youtube_media_scope(
+def test_secret_spec_resolver_youtube_discovery_scope(
     source_resolver: SecretSpecSourceResolver,
     secret_environment: dict[str, str],
 ) -> None:
-    assert source_resolver.youtube_media(reason="test media") == YouTubeMediaCredentials(
+    assert source_resolver.youtube_discovery(reason="test discovery") == YouTubeDiscoveryCredentials(
         youtube_api_key=SecretStr(secret_environment["YOUTUBE_API_KEY"]),
-        openai_api_key=SecretStr(secret_environment["OPENAI_API_KEY"]),
     )
 
 
@@ -162,6 +160,54 @@ def test_secret_spec_resolver_imap_scope(
         username=SecretStr(secret_environment["IMAP_USERNAME"]),
         password=SecretStr(secret_environment["IMAP_PASSWORD"]),
     )
+
+
+@pytest.mark.parametrize(
+    "present_names",
+    [
+        pytest.param((), id="missing-pair"),
+        pytest.param(("IMAP_USERNAME",), id="username-only"),
+        pytest.param(("IMAP_PASSWORD",), id="password-only"),
+    ],
+)
+def test_secret_spec_resolver_imap_with_incomplete_pair_is_typed_and_sanitized(
+    secretspec_manifest: Path,
+    secret_environment: dict[str, str],
+    monkeypatch: MonkeyPatch,
+    present_names: tuple[str, ...],
+) -> None:
+    for name in ("IMAP_USERNAME", "IMAP_PASSWORD"):
+        if name not in present_names:
+            monkeypatch.delenv(name)
+
+    with pytest.raises(CredentialResolutionError) as captured:
+        _ = SecretSpecSourceResolver(secretspec_manifest, profile="ci").imap(reason="test incomplete pair")
+
+    assert not any(value in str(captured.value) for value in secret_environment.values())
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    [
+        pytest.param("IMAP_USERNAME", "", id="blank-username"),
+        pytest.param("IMAP_USERNAME", " \t ", id="whitespace-username"),
+        pytest.param("IMAP_PASSWORD", "", id="blank-password"),
+        pytest.param("IMAP_PASSWORD", " \t ", id="whitespace-password"),
+    ],
+)
+def test_secret_spec_resolver_imap_with_blank_pair_field_is_typed_and_sanitized(
+    secretspec_manifest: Path,
+    secret_environment: dict[str, str],
+    monkeypatch: MonkeyPatch,
+    field_name: str,
+    invalid_value: str,
+) -> None:
+    monkeypatch.setenv(field_name, invalid_value)
+
+    with pytest.raises(CredentialResolutionError) as captured:
+        _ = SecretSpecSourceResolver(secretspec_manifest, profile="ci").imap(reason="test blank pair field")
+
+    assert not any(value in str(captured.value) for value in secret_environment.values())
 
 
 def test_secret_spec_resolver_brave_scope(
@@ -182,6 +228,21 @@ def test_secret_spec_resolver_edgar_scope(
     )
 
 
+@pytest.mark.parametrize("invalid_value", [pytest.param("", id="blank"), pytest.param(" \t ", id="whitespace")])
+def test_secret_spec_resolver_edgar_with_blank_identity_is_typed_and_sanitized(
+    secretspec_manifest: Path,
+    secret_environment: dict[str, str],
+    monkeypatch: MonkeyPatch,
+    invalid_value: str,
+) -> None:
+    monkeypatch.setenv("SEC_USER_AGENT", invalid_value)
+
+    with pytest.raises(CredentialResolutionError) as captured:
+        _ = SecretSpecResearchResolver(secretspec_manifest, profile="ci").edgar(reason="test blank identity")
+
+    assert not any(value in str(captured.value) for value in secret_environment.values())
+
+
 def test_secret_spec_resolver_fred_scope(
     research_resolver: SecretSpecResearchResolver,
     secret_environment: dict[str, str],
@@ -192,11 +253,11 @@ def test_secret_spec_resolver_fred_scope(
 
 
 @pytest.mark.parametrize("through", [Stage.A1, Stage.A2])
-def test_build_production_application_dependencies_defers_later_research_credentials(
+def test_build_production_application_dependencies_defers_missing_edgar_identity_before_a3(
     tmp_path: Path,
-    later_research_config: ApplicationConfig,
-    inference_only_resolver: SecretSpecInferenceResolver,
-    missing_research_resolver: SecretSpecResearchResolver,
+    edgar_research_config: ApplicationConfig,
+    missing_edgar_inference_resolver: SecretSpecInferenceResolver,
+    missing_edgar_research_resolver: SecretSpecResearchResolver,
     through: Stage,
 ) -> None:
     database = Database(tmp_path / "stage.sqlite3")
@@ -204,22 +265,22 @@ def test_build_production_application_dependencies_defers_later_research_credent
 
     dependencies = build_production_application_dependencies(
         database=database,
-        config=later_research_config,
+        config=edgar_research_config,
         reports_root=tmp_path / "reports",
         implementation_version="test-stage-authority",
         through=through,
-        inference_credentials=inference_only_resolver,
-        research_credentials=missing_research_resolver,
+        inference_credentials=missing_edgar_inference_resolver,
+        research_credentials=missing_edgar_research_resolver,
     )
 
     assert dependencies.research_providers.names() == ()
 
 
-def test_build_production_application_dependencies_resolves_research_credentials_at_a3(
+def test_build_production_application_dependencies_requires_edgar_identity_at_enabled_a3_boundary(
     tmp_path: Path,
-    later_research_config: ApplicationConfig,
-    inference_only_resolver: SecretSpecInferenceResolver,
-    missing_research_resolver: SecretSpecResearchResolver,
+    edgar_research_config: ApplicationConfig,
+    missing_edgar_inference_resolver: SecretSpecInferenceResolver,
+    missing_edgar_research_resolver: SecretSpecResearchResolver,
 ) -> None:
     database = Database(tmp_path / "stage.sqlite3")
     database.initialize()
@@ -227,13 +288,36 @@ def test_build_production_application_dependencies_resolves_research_credentials
     with pytest.raises(CredentialResolutionError):
         _ = build_production_application_dependencies(
             database=database,
-            config=later_research_config,
+            config=edgar_research_config,
             reports_root=tmp_path / "reports",
             implementation_version="test-stage-authority",
             through=Stage.A3,
-            inference_credentials=inference_only_resolver,
-            research_credentials=missing_research_resolver,
+            inference_credentials=missing_edgar_inference_resolver,
+            research_credentials=missing_edgar_research_resolver,
         )
+
+
+@pytest.mark.parametrize(
+    "invalid_value",
+    [pytest.param(None, id="missing"), pytest.param("", id="blank"), pytest.param(" \t ", id="whitespace")],
+)
+def test_secret_spec_resolver_youtube_discovery_with_invalid_key_is_typed_and_sanitized(
+    secretspec_manifest: Path,
+    secret_environment: dict[str, str],
+    monkeypatch: MonkeyPatch,
+    invalid_value: str | None,
+) -> None:
+    if invalid_value is None:
+        monkeypatch.delenv("YOUTUBE_API_KEY")
+    else:
+        monkeypatch.setenv("YOUTUBE_API_KEY", invalid_value)
+
+    with pytest.raises(CredentialResolutionError) as captured:
+        _ = SecretSpecSourceResolver(secretspec_manifest, profile="ci").youtube_discovery(
+            reason="test missing key"
+        )
+
+    assert not any(value in str(captured.value) for value in secret_environment.values())
 
 
 @pytest.mark.parametrize(
@@ -369,7 +453,7 @@ def test_secret_spec_resolver_does_not_disclose_values_in_credential_representat
 ) -> None:
     credentials = (
         inference_resolver.openai(reason="test inference"),
-        source_resolver.youtube_media(reason="test media"),
+        source_resolver.youtube_discovery(reason="test discovery"),
         source_resolver.imap(reason="test imap"),
         research_resolver.brave(reason="test brave"),
         research_resolver.edgar(reason="test edgar"),
@@ -389,3 +473,45 @@ def test_tracked_manifest_contains_declarations_but_no_values() -> None:
     assert "[profiles.development]" in manifest_text
     assert "[profiles.default]" not in manifest_text
     assert ("value =" in manifest_text, "value=" in manifest_text) == (False, False)
+
+
+def test_tracked_manifest_declares_ci_live_alpaca_credentials_without_merging_paper_scope() -> None:
+    manifest_text = (_REPOSITORY_ROOT / "secretspec.toml").read_text(encoding="utf-8")
+    manifest: dict[str, object] = tomllib.loads(manifest_text)
+    profiles = cast("dict[str, dict[str, dict[str, object]]]", manifest["profiles"])
+    ci_profile = profiles["ci"]
+    scopes = cast("dict[str, dict[str, list[str]]]", manifest["scopes"])
+
+    ci_live_declarations = {
+        name: {"required": ci_profile[name]["required"], "providers": ci_profile[name]["providers"]}
+        for name in ("ALPACA_LIVE_API_KEY", "ALPACA_LIVE_SECRET_KEY")
+    }
+    live_scopes = {name: scopes[name] for name in ("portfolio_live", "execution_live")}
+    paper_scopes = {name: scopes[name] for name in ("portfolio_paper", "execution_paper")}
+
+    assert (
+        ci_live_declarations,
+        live_scopes,
+        paper_scopes,
+    ) == (
+        {
+            "ALPACA_LIVE_API_KEY": {"required": True, "providers": ["ci_env"]},
+            "ALPACA_LIVE_SECRET_KEY": {"required": True, "providers": ["ci_env"]},
+        },
+        {
+            "portfolio_live": {"secrets": ["ALPACA_LIVE_API_KEY", "ALPACA_LIVE_SECRET_KEY"]},
+            "execution_live": {"secrets": ["ALPACA_LIVE_API_KEY", "ALPACA_LIVE_SECRET_KEY"]},
+        },
+        {
+            "portfolio_paper": {"secrets": ["ALPACA_PAPER_API_KEY", "ALPACA_PAPER_SECRET_KEY"]},
+            "execution_paper": {"secrets": ["ALPACA_PAPER_API_KEY", "ALPACA_PAPER_SECRET_KEY"]},
+        },
+    )
+
+
+def test_root_ci_workflows_inject_no_application_credentials() -> None:
+    workflows_root = _REPOSITORY_ROOT / ".github" / "workflows"
+    workflow_paths = (*workflows_root.glob("*.yml"), *workflows_root.glob("*.yaml"))
+    workflow_text = "\n".join(path.read_text(encoding="utf-8") for path in workflow_paths)
+
+    assert not any(name in workflow_text for name in _SECRET_NAMES)

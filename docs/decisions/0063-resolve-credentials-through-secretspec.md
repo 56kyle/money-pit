@@ -38,6 +38,16 @@ is no provider fallback. Named scopes allow only the credentials for inference, 
 research, portfolio reads, or execution. Paper and live Alpaca credentials have distinct names and
 distinct scopes.
 
+YouTube playlist enumeration uses the `youtube_discovery` scope, which contains only
+`YOUTUBE_API_KEY`. Media processing remains under the independent `inference` scope. Constructing a
+YouTube connector does not resolve either credential. Playlist discovery resolves its credential
+lazily, while direct ingestion of a caller-provided video URL bypasses playlist discovery.
+
+The `required` flag applies when SecretSpec resolves a scope that contains the declaration. It does
+not make the complete profile a startup credential bundle. Each scope keeps its atomic credentials
+required. Disabled or uninvoked capabilities do not resolve their scopes. If an enabled capability
+is invoked, missing or blank values fail through the sanitized typed error contract.
+
 The application passes a scope, profile, manifest path, and audit reason to SecretSpec. It converts
 the result into a frozen typed credential and closes the result immediately. It never calls
 `set_as_env`. SDK manifest, profile, and provider failures become configuration failures. Missing or

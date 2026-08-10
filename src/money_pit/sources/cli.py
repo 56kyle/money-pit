@@ -23,6 +23,7 @@ from money_pit.sources.errors import SourceError
 from money_pit.sources.registry import AdapterRegistry
 from money_pit.sources.registry import load_source_registry
 from money_pit.sources.service import EvidenceRepository
+from money_pit.sources.service import SourceIngestResult
 from money_pit.sources.service import SourceSyncResult
 from money_pit.sources.service import SourceSyncService
 from money_pit.sources.service import default_sources_path
@@ -73,7 +74,11 @@ def _source_runtime(
     )
     source_credentials = SecretSpecSourceResolver.from_environment()
     inference_credentials = SecretSpecInferenceResolver.from_environment()
-    adapters: AdapterRegistry = builtin_adapter_registry(source_credentials, configuration.intelligence)
+    adapters: AdapterRegistry = builtin_adapter_registry(
+        source_credentials,
+        configuration.intelligence,
+        inference_credentials=inference_credentials,
+    )
     document: SourceRegistryDocument = load_source_registry(sources_path, adapters)
     database = Database(DATA_ROOT / STATE_DATABASE_FILENAME)
     database.initialize()
@@ -148,7 +153,14 @@ def backfill(
 @source_app.command()
 def ingest(
     source_id: str,
+    url: str,
     sources_path: Path = _DEFAULT_SOURCES_PATH,
 ) -> None:
-    """Ingest one configured manual source through the durable source lifecycle."""
-    sync(source_id=source_id, sources_path=sources_path)
+    """Ingest one caller-selected URL through its configured source policy."""
+    try:
+        service, _ = _source_runtime(sources_path)
+        result: SourceIngestResult = service.ingest(source_id, url)
+    except (ConfigurationError, SourceError, StorageError, OSError) as error:
+        typer.echo(f"Cannot ingest URL for source {source_id}: {error}", err=True)
+        raise typer.Exit(code=1) from error
+    typer.echo(result.model_dump_json(indent=2))

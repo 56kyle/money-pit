@@ -37,8 +37,20 @@ class SourceDiscoveryError(SourceError):
     """Raised when bounded source discovery fails."""
 
 
+class UnsupportedDirectIngestionError(SourceError):
+    """Raised when a configured connector cannot ingest a caller-provided URL."""
+
+
+class InvalidYouTubeVideoUrlError(SourceError):
+    """Raised when direct ingestion receives an invalid YouTube video URL."""
+
+
 class SourceFetchError(SourceError):
     """Raised when source content cannot be fetched."""
+
+
+class YouTubeSourceMembershipError(SourceFetchError):
+    """Raised when acquired video metadata does not match its configured source."""
 
 
 class SourceContentTooLargeError(SourceFetchError):

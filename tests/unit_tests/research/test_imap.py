@@ -3,6 +3,7 @@ from datetime import datetime
 from types import TracebackType
 
 import pytest
+from pydantic import SecretStr
 from pytest import MonkeyPatch
 
 from money_pit.schemas.sources import AllowedUse
@@ -11,6 +12,7 @@ from money_pit.schemas.sources import SourceDefinition
 from money_pit.schemas.sources import SourceTrustSetting
 from money_pit.schemas.sources import TrustCategory
 from money_pit.schemas.sources import TrustLevel
+from money_pit.secrets import ImapCredentials
 from money_pit.sources.errors import SourceFetchError
 from money_pit.sources.imap import ImapConnector
 from money_pit.sources.imap import ImapConnectorConfig
@@ -72,8 +74,6 @@ def _definition() -> SourceDefinition:
         allowed_uses=(AllowedUse.FACTUAL_VERIFICATION,),
         trust_settings=(SourceTrustSetting(category=TrustCategory.FACTUAL, level=TrustLevel.COMMENTARY),),
         adapter_config={
-            "username_env": "TEST_IMAP_USERNAME",
-            "password_env": "TEST_IMAP_PASSWORD",
             "maximum_messages": 2,
             "max_content_bytes": 64,
         },
@@ -82,8 +82,6 @@ def _definition() -> SourceDefinition:
 
 def _lib_transport() -> ImapLibTransport:
     config = ImapConnectorConfig(
-        username_env="TEST_USER",
-        password_env="TEST_PASSWORD",  # noqa: S106 - environment-variable name, not a credential
         maximum_messages=2,
     )
     credential = chr(120)
@@ -123,3 +121,17 @@ def test_imap_connector_propagates_configured_discovery_and_fetch_bounds() -> No
     assert transport.discover_calls == [(None, 2)]
     assert transport.fetch_calls == [(7, "validity-1", 64)]
     assert artifact.media_type == "message/rfc822"
+
+
+def test_imap_connector_injects_explicit_credentials_without_ambient_names() -> None:
+    credentials = ImapCredentials(username=SecretStr("mail-user"), password=SecretStr("mail-password"))
+
+    connector = ImapConnector(_definition(), credentials=credentials)
+    transport = connector._transport  # pyright: ignore[reportPrivateUsage]  # Pins the credential injection seam.
+    if not isinstance(transport, ImapLibTransport):
+        pytest.fail("IMAP connector did not construct its production transport")
+
+    assert (transport._username, transport._password) == (  # pyright: ignore[reportPrivateUsage]  # Values must cross only into the transport boundary.
+        "mail-user",
+        "mail-password",
+    )

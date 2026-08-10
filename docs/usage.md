@@ -1,6 +1,19 @@
 # Operations
 
-Create local configuration from `config/examples/` and provide secrets through `.env` or the configured keyring. Do not commit local source, strategy, execution, or credential files.
+Create local source, strategy, and execution configuration from `config/examples/`. The tracked `secretspec.toml` is the credential schema. It contains no credential values.
+
+Install the SecretSpec CLI and let it prompt for each credential you need. Do not put a value on the command line:
+
+```bash
+secretspec set OPENAI_API_KEY --reason "Configure money-pit inference"
+secretspec set ALPACA_PAPER_API_KEY --reason "Configure paper portfolio access"
+secretspec set ALPACA_PAPER_SECRET_KEY --reason "Configure paper portfolio access"
+secretspec check --scope portfolio_paper --reason "Verify paper portfolio access"
+```
+
+The `development` profile stores values in the operating-system keyring and is selected when `SECRETSPEC_PROFILE` is unset. Automation must select the `ci` profile with `SECRETSPEC_PROFILE=ci`; that profile reads the declared names from the process environment. A blank selector is invalid, and there is no fallback between the profiles. Never commit local configuration or credential values.
+
+Credential scopes match runtime capabilities. Source listing and replay resolve no credentials. Paper and live Alpaca scopes use different names, so one account cannot satisfy the other account's workflow.
 
 Synchronize sources before running the harness:
 

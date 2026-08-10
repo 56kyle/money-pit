@@ -14,19 +14,13 @@ from typing import ClassVar
 from typing import Self
 from typing import TypeVar
 
-import keyring
 import tomllib
-from dotenv import load_dotenv
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
-from pydantic import SecretStr
 from pydantic import ValidationError
 from pydantic import model_validator
-from pydantic_settings import BaseSettings
-from pydantic_settings import SettingsConfigDict
 
-from money_pit.constants import default_config_path
 from money_pit.constants import default_execution_config_path
 from money_pit.constants import default_sources_config_path
 from money_pit.constants import default_strategy_config_path
@@ -45,11 +39,6 @@ if TYPE_CHECKING:
     from money_pit.claims.projection import ClaimRefreshPolicy
 
 
-ENV_PREFIX: str = "MONEY_PIT__"
-_DEFAULT_LLM_MODEL: str = "gpt-5"
-_BLANK_KEYRING_FIELD_MESSAGE: str = "Blank {field} configured; cannot resolve {credential}."
-
-
 class ConfigurationError(Exception):
     """Base class for configuration loading failures."""
 
@@ -60,40 +49,6 @@ class ConfigurationFileError(ConfigurationError):
 
 class ConfigurationValidationError(ConfigurationError):
     """Raised when a TOML document does not match its typed contract."""
-
-
-class CredentialResolutionError(ConfigurationError):
-    """Raised when a requested credential cannot be resolved."""
-
-
-@dataclass(frozen=True)
-class AlpacaCredentials:
-    """Resolved Alpaca API credentials for one explicit broker environment."""
-
-    api_key: str
-    secret_key: SecretStr
-    broker_environment: BrokerEnvironment
-
-    @property
-    def paper(self) -> bool:
-        """Return the alpaca-py environment flag."""
-        return self.broker_environment is BrokerEnvironment.PAPER
-
-
-class Config(BaseSettings):
-    """Secrets and provider settings loaded only from the process environment."""
-
-    model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(env_prefix=ENV_PREFIX, frozen=True, extra="forbid")
-
-    alpaca_service: str | None = None
-    alpaca_username: str | None = None
-    fred_api_key: SecretStr | None = None
-    brave_search_api_key: SecretStr | None = None
-    sec_user_agent: SecretStr | None = None
-    openai_api_key: SecretStr | None = None
-    youtube_api_key: SecretStr | None = None
-    imap_password: SecretStr | None = None
-    llm_model: str = _DEFAULT_LLM_MODEL
 
 
 class HorizonPolicy(BaseModel):
@@ -172,6 +127,7 @@ class StrategyConfig(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
 
     version: str = Field(min_length=1)
+    llm_model: str = Field(min_length=1)
     portfolio_environment: BrokerEnvironment
     plan_ttl_seconds: int = Field(gt=0)
     watchlist: tuple[str, ...] = ()
@@ -263,6 +219,7 @@ class StrategyIntelligenceConfig(BaseModel):
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="ignore")
     version: str = Field(min_length=1)
+    llm_model: str = Field(min_length=1)
     watchlist: tuple[str, ...] = ()
     benchmark_constituents: tuple[str, ...] = ()
     explicit_proxies: dict[str, str] = Field(default_factory=dict)
@@ -314,9 +271,8 @@ class ExecutionConfig(BaseModel):
 
 @dataclass(frozen=True)
 class ApplicationConfig:
-    """Complete configuration assembled from secrets and three typed documents."""
+    """Complete non-secret configuration assembled from three typed documents."""
 
-    environment: Config
     sources: SourceRegistryDocument
     intelligence: StrategyIntelligenceConfig
     strategy: StrategyConfig | None
@@ -362,16 +318,8 @@ def _load_model(path: Path, model_type: type[ModelT]) -> ModelT:
         raise ConfigurationValidationError(f"Configuration document {path} is invalid.") from error
 
 
-def load_config(path: Path | None = None) -> Config:
-    """Load a fresh secrets-only environment configuration."""
-    resolved_path: Path = path or default_config_path()
-    _ = load_dotenv(resolved_path)
-    return Config()
-
-
 def load_application_config(
     *,
-    environment_path: Path | None = None,
     sources_path: Path | None = None,
     strategy_path: Path | None = None,
     execution_path: Path | None = None,
@@ -380,7 +328,6 @@ def load_application_config(
     """Load only configuration required by the requested responsibility."""
     strategy_document = _load_toml(strategy_path or default_strategy_config_path())
     return ApplicationConfig(
-        environment=load_config(environment_path),
         sources=_load_model(sources_path or default_sources_config_path(), SourceRegistryDocument),
         intelligence=StrategyIntelligenceConfig.model_validate(strategy_document),
         strategy=(
@@ -423,19 +370,3 @@ def claim_refresh_policy(strategy: StrategyConfig | StrategyIntelligenceConfig) 
             for category, horizons in strategy.claim_freshness.rules.items()
         },
     )
-
-
-def _require_non_blank_keyring_field(field: str, value: str | None, credential: str) -> str:
-    if value is None or not value.strip():
-        raise CredentialResolutionError(_BLANK_KEYRING_FIELD_MESSAGE.format(field=field, credential=credential))
-    return value
-
-
-def resolve_alpaca_credentials(config: Config, broker_environment: BrokerEnvironment) -> AlpacaCredentials:
-    """Resolve Alpaca credentials only when the execution boundary requests them."""
-    service: str = _require_non_blank_keyring_field("alpaca_service", config.alpaca_service, "Alpaca credentials")
-    username: str = _require_non_blank_keyring_field("alpaca_username", config.alpaca_username, "Alpaca credentials")
-    secret_key: str | None = keyring.get_password(service, username)
-    if secret_key is None:
-        raise CredentialResolutionError(f"No Alpaca secret in keyring for service {service!r}, username {username!r}.")
-    return AlpacaCredentials(api_key=username, secret_key=SecretStr(secret_key), broker_environment=broker_environment)

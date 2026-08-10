@@ -5,10 +5,10 @@ from datetime import datetime
 import pytest
 from pydantic import SecretStr
 
-from money_pit.config import AlpacaCredentials
 from money_pit.portfolio.runtime import AlpacaPortfolioStateProvider
 from money_pit.portfolio.runtime import PortfolioProviderError
 from money_pit.schemas.execution_policy import BrokerEnvironment
+from money_pit.secrets import AlpacaCredentials
 
 
 class _MalformedAlpacaTransport:
@@ -22,7 +22,7 @@ class _MalformedAlpacaTransport:
 def test_alpaca_portfolio_provider_converts_malformed_read_state_to_typed_error() -> None:
     provider = AlpacaPortfolioStateProvider(
         AlpacaCredentials(
-            api_key="test-key",
+            api_key=SecretStr("test-key"),
             secret_key=SecretStr("test-secret"),
             broker_environment=BrokerEnvironment.PAPER,
         ),

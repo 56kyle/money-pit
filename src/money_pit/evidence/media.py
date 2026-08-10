@@ -30,8 +30,10 @@ from money_pit.sources.errors import SourceExtractionError
 
 
 if TYPE_CHECKING:
-    from money_pit.config import Config
+    from collections.abc import Callable
+
     from money_pit.schemas.sources import RawArtifact
+    from money_pit.secrets import OpenAICredentials
 
 
 class TimedTranscriptSegment(BaseModel):
@@ -87,17 +89,20 @@ class _VisionDraft(BaseModel):
 class OpenAIVisionFrameReader:
     """Read keyframe text, source labels, and evidence bounds with a vision model."""
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, load_credentials: Callable[[], OpenAICredentials], model: str) -> None:
         """Bind the configured image-capable model without resolving it eagerly."""
-        self._config: Config = config
-        self._model: str = config.llm_model
+        self._load_credentials: Callable[[], OpenAICredentials] = load_credentials
+        self._model: str = model
         self._agent: Agent[None, _VisionDraft] | None = None
 
     def _inference_agent(self) -> Agent[None, _VisionDraft]:
         if self._agent is not None:
             return self._agent
         self._agent = Agent(
-            openai_chat_model(self._config),
+            openai_chat_model(
+                self._load_credentials(),
+                model_name=self._model,
+            ),
             output_type=_VisionDraft,
             system_prompt=(
                 "Extract visible financial text and explicit source attribution from the image. "

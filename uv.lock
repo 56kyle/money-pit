@@ -1887,7 +1887,6 @@ dependencies = [
     { name = "cvxpy" },
     { name = "defusedxml" },
     { name = "dnspython" },
-    { name = "keyring" },
     { name = "langchain-core" },
     { name = "langgraph" },
     { name = "loguru" },
@@ -1897,8 +1896,7 @@ dependencies = [
     { name = "platformdirs" },
     { name = "pydantic" },
     { name = "pydantic-ai" },
-    { name = "pydantic-settings" },
-    { name = "python-dotenv" },
+    { name = "secretspec" },
     { name = "typer" },
     { name = "typing-extensions" },
     { name = "yfinance" },
@@ -1951,7 +1949,6 @@ requires-dist = [
     { name = "defusedxml", specifier = ">=0.7.1,<1.0" },
     { name = "dnspython", specifier = "==2.8.0" },
     { name = "faster-whisper", marker = "extra == 'video'", specifier = ">=1.2.1" },
-    { name = "keyring", specifier = ">=25.7.0" },
     { name = "langchain-core", specifier = ">=0.3.0" },
     { name = "langgraph", specifier = ">=0.2.0" },
     { name = "loguru", specifier = ">=0.7.3" },
@@ -1963,9 +1960,8 @@ requires-dist = [
     { name = "platformdirs", specifier = ">=4.3.8" },
     { name = "pydantic", specifier = ">=2.12.3" },
     { name = "pydantic-ai", specifier = ">=2.1.0" },
-    { name = "pydantic-settings", specifier = ">=2.14" },
-    { name = "python-dotenv", specifier = ">=1.2.1" },
     { name = "scenedetect", marker = "extra == 'video'", specifier = ">=0.7" },
+    { name = "secretspec", specifier = ">=0.18.0" },
     { name = "torch", marker = "extra == 'cpu'", specifier = ">=2.8.0", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "money-pit", extra = "cpu" } },
     { name = "torch", marker = "extra == 'cu128'", specifier = ">=2.8.0", index = "https://download.pytorch.org/whl/cu128", conflict = { package = "money-pit", extra = "cu128" } },
     { name = "typer", specifier = ">=0.15.4" },
@@ -4227,6 +4223,17 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/98/eb/2c07015938c50f46e9323e379e9799c3e28e0d07c9bae8b6735a6ecf1b6c/scs-3.2.11-cp314-cp314t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:2c166768dc87c389b2d000b5dcd472bb0ba40f96b4cf0e63c0fb603a4a5c80db", size = 12080259, upload-time = "2026-01-09T17:53:38.897Z" },
     { url = "https://files.pythonhosted.org/packages/f2/1b/d52e3b17554791726ba788abff053f4b27df157a49438f01134fec3c859d/scs-3.2.11-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:f51a14a5315974fae4ca4e1b4dc8926f872eca7e66b42e070dbdcfa6904b7860", size = 11974311, upload-time = "2026-01-09T17:53:41.003Z" },
     { url = "https://files.pythonhosted.org/packages/cb/d7/023ba290cfaf97b21c710b675b8a860b97d8226f62e35d7a08e37ddbb6d3/scs-3.2.11-cp314-cp314t-win_amd64.whl", hash = "sha256:7fe26e8a0efc96232f4c5b7649817e48dae04a61be911417e925071091b8cbf6", size = 7570221, upload-time = "2026-01-09T17:53:42.845Z" },
+]
+
+[[package]]
+name = "secretspec"
+version = "0.18.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1b/6e/48fd4008e006b4b5dffc191a1b9ca2ce8ab565c87c12a6f7275a7c07ad28/secretspec-0.18.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:b6a539e494a9343d7eedb13f7270d997bf86e06728b8077aec8edb4869cad9e0", size = 13293586, upload-time = "2026-08-04T05:42:02.582Z" },
+    { url = "https://files.pythonhosted.org/packages/a0/bd/e14e8b9aa199cadb29d9bd30d5126ba18b5bde50f178054e50a09adb9604/secretspec-0.18.0-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:0b2dd2a1882cd525a03e0b05217a48a56f5325e4ce2090a50b614799cb79545c", size = 15974060, upload-time = "2026-08-04T05:42:05.642Z" },
+    { url = "https://files.pythonhosted.org/packages/bf/57/9d3527db645348abc09e3d019001a5f208ff65ca29754f414954382effa6/secretspec-0.18.0-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:4b41192dfbd05c26ddd643eb819c7e5f718478d92696e75c7876910f5a335e58", size = 16058142, upload-time = "2026-08-04T05:42:09.016Z" },
+    { url = "https://files.pythonhosted.org/packages/c2/31/835816cb9a0df6ad3986eacb7b78aed8b119eeb5352a91a987f7efffc9e9/secretspec-0.18.0-cp39-abi3-win_amd64.whl", hash = "sha256:9dd6fd68a96f603758b14303c5dec8bf9276409bfb5be623902d03670f60b4e0", size = 11816749, upload-time = "2026-08-04T05:42:12.089Z" },
 ]
 
 [[package]]

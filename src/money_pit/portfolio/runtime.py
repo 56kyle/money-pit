@@ -29,7 +29,6 @@ from pydantic import TypeAdapter
 
 from money_pit.claims.projection import ClaimRefreshPolicy
 from money_pit.claims.repository import ClaimRepository
-from money_pit.config import AlpacaCredentials
 from money_pit.execution_control.errors import StateCheckUnavailableError
 from money_pit.execution_control.models import ConfirmedFill
 from money_pit.portfolio.decision_repository import DecisionSnapshotRepository
@@ -54,6 +53,7 @@ from money_pit.schemas.snapshots import DecisionSnapshot  # noqa: TC001
 from money_pit.schemas.tax import TaxLot
 from money_pit.schemas.tax import TaxLotSnapshot
 from money_pit.schemas.tax import WashSaleStatus
+from money_pit.secrets import AlpacaCredentials
 from money_pit.storage.database import Database
 
 
@@ -91,7 +91,7 @@ class _UrlLibAlpacaReadTransport:
             "https://paper-api.alpaca.markets/v2" if credentials.paper else "https://api.alpaca.markets/v2"
         )
         self._headers: dict[str, str] = {
-            "APCA-API-KEY-ID": credentials.api_key,
+            "APCA-API-KEY-ID": credentials.api_key.get_secret_value(),
             "APCA-API-SECRET-KEY": credentials.secret_key.get_secret_value(),
             "Accept": "application/json",
         }

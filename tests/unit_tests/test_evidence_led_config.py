@@ -1,22 +1,29 @@
 from pathlib import Path
+from typing import TYPE_CHECKING
+from typing import cast
 
 import pytest
 import tomllib
-from dotenv import dotenv_values
 from pydantic import SecretStr
 from pydantic import ValidationError
 
 from money_pit.agents.models import openai_chat_model
-from money_pit.config import Config
-from money_pit.config import CredentialResolutionError
 from money_pit.config import ExecutionConfig
 from money_pit.config import StrategyConfig
+from money_pit.config import StrategyIntelligenceConfig
+from money_pit.config import canonical_config_hash
 from money_pit.evidence.media import OpenAIVisionFrameReader
 from money_pit.portfolio.runtime import ConfiguredTaxLotProvider
 from money_pit.schemas.sources import SourceRegistryDocument
+from money_pit.secrets import OpenAICredentials
+from money_pit.secrets import YouTubeMediaCredentials
 from money_pit.sources.builtin import builtin_adapter_registry
 from money_pit.sources.youtube import YouTubeConnector
 from money_pit.sources.youtube import YouTubeConnectorConfig
+
+
+if TYPE_CHECKING:
+    from money_pit.secrets import SourceCredentialResolver
 
 
 _REPOSITORY_ROOT = Path(__file__).parents[2]
@@ -72,64 +79,75 @@ def test_strategy_requires_exposure_classification_for_every_configured_instrume
 )
 def test_configured_examples_contain_no_active_placeholders(filename: str) -> None:
     active_lines = tuple(
-        line for line in (_EXAMPLES / filename).read_text(encoding="utf-8").splitlines() if not line.lstrip().startswith("#")
+        line
+        for line in (_EXAMPLES / filename).read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
     )
 
     assert not any(placeholder in line for line in active_lines for placeholder in _ACTIVE_PLACEHOLDERS)
 
 
-def test_env_example_configures_the_namespaced_model_without_fake_credentials() -> None:
-    values = dotenv_values(_EXAMPLES / ".env.example")
-
-    assert values == {"MONEY_PIT__LLM_MODEL": "gpt-5.6-sol"}
-
-
-def test_openai_chat_model_uses_the_namespaced_key_without_ambient_openai_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    model = openai_chat_model(
-        Config(openai_api_key=SecretStr("namespaced-key"), llm_model="configured-model")
-    )
+def test_openai_chat_model_uses_explicit_credentials_and_strategy_model() -> None:
+    model = openai_chat_model(OpenAICredentials(api_key=SecretStr("explicit-key")), model_name="configured-model")
     provider = model.provider
     if provider is None:
         pytest.fail("OpenAI chat model did not preserve its explicit provider")
 
-    assert (model.model_name, provider.client.api_key) == ("configured-model", "namespaced-key")
-
-
-def test_openai_chat_model_with_missing_key_raises_typed_error() -> None:
-    with pytest.raises(CredentialResolutionError):
-        _ = openai_chat_model(Config())
+    assert (model.model_name, provider.client.api_key) == ("configured-model", "explicit-key")
 
 
 def test_openai_vision_frame_reader_resolves_credentials_lazily() -> None:
-    reader = OpenAIVisionFrameReader(Config())
+    resolutions: list[str] = []
 
-    with pytest.raises(CredentialResolutionError):
-        _ = reader._inference_agent()  # pyright: ignore[reportPrivateUsage]  # Pins the lazy provider-construction seam.
+    def load_credentials() -> OpenAICredentials:
+        resolutions.append("inference")
+        return OpenAICredentials(api_key=SecretStr("frame-key"))
+
+    reader = OpenAIVisionFrameReader(load_credentials, "frame-model")
+    assert resolutions == []
+
+    _ = reader._inference_agent()  # pyright: ignore[reportPrivateUsage]  # Pins the lazy provider-construction seam.
+
+    assert resolutions == ["inference"]
 
 
-def test_builtin_adapter_registry_resolves_the_config_bound_youtube_key_lazily() -> None:
+class _YouTubeCredentials:
+    def __init__(self) -> None:
+        self.reasons: list[str] = []
+
+    def youtube_media(self, *, reason: str) -> YouTubeMediaCredentials:
+        self.reasons.append(reason)
+        return YouTubeMediaCredentials(
+            youtube_api_key=SecretStr("youtube-key"),
+            openai_api_key=SecretStr("frame-key"),
+        )
+
+
+def test_builtin_adapter_registry_resolves_youtube_only_when_connector_is_requested() -> None:
     sources = SourceRegistryDocument.model_validate(_toml(_EXAMPLES / "sources.example.toml"))
+    strategy = StrategyIntelligenceConfig.model_validate(_toml(_EXAMPLES / "strategy.example.toml"))
     definition = next(source for source in sources.sources if source.adapter_name == "youtube")
-    registry = builtin_adapter_registry(Config(youtube_api_key=SecretStr("namespaced-youtube-key")))
+    credentials = _YouTubeCredentials()
+    # The focused test double intentionally implements only the capability exercised by this factory.
+    credential_resolver = cast("SourceCredentialResolver", cast("object", credentials))
+    registry = builtin_adapter_registry(credential_resolver, strategy)
+    assert credentials.reasons == []
 
     connector = registry.create(definition)
 
     assert isinstance(connector, YouTubeConnector)
-    assert connector._api_key.get_secret_value() == "namespaced-youtube-key"  # pyright: ignore[reportPrivateUsage]
-
-
-def test_builtin_adapter_registry_with_missing_youtube_key_fails_only_when_requested() -> None:
-    sources = SourceRegistryDocument.model_validate(_toml(_EXAMPLES / "sources.example.toml"))
-    definition = next(source for source in sources.sources if source.adapter_name == "youtube")
-    registry = builtin_adapter_registry(Config())
-
-    with pytest.raises(CredentialResolutionError):
-        _ = registry.create(definition)
+    assert credentials.reasons == [f"Synchronize YouTube source {definition.source_id}"]
 
 
 def test_youtube_connector_config_has_no_ambient_environment_contract() -> None:
     assert "api_key_env" not in YouTubeConnectorConfig.model_fields
+
+
+def test_strategy_model_participates_in_intelligence_configuration_hash() -> None:
+    intelligence = StrategyIntelligenceConfig.model_validate(_toml(_EXAMPLES / "strategy.example.toml"))
+    changed = intelligence.model_copy(update={"llm_model": "different-model"})
+
+    assert canonical_config_hash(intelligence) != canonical_config_hash(changed)
 
 
 def test_tax_lot_example_preserves_explicit_unknown_state() -> None:

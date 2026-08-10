@@ -7,14 +7,17 @@ from typing import TYPE_CHECKING
 
 import typer
 
-from money_pit.config import Config
 from money_pit.config import ConfigurationError
-from money_pit.config import load_config
+from money_pit.config import ConfigurationScope
+from money_pit.config import load_application_config
 from money_pit.constants import ASSETS_DIRNAME
 from money_pit.constants import DATA_ROOT
 from money_pit.constants import STATE_DATABASE_FILENAME
 from money_pit.evidence.processors import builtin_evidence_processors
 from money_pit.evidence.repository import EvidenceProcessingAttemptRepository
+from money_pit.secrets import SecretSpecInferenceResolver
+from money_pit.secrets import SecretSpecSourceResolver
+from money_pit.sources._shared import utc_now
 from money_pit.sources.builtin import builtin_adapter_registry
 from money_pit.sources.errors import SourceError
 from money_pit.sources.registry import AdapterRegistry
@@ -30,6 +33,8 @@ from money_pit.storage.sources import SourceRepository
 
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from money_pit.schemas.sources import SourceDefinition
     from money_pit.schemas.sources import SourceRegistryDocument
 
@@ -38,11 +43,37 @@ source_app = typer.Typer(help="Manage configured intelligence sources.")
 _DEFAULT_SOURCES_PATH = default_sources_path()
 
 
+def _source_repository_for_listing(sources_path: Path) -> SourceRepository:
+    """Validate and register source metadata without constructing a credential resolver."""
+    configuration = load_application_config(
+        sources_path=sources_path,
+        scope=ConfigurationScope.INTELLIGENCE,
+    )
+    adapters = builtin_adapter_registry(None, configuration.intelligence)
+    document = load_source_registry(sources_path, adapters)
+    database = Database(DATA_ROOT / STATE_DATABASE_FILENAME)
+    database.initialize()
+    repository = SourceRepository(database)
+    registered_at: datetime = utc_now()
+    for definition in document.sources:
+        _ = repository.register_definition(
+            definition,
+            registry_version=document.version,
+            registered_at=registered_at,
+        )
+    return repository
+
+
 def _source_runtime(
     sources_path: Path,
 ) -> tuple[SourceSyncService, SourceRepository]:
-    environment: Config = load_config()
-    adapters: AdapterRegistry = builtin_adapter_registry(environment)
+    configuration = load_application_config(
+        sources_path=sources_path,
+        scope=ConfigurationScope.INTELLIGENCE,
+    )
+    source_credentials = SecretSpecSourceResolver.from_environment()
+    inference_credentials = SecretSpecInferenceResolver.from_environment()
+    adapters: AdapterRegistry = builtin_adapter_registry(source_credentials, configuration.intelligence)
     document: SourceRegistryDocument = load_source_registry(sources_path, adapters)
     database = Database(DATA_ROOT / STATE_DATABASE_FILENAME)
     database.initialize()
@@ -54,7 +85,10 @@ def _source_runtime(
         EvidenceRepository(database),
         AssetStore(DATA_ROOT / ASSETS_DIRNAME),
         attempt_repository=EvidenceProcessingAttemptRepository(database),
-        processor_registry=builtin_evidence_processors(environment),
+        processor_registry=builtin_evidence_processors(
+            inference_credentials,
+            model=configuration.intelligence.llm_model,
+        ),
     )
     _ = service.register_definitions()
     return service, repository
@@ -66,7 +100,7 @@ def list_sources(
 ) -> None:
     """List durable definitions after validating and registering the TOML registry."""
     try:
-        _, repository = _source_runtime(sources_path)
+        repository = _source_repository_for_listing(sources_path)
         definitions: tuple[SourceDefinition, ...] = repository.list_definitions()
     except (ConfigurationError, SourceError, StorageError, OSError) as error:
         typer.echo(f"Cannot list sources: {error}", err=True)

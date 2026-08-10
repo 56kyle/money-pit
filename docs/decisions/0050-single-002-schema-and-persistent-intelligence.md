@@ -26,7 +26,7 @@ Initialization applies the baseline only when the database has no application sc
 
 Source definitions are immutable revisions identified by canonical validated-model hashes. Source items bind the revision active at discovery. Claims, resolution decisions, verification results, candidate hypotheses, thesis revisions, temporal contributions, research activity, decision snapshots, plans, execution events, and outcomes are append-only records with explicit `known_at` or capture times where point-in-time replay requires them.
 
-Secrets remain in environment variables or keyring. `sources.toml`, `strategy.toml`, and `execution.toml` are separate strict documents. Strategy and execution limits have no production defaults.
+`sources.toml`, `strategy.toml`, and `execution.toml` are separate strict documents. Strategy and execution limits have no production defaults. ADR 0063 supersedes this decision's credential-storage statement.
 
 ### Consequences
 

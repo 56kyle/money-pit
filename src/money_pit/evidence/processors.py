@@ -29,8 +29,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
     from email.message import Message
 
-    from money_pit.config import Config
     from money_pit.schemas.sources import RawArtifact
+    from money_pit.secrets import InferenceCredentialResolver
 
 
 class EvidenceProcessor(Protocol):
@@ -257,7 +257,11 @@ def _normalized_media_type(media_type: str) -> str:
     return media_type.partition(";")[0].strip().casefold()
 
 
-def builtin_evidence_processors(config: Config) -> EvidenceProcessorRegistry:
+def builtin_evidence_processors(
+    credentials: InferenceCredentialResolver,
+    *,
+    model: str,
+) -> EvidenceProcessorRegistry:
     """Return processors whose extraction semantics are media-generic."""
     registry = EvidenceProcessorRegistry()
     registry.register(TextEvidenceProcessor())
@@ -265,5 +269,14 @@ def builtin_evidence_processors(config: Config) -> EvidenceProcessorRegistry:
     registry.register(HtmlEvidenceProcessor())
     registry.register(JsonEvidenceProcessor())
     registry.register(PdfEvidenceProcessor())
-    registry.register(MediaEvidenceProcessor(DefaultMediaAnalyzer(frame_reader=OpenAIVisionFrameReader(config))))
+    registry.register(
+        MediaEvidenceProcessor(
+            DefaultMediaAnalyzer(
+                frame_reader=OpenAIVisionFrameReader(
+                    lambda: credentials.openai(reason="Interpret financial evidence in a video frame"),
+                    model,
+                )
+            ),
+        )
+    )
     return registry

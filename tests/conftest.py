@@ -6,36 +6,10 @@ indirect parametrization (`request.param`), matching the `__`-suffixed
 param-default idiom used elsewhere in this test suite.
 """
 
-import os
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from pytest import FixtureRequest
-
-from money_pit.config import ENV_PREFIX
-
-
-@pytest.fixture(autouse=True)
-def _restore_money_pit_env() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Pytest discovers this autouse fixture dynamically.
-    """Bracket every test so MONEY_PIT__* env mutations cannot cross a test boundary, across all tiers.
-
-    load_config calls load_dotenv, which writes a .env's keys into os.environ persistently and untracked by
-    monkeypatch. Snapshotting the ENV_PREFIX keys before the test and restoring them exactly afterwards keeps
-    that pollution (e.g. a mistyped MONEY_PIT__SMTP_PORT from a unit test) from leaking into a later tier's
-    Config() construction. As a root-level autouse fixture it wraps lower conftests' env fixtures, so the unit
-    _clear_money_pit_env still clears for hermetic defaults inside this snapshot's bracket, and integration_env's
-    session vars sit inside the snapshot and are preserved.
-    """
-    snapshot: dict[str, str] = {name: value for name, value in os.environ.items() if name.startswith(ENV_PREFIX)}
-    try:
-        yield
-    finally:
-        for name in [name for name in os.environ if name.startswith(ENV_PREFIX)]:
-            if name not in snapshot:
-                del os.environ[name]
-        for name, value in snapshot.items():
-            os.environ[name] = value
 
 
 UNCONFIGURED_EMAIL_REASON: str = "no gmail_address is set"

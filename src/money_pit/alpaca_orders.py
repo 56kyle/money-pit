@@ -12,7 +12,6 @@ from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 
-from money_pit.config import AlpacaCredentials
 from money_pit.execution_control.errors import BrokerObservationUnavailableError
 from money_pit.execution_control.errors import BrokerOrderNotVisibleError
 from money_pit.execution_control.errors import BrokerSubmissionError
@@ -22,6 +21,7 @@ from money_pit.execution_control.gateway import OrderPlacer
 from money_pit.execution_control.gateway import OrderPlacerFactory
 from money_pit.execution_control.orders import OrderIntent
 from money_pit.schemas.execution_policy import BrokerEnvironment
+from money_pit.secrets import AlpacaCredentials
 
 
 _ORDER_NOT_FOUND_STATUS: int = 404
@@ -66,7 +66,7 @@ def make_alpaca_fill_observer(
     """Return a FillObserver backed by the alpaca-py TradingClient, routed to paper or live per credentials."""
     if get_order is None:
         client: TradingClient = TradingClient(
-            api_key=credentials.api_key,
+            api_key=credentials.api_key.get_secret_value(),
             secret_key=credentials.secret_key.get_secret_value(),
             paper=credentials.paper,
         )
@@ -115,7 +115,7 @@ def _order_identifier(order: object) -> str:
 def _default_submitter_factory(credentials: AlpacaCredentials) -> OrderSubmitter:
     """Construct an Alpaca trading client only inside the scoped A6 writer factory."""
     client: TradingClient = TradingClient(
-        api_key=credentials.api_key,
+        api_key=credentials.api_key.get_secret_value(),
         secret_key=credentials.secret_key.get_secret_value(),
         paper=credentials.paper,
     )

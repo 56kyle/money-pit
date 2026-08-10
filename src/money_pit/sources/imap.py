@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import imaplib
-import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from typing import ClassVar
@@ -25,7 +24,6 @@ from money_pit.sources._shared import parse_config
 from money_pit.sources._shared import sha256_bytes
 from money_pit.sources._shared import source_definition_hash
 from money_pit.sources._shared import utc_now
-from money_pit.sources.errors import ConnectorConfigurationError
 from money_pit.sources.errors import SourceDiscoveryError
 from money_pit.sources.errors import SourceFetchError
 
@@ -34,6 +32,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from money_pit.schemas.evidence import EvidenceDocument
+    from money_pit.secrets import ImapCredentials
 
 
 class ImapConnectorConfig(BoundedConnectorConfig):
@@ -41,8 +40,6 @@ class ImapConnectorConfig(BoundedConnectorConfig):
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
 
-    username_env: str = Field(min_length=1)
-    password_env: str = Field(min_length=1)
     mailbox: str = Field(default="INBOX", min_length=1)
     port: int = Field(default=993, ge=1, le=65535)
     maximum_messages: int = Field(default=25, ge=1, le=100)
@@ -139,6 +136,8 @@ class ImapConnector:
         self,
         definition: SourceDefinition,
         transport: ImapTransport | None = None,
+        *,
+        credentials: ImapCredentials | None = None,
     ) -> None:
         """Bind an IMAP source to credentials and an optional transport."""
         self._definition: SourceDefinition = definition
@@ -146,15 +145,13 @@ class ImapConnector:
             parse_config(definition, ImapConnectorConfig).model_dump(),
         )
         if transport is None:
-            username: str | None = os.environ.get(self._config.username_env)
-            password: str | None = os.environ.get(self._config.password_env)
-            if not username or not password:
-                raise ConnectorConfigurationError("IMAP credential environment variables are not configured")
+            if credentials is None:
+                raise TypeError("credentials are required when no IMAP transport is injected")
             transport = ImapLibTransport(
                 definition.locator,
                 self._config,
-                username=username,
-                password=password,
+                username=credentials.username.get_secret_value(),
+                password=credentials.password.get_secret_value(),
             )
         self._transport: ImapTransport = transport
 

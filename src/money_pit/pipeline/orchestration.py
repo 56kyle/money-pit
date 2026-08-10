@@ -19,9 +19,9 @@ class HarnessNodes:
     """Capability-scoped stage nodes supplied by application composition."""
 
     a1: PipelineNode
-    a2: PipelineNode
-    a3: PipelineNode
-    a4: PipelineNode
+    a2: PipelineNode | None
+    a3: PipelineNode | None
+    a4: PipelineNode | None
     a5: PipelineNode | None
     a6: PipelineNode | None
     replay: PipelineNode | None = None

@@ -24,7 +24,7 @@ RUN_MANIFEST_FILENAME: Final[str] = "run.json"
 SOURCES_CONFIG_FILENAME: Final[str] = "sources.toml"
 STRATEGY_CONFIG_FILENAME: Final[str] = "strategy.toml"
 EXECUTION_CONFIG_FILENAME: Final[str] = "execution.toml"
-ENV_CONFIG_FILENAME: Final[str] = ".env"
+SECRETSPEC_CONFIG_FILENAME: Final[str] = "secretspec.toml"
 
 
 def user_config_folder() -> Path:
@@ -38,8 +38,8 @@ def user_log_folder() -> Path:
 
 
 def default_config_path() -> Path:
-    """Return the default secrets-only environment file."""
-    return Path(ENV_CONFIG_FILENAME)
+    """Return the tracked SecretSpec manifest path."""
+    return Path(SECRETSPEC_CONFIG_FILENAME)
 
 
 def default_sources_config_path() -> Path:

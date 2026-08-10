@@ -34,6 +34,8 @@ from money_pit.schemas.execution_policy import ExecutionPolicy
 from money_pit.schemas.portfolio_plan import PortfolioPlan
 from money_pit.schemas.research import CandidateThesisResearchScope
 from money_pit.schemas.research import CanonicalClaimResearchScope
+from money_pit.secrets import SecretSpecExecutionResolver
+from money_pit.secrets import SecretSpecPortfolioResolver
 from money_pit.sources.cli import source_app
 from money_pit.storage.database import Database
 from money_pit.storage.runs import RunRepository as DurableRunRepository
@@ -66,15 +68,20 @@ def _portfolio_runtime(
     scope: ConfigurationScope = ConfigurationScope.EXECUTION,
 ) -> PortfolioRuntime:
     config = load_application_config(scope=scope)
+    portfolio_credentials = SecretSpecPortfolioResolver.from_environment()
     paths = RepositoryPaths.from_data_root(DATA_ROOT)
     return build_portfolio_runtime(
         database=database,
         config=config,
         reports_root=paths.reports_root,
         processor_versions={"builtin_evidence_processors": APP_VERSION},
-        model_versions={"llm": config.environment.llm_model},
+        model_versions={"llm": config.intelligence.llm_model},
         prompt_versions={"portfolio": APP_VERSION},
         implementation_version=APP_VERSION,
+        portfolio_credentials=portfolio_credentials,
+        execution_credentials=(
+            SecretSpecExecutionResolver.from_environment() if scope is ConfigurationScope.EXECUTION else None
+        ),
     )
 
 

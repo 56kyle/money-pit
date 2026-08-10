@@ -70,10 +70,9 @@ trade metadata must cover every target. Trade derivation selects only target quo
 remaining snapshot quotes. This preserves replay evidence without making unrelated quotes optimizer
 inputs.
 
-OpenAI agents and vision processing use one provider factory backed only by
-`MONEY_PIT__OPENAI_API_KEY`. YouTube connectors receive `MONEY_PIT__YOUTUBE_API_KEY` from a
-configuration-bound adapter closure. Credential-dependent sources remain constructible only when
-their capability is invoked.
+OpenAI agents and vision processing use one provider factory. Credential-dependent sources remain
+constructible only when their capability is invoked. ADR 0063 supersedes the credential delivery
+mechanism in this decision with capability-scoped SecretSpec resolution.
 
 ### Consequences
 

@@ -20,16 +20,16 @@ from money_pit.alpaca_orders import (
     _order_to_observation,  # pyright: ignore[reportPrivateUsage]  # Contract tests pin the pure private order mapper.
 )
 from money_pit.alpaca_orders import make_alpaca_fill_observer
-from money_pit.config import AlpacaCredentials
 from money_pit.execution_control.fills import ExecutionPhase
 from money_pit.execution_control.fills import FillObservation
 from money_pit.schemas.execution_policy import BrokerEnvironment
+from money_pit.secrets import AlpacaCredentials
 
 
 @pytest.fixture
 def credentials() -> AlpacaCredentials:
     return AlpacaCredentials(
-        api_key="k",
+        api_key=SecretStr("k"),
         secret_key=SecretStr("s"),
         broker_environment=BrokerEnvironment.PAPER,
     )

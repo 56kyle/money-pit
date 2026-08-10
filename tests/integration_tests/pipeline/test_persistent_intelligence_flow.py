@@ -10,7 +10,6 @@ from money_pit.composition import execute_harness_run
 from money_pit.config import ApplicationConfig
 from money_pit.config import ClaimFreshnessPolicyConfig
 from money_pit.config import ClaimFreshnessRuleConfig
-from money_pit.config import Config
 from money_pit.config import ExecutionConfig
 from money_pit.config import HorizonPolicy
 from money_pit.config import ResearchBudgetConfig
@@ -91,6 +90,8 @@ from money_pit.schemas.theses import ScenarioOutcome
 from money_pit.schemas.theses import ThesisDirection
 from money_pit.schemas.universe import DiscoveryBasis
 from money_pit.schemas.universe import UniverseLayer
+from money_pit.secrets import SecretSpecInferenceResolver
+from money_pit.secrets import SecretSpecPortfolioResolver
 from money_pit.sources.http import HttpResponse
 from money_pit.sources.local import local_text_connector
 from money_pit.sources.registry import AdapterRegistry
@@ -362,6 +363,7 @@ def _strategy(tmp_path: Path) -> StrategyConfig:
     freshness_rule = ClaimFreshnessRuleConfig(review_interval_days=7, freshness_days=30)
     return StrategyConfig(
         version="strategy-test",
+        llm_model="test-model",
         portfolio_environment=BrokerEnvironment.PAPER,
         plan_ttl_seconds=1_800,
         watchlist=("NEW",),
@@ -433,7 +435,6 @@ def test_execute_harness_run_composes_persistent_research_plan_and_execution(tmp
     source_registry = SourceRegistryDocument(version="0.0.2", sources=(source,))
     strategy = _strategy(tmp_path)
     config = ApplicationConfig(
-        environment=Config(),
         sources=source_registry,
         intelligence=StrategyIntelligenceConfig.model_validate(strategy.model_dump()),
         strategy=strategy,
@@ -500,6 +501,7 @@ def test_execute_harness_run_composes_persistent_research_plan_and_execution(tmp
             prompt_versions={"synthesis": "integration-002"},
             implementation_version="integration-002",
             clock=lambda: run_time,
+            portfolio_credentials=SecretSpecPortfolioResolver(tmp_path / "unused-secretspec.toml"),
             read_dependencies=PortfolioReadDependencies(
                 portfolio=_OfflinePortfolioProvider(run_time),
                 market=_OfflineMarketProvider(run_time),
@@ -526,6 +528,7 @@ def test_execute_harness_run_composes_persistent_research_plan_and_execution(tmp
             instrument_resolver=ConfiguredInstrumentResolver(frozenset({"NEW", "SPY"})),
             clock=lambda: run_time,
             run_id_factory=lambda: _RUN_ID,
+            inference_credentials=SecretSpecInferenceResolver(tmp_path / "unused-secretspec.toml"),
             portfolio_runtime_factory=portfolio_runtime_factory,
         ),
     )
@@ -638,7 +641,6 @@ def test_execute_harness_run_composes_persistent_research_plan_and_execution(tmp
 def test_build_portfolio_runtime_uses_injected_read_providers_without_external_credentials(tmp_path: Path) -> None:
     strategy = _strategy(tmp_path)
     config = ApplicationConfig(
-        environment=Config(),
         sources=SourceRegistryDocument(version="0.0.2", sources=()),
         intelligence=StrategyIntelligenceConfig.model_validate(strategy.model_dump()),
         strategy=strategy,
@@ -675,6 +677,7 @@ def test_build_portfolio_runtime_uses_injected_read_providers_without_external_c
         model_versions={"test": "1"},
         prompt_versions={"test": "1"},
         implementation_version="integration-002",
+        portfolio_credentials=SecretSpecPortfolioResolver(tmp_path / "unused-secretspec.toml"),
         read_dependencies=reads,
     )
 
@@ -682,5 +685,5 @@ def test_build_portfolio_runtime_uses_injected_read_providers_without_external_c
         portfolio,
         market,
         tax_lots,
-        True,
+        False,
     )

@@ -63,6 +63,15 @@ from money_pit.schemas.runs import RunTerminalEvent
 from money_pit.schemas.runs import RunTerminalStatus
 from money_pit.schemas.sources import SourceDefinition
 from money_pit.schemas.universe import UniverseLayer
+from money_pit.secrets import ExecutionCredentialResolver
+from money_pit.secrets import InferenceCredentialResolver
+from money_pit.secrets import OpenAICredentials
+from money_pit.secrets import PortfolioCredentialResolver
+from money_pit.secrets import ResearchCredentialResolver
+from money_pit.secrets import SecretSpecExecutionResolver
+from money_pit.secrets import SecretSpecInferenceResolver
+from money_pit.secrets import SecretSpecPortfolioResolver
+from money_pit.secrets import SecretSpecResearchResolver
 from money_pit.sources.http import AddressPinnedHttpTransport
 from money_pit.storage.admission import IntelligenceAdmissionRepository
 from money_pit.storage.assets import AssetStore
@@ -83,13 +92,14 @@ class ApplicationDependencies:
     """Injected model, research, and optional capital-stage capabilities."""
 
     interpretation_agent: InterpretationAgent
-    discovery_agent: DiscoveryAgent
-    research_planning_agent: ResearchPlanningAgent
-    synthesis_agent: SynthesisAgent
     research_providers: ResearchProviderRegistry
     instrument_resolver: InstrumentResolver
     clock: Callable[[], datetime]
     run_id_factory: Callable[[], str]
+    inference_credentials: InferenceCredentialResolver
+    discovery_agent: DiscoveryAgent | None = None
+    research_planning_agent: ResearchPlanningAgent | None = None
+    synthesis_agent: SynthesisAgent | None = None
     portfolio_runtime_factory: Callable[[], PortfolioRuntime] | None = None
 
 
@@ -115,6 +125,10 @@ def execute_harness_run(
     through: Stage,
     implementation_version: str,
     dependencies: ApplicationDependencies | None = None,
+    inference_credentials: InferenceCredentialResolver | None = None,
+    research_credentials: ResearchCredentialResolver | None = None,
+    portfolio_credentials: PortfolioCredentialResolver | None = None,
+    execution_credentials: ExecutionCredentialResolver | None = None,
 ) -> PipelineState:
     """Create one immutable run manifest and invoke the configured staged harness."""
     paths.ensure_writable_roots()
@@ -124,6 +138,22 @@ def execute_harness_run(
         reports_root=paths.reports_root,
         implementation_version=implementation_version,
         through=through,
+        inference_credentials=inference_credentials or SecretSpecInferenceResolver.from_environment(),
+        research_credentials=(
+            research_credentials
+            or (
+                SecretSpecResearchResolver.from_environment()
+                if through in {Stage.A3, Stage.A4, Stage.A5, Stage.A6}
+                else None
+            )
+        ),
+        portfolio_credentials=(
+            portfolio_credentials
+            or (SecretSpecPortfolioResolver.from_environment() if through in {Stage.A5, Stage.A6} else None)
+        ),
+        execution_credentials=(
+            execution_credentials or (SecretSpecExecutionResolver.from_environment() if through is Stage.A6 else None)
+        ),
     )
     started_at = resolved_dependencies.clock()
     cutoff = requested_as_of or started_at
@@ -228,7 +258,8 @@ def build_application_runtime(
         AssetStore(assets_root),
         claims=claims,
         interpreter=interpreter,
-        environment=config.environment,
+        credentials=dependencies.inference_credentials,
+        model=config.intelligence.llm_model,
         clock=dependencies.clock,
     )
     portfolio: PortfolioRuntime | None = None
@@ -242,6 +273,9 @@ def build_application_runtime(
     execution_dependencies = None if portfolio is None else portfolio.execution
     if through is Stage.A6 and execution_dependencies is None:
         raise ApplicationDependencyError("A6 requires execution gateway capabilities")
+    discovery_agent = dependencies.discovery_agent
+    research_planning_agent = dependencies.research_planning_agent
+    synthesis_agent = dependencies.synthesis_agent
     nodes = HarnessNodes(
         a1=make_interpretation_node(
             evidence=research.evidence_work,
@@ -251,22 +285,26 @@ def build_application_runtime(
             interpretation_service=interpreter,
             clock=dependencies.clock,
         ),
-        a2=make_discovery_node(
+        a2=None
+        if discovery_agent is None
+        else make_discovery_node(
             claims=claims,
             theses=theses,
             research_tasks=research.planned_tasks,
             load_universe=load_universe,
-            agent=dependencies.discovery_agent,
+            agent=discovery_agent,
             implementation_version=implementation_version,
             artifact_store=artifact_store,
             allowed_provider_names=providers.names(),
             clock=dependencies.clock,
         ),
-        a3=make_research_node(
+        a3=None
+        if research_planning_agent is None
+        else make_research_node(
             theses=theses,
             tasks=research.planned_tasks,
             runner=research.runner,
-            planner=dependencies.research_planning_agent,
+            planner=research_planning_agent,
             implementation_version=implementation_version,
             admission=admission,
             allowed_provider_names=providers.names(),
@@ -278,10 +316,12 @@ def build_application_runtime(
                 maximum_elapsed=timedelta(seconds=config.intelligence.research_budget.maximum_elapsed_seconds),
             ),
         ),
-        a4=make_synthesis_node(
+        a4=None
+        if synthesis_agent is None
+        else make_synthesis_node(
             claims=claims,
             theses=theses,
-            agent=dependencies.synthesis_agent,
+            agent=synthesis_agent,
             resolver_version=implementation_version,
             verifier_version=implementation_version,
             synthesis_version=implementation_version,
@@ -318,11 +358,41 @@ def build_production_application_dependencies(
     reports_root: Path,
     implementation_version: str,
     through: Stage,
+    inference_credentials: InferenceCredentialResolver,
+    research_credentials: ResearchCredentialResolver | None = None,
+    portfolio_credentials: PortfolioCredentialResolver | None = None,
+    execution_credentials: ExecutionCredentialResolver | None = None,
 ) -> ApplicationDependencies:
     """Resolve production capabilities at the outer application boundary."""
     clock: Callable[[], datetime] = _utc_now
+    openai: OpenAICredentials = inference_credentials.openai(reason="Run the requested staged investment research")
+    discovery_agent = None if through is Stage.A1 else make_discovery_agent(openai, model=config.intelligence.llm_model)
+    research_planning_agent = (
+        make_research_planning_agent(openai, model=config.intelligence.llm_model)
+        if through in {Stage.A3, Stage.A4, Stage.A5, Stage.A6}
+        else None
+    )
+    synthesis_agent = (
+        make_synthesis_agent(openai, model=config.intelligence.llm_model)
+        if through in {Stage.A4, Stage.A5, Stage.A6}
+        else None
+    )
+    if through in {Stage.A3, Stage.A4, Stage.A5, Stage.A6}:
+        if research_credentials is None:
+            raise ApplicationDependencyError(f"{through.value} requires research credential authority")
+        research_providers = build_configured_research_registry(
+            config,
+            credentials=research_credentials,
+            clock=clock,
+        )
+    else:
+        research_providers = ResearchProviderRegistry()
     portfolio_factory: Callable[[], PortfolioRuntime] | None = None
     if through in {Stage.A5, Stage.A6}:
+        if portfolio_credentials is None:
+            raise ApplicationDependencyError(f"{through.value} requires portfolio credential authority")
+        if through is Stage.A6 and execution_credentials is None:
+            raise ApplicationDependencyError("A6 requires execution credential authority")
 
         def build_capital_runtime() -> PortfolioRuntime:
             return build_portfolio_runtime(
@@ -330,7 +400,7 @@ def build_production_application_dependencies(
                 config=config,
                 reports_root=reports_root,
                 processor_versions={"builtin_evidence_processors": implementation_version},
-                model_versions={"llm": config.environment.llm_model},
+                model_versions={"llm": config.intelligence.llm_model},
                 prompt_versions={
                     "interpretation": implementation_version,
                     "discovery": implementation_version,
@@ -339,18 +409,24 @@ def build_production_application_dependencies(
                 },
                 implementation_version=implementation_version,
                 clock=clock,
+                portfolio_credentials=portfolio_credentials,
+                execution_credentials=execution_credentials,
             )
 
         portfolio_factory = build_capital_runtime
     return ApplicationDependencies(
-        interpretation_agent=make_interpretation_agent(config.environment),
-        discovery_agent=make_discovery_agent(config.environment),
-        research_planning_agent=make_research_planning_agent(config.environment),
-        synthesis_agent=make_synthesis_agent(config.environment),
-        research_providers=build_configured_research_registry(config, clock=clock),
+        interpretation_agent=make_interpretation_agent(
+            openai,
+            model=config.intelligence.llm_model,
+        ),
+        discovery_agent=discovery_agent,
+        research_planning_agent=research_planning_agent,
+        synthesis_agent=synthesis_agent,
+        research_providers=research_providers,
         instrument_resolver=_configured_instrument_resolver(config),
         clock=clock,
         run_id_factory=_uuid4_string,
+        inference_credentials=inference_credentials,
         portfolio_runtime_factory=portfolio_factory,
     )
 
@@ -358,6 +434,7 @@ def build_production_application_dependencies(
 def build_configured_research_registry(
     config: ApplicationConfig,
     *,
+    credentials: ResearchCredentialResolver,
     clock: Callable[[], datetime] = _utc_now,
 ) -> ResearchProviderRegistry:
     """Build providers only when both source policy and credentials are configured."""
@@ -365,9 +442,7 @@ def build_configured_research_registry(
     transport = AddressPinnedHttpTransport()
     brave_definition = _research_source_definition(config, "brave")
     if brave_definition is not None:
-        api_key = config.environment.brave_search_api_key
-        if api_key is None:
-            raise ApplicationDependencyError("Configured Brave research requires MONEY_PIT__BRAVE_SEARCH_API_KEY")
+        api_key = credentials.brave(reason="Search Brave for bounded financial research").api_key
         backend = BraveSearchBackend(api_key.get_secret_value(), transport)
         registry.register(
             BraveResearchProvider(
@@ -380,9 +455,7 @@ def build_configured_research_registry(
         )
     edgar_definition = _research_source_definition(config, "edgar")
     if edgar_definition is not None:
-        configured_identity = config.environment.sec_user_agent
-        if configured_identity is None:
-            raise ApplicationDependencyError("Configured EDGAR research requires MONEY_PIT__SEC_USER_AGENT")
+        configured_identity = credentials.edgar(reason="Search EDGAR for primary financial evidence").user_agent
         user_agent = configured_identity.get_secret_value()
         backend = EdgarSearchBackend(user_agent, transport)
         registry.register(
@@ -396,9 +469,7 @@ def build_configured_research_registry(
         )
     fred_definition = _research_source_definition(config, "fred")
     if fred_definition is not None:
-        api_key = config.environment.fred_api_key
-        if api_key is None:
-            raise ApplicationDependencyError("Configured FRED research requires MONEY_PIT__FRED_API_KEY")
+        api_key = credentials.fred(reason="Retrieve FRED economic evidence").api_key
         registry.register(
             FredResearchProvider(
                 fred_definition,

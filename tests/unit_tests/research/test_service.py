@@ -15,7 +15,6 @@ if TYPE_CHECKING:
 from money_pit.claims.projection import ClaimFreshnessRule
 from money_pit.claims.projection import ClaimRefreshPolicy
 from money_pit.claims.repository import ClaimRepository
-from money_pit.config import Config
 from money_pit.evidence.media import FrameReading
 from money_pit.evidence.media import MediaAnalysis
 from money_pit.evidence.media import MediaEvidenceProcessor
@@ -48,6 +47,7 @@ from money_pit.schemas.sources import TrustLevel
 from money_pit.schemas.theses import CandidateThesis
 from money_pit.schemas.theses import ThesisDirection
 from money_pit.schemas.universe import DiscoveryBasis
+from money_pit.secrets import SecretSpecInferenceResolver
 from money_pit.sources._shared import source_definition_hash
 from money_pit.sources.service import EvidenceRepository
 from money_pit.storage.assets import AssetStore
@@ -305,7 +305,8 @@ def test_run_round_blocks_current_only_provider_before_io_for_historical_run(tmp
         AssetStore(tmp_path / "assets"),
         claims=_claims(database),
         interpreter=_interpreter(),
-        environment=Config(),
+        credentials=SecretSpecInferenceResolver(tmp_path / "unused-secretspec.toml"),
+        model="test-model",
     )
     session = ResearchSession(
         session_id="session-1",
@@ -365,7 +366,8 @@ def test_run_round_uses_certified_cutoff_search_and_fetch_methods(tmp_path: Path
         AssetStore(tmp_path / "assets"),
         claims=_claims(database),
         interpreter=_interpreter(),
-        environment=Config(),
+        credentials=SecretSpecInferenceResolver(tmp_path / "unused-secretspec.toml"),
+        model="test-model",
     )
     session = ResearchSession(
         session_id="session-certified",

@@ -29,9 +29,9 @@ def thread_config(run_id: str) -> RunnableConfig:
 def build_graph(
     *,
     a1: PipelineNode,
-    a2: PipelineNode,
-    a3: PipelineNode,
-    a4: PipelineNode,
+    a2: PipelineNode | None,
+    a3: PipelineNode | None,
+    a4: PipelineNode | None,
     a5: PipelineNode | None,
     a6: PipelineNode | None,
     through: Stage | None = None,

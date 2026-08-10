@@ -13,7 +13,9 @@ keywords = [
     "money-pit",
 ]
 classifiers = [
-    "Operating System :: OS Independent",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.11",
@@ -23,7 +25,6 @@ classifiers = [
 ]
 dependencies = [
     "alpaca-py>=0.43.0",
-    "keyring>=25.7.0",
     "langchain-core>=0.3.0",
     "loguru>=0.7.3",
     "numpy>=2.0.2",
@@ -32,8 +33,7 @@ dependencies = [
     "pillow>=12.3.0",
     "langgraph>=0.2.0",
     "pydantic>=2.12.3",
-    "pydantic-settings>=2.14",
-    "python-dotenv>=1.2.1",
+    "secretspec>=0.18.0",
     "typer>=0.15.4",
     "typing-extensions>=4.13.2",
     "pydantic-ai>=2.1.0",

@@ -8,8 +8,6 @@ from datetime import timedelta
 from money_pit.alpaca_orders import FillObserver
 from money_pit.alpaca_orders import make_alpaca_fill_observer
 from money_pit.alpaca_orders import make_alpaca_order_placer_factory
-from money_pit.config import Config
-from money_pit.config import resolve_alpaca_credentials
 from money_pit.execution_control.gateway import ExecutionGatewayDependencies
 from money_pit.execution_control.protocols import AutonomousEligibilityEvaluator
 from money_pit.execution_control.repository import SqliteExecutionAuthorityRepository
@@ -24,17 +22,20 @@ from money_pit.portfolio.providers import PortfolioStateProvider
 from money_pit.portfolio.providers import TaxLotStateProvider
 from money_pit.portfolio.repository import SnapshotRepository
 from money_pit.schemas.execution_policy import BrokerEnvironment
+from money_pit.secrets import ExecutionCredentialResolver
 from money_pit.storage.database import Database
 
 
-def _lazy_fill_observer(config: Config, environment: BrokerEnvironment) -> FillObserver:
+def _lazy_fill_observer(credentials: ExecutionCredentialResolver, environment: BrokerEnvironment) -> FillObserver:
     """Resolve credentials and construct a read client only on the first A6 observation."""
     observer: FillObserver | None = None
 
     def observe(client_order_id: str):
         nonlocal observer
         if observer is None:
-            observer = make_alpaca_fill_observer(resolve_alpaca_credentials(config, environment))
+            observer = make_alpaca_fill_observer(
+                credentials.alpaca_execution(environment, reason="Observe fills for an exact approved plan")
+            )
         return observer(client_order_id)
 
     return observe
@@ -43,7 +44,7 @@ def _lazy_fill_observer(config: Config, environment: BrokerEnvironment) -> FillO
 def build_execution_gateway_dependencies(
     *,
     database: Database,
-    secrets: Config,
+    credentials: ExecutionCredentialResolver,
     broker_environment: BrokerEnvironment,
     execution_config_hash: str,
     portfolio: PortfolioStateProvider,
@@ -83,9 +84,12 @@ def build_execution_gateway_dependencies(
         committed_turnover_excluding_plan=authority.committed_turnover_excluding_plan,
         turnover_reservations=TurnoverReservationRepository(database),
         order_placer_factory=make_alpaca_order_placer_factory(
-            lambda environment: resolve_alpaca_credentials(secrets, environment)
+            lambda environment: credentials.alpaca_execution(
+                environment,
+                reason="Submit orders for an exact approved plan",
+            )
         ),
-        observe_fill=_lazy_fill_observer(secrets, broker_environment),
+        observe_fill=_lazy_fill_observer(credentials, broker_environment),
         clock=clock,
         autonomous_eligibility=autonomous_eligibility,
         poll_interval_seconds=poll_interval_seconds,

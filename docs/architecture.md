@@ -13,6 +13,8 @@ money-pit 0.0.2 is one persistent staged system. SQLite owns cross-run intellige
 
 Agents receive typed outputs and only the capabilities required by their stage. A1–A5 cannot construct a broker writer. Deterministic code owns identity, freshness, temporal admission, capital eligibility, optimization, hashes, approvals, and execution controls.
 
+SecretSpec resolves credentials at the outer capability boundary. The application converts each allowlisted result into a frozen typed credential and closes the SDK result. It does not export credentials into process state. Paper and live portfolio and execution scopes are separate. Replay constructs no credential resolver.
+
 ## Persistence and replay
 
 The database starts from the single 0.0.2 schema. Initialization rejects a non-empty database with an unknown fingerprint. Claims, verifications, thesis revisions, decisions, plans, approvals, executions, and outcomes are append-only. Point-in-time reads filter by `known_at` and the requested cutoff; replay cannot observe later state and never executes A6.

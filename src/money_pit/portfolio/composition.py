@@ -11,7 +11,6 @@ from typing import Protocol
 from money_pit.config import ApplicationConfig
 from money_pit.config import canonical_config_hash
 from money_pit.config import claim_refresh_policy
-from money_pit.config import resolve_alpaca_credentials
 from money_pit.execution_control.composition import build_execution_gateway_dependencies
 from money_pit.execution_control.gateway import ExecutionGatewayDependencies
 from money_pit.plans.repository import PortfolioPlanRepository
@@ -41,6 +40,8 @@ from money_pit.portfolio.theses import ThesisRepository
 from money_pit.reports.service import StaticPortfolioReportWriter
 from money_pit.schemas.execution_policy import ExecutionPolicy
 from money_pit.schemas.tax import LotSelectionPolicy
+from money_pit.secrets import ExecutionCredentialResolver
+from money_pit.secrets import PortfolioCredentialResolver
 from money_pit.storage.database import Database
 
 
@@ -79,6 +80,8 @@ def build_portfolio_runtime(
     model_versions: dict[str, str],
     prompt_versions: dict[str, str],
     implementation_version: str,
+    portfolio_credentials: PortfolioCredentialResolver,
+    execution_credentials: ExecutionCredentialResolver | None = None,
     clock: Callable[[], datetime] = lambda: datetime.now(tz=UTC),
     read_dependencies: PortfolioReadDependencies | None = None,
 ) -> PortfolioRuntime:
@@ -100,9 +103,12 @@ def build_portfolio_runtime(
         )
     )
     if read_dependencies is None:
-        credentials = resolve_alpaca_credentials(config.environment, strategy.portfolio_environment)
+        alpaca_credentials = portfolio_credentials.alpaca_portfolio(
+            strategy.portfolio_environment,
+            reason="Read the current portfolio for a decision snapshot",
+        )
         production_portfolio = AlpacaPortfolioStateProvider(
-            credentials,
+            alpaca_credentials,
             clock=clock,
             instrument_asset_classes=strategy.instrument_asset_classes,
         )
@@ -194,10 +200,10 @@ def build_portfolio_runtime(
         clock=clock,
     )
     execution: ExecutionGatewayDependencies | None = None
-    if execution_config is not None:
+    if execution_config is not None and execution_credentials is not None:
         execution = build_execution_gateway_dependencies(
             database=database,
-            secrets=config.environment,
+            credentials=execution_credentials,
             broker_environment=execution_config.broker_environment,
             execution_config_hash=canonical_config_hash(execution_config),
             portfolio=portfolio,

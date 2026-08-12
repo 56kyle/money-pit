@@ -24,6 +24,10 @@ from pydantic import SecretStr
 from pydantic import ValidationError
 
 from money_pit.evidence.media import MediaAnalyzer
+from money_pit.progress import IngestionProgressCallback
+from money_pit.progress import IngestionProgressEvent
+from money_pit.progress import IngestionProgressStage
+from money_pit.progress import ignore_ingestion_progress
 from money_pit.schemas.evidence import EvidenceDocument
 from money_pit.schemas.sources import DiscoveryBatch
 from money_pit.schemas.sources import RawArtifact
@@ -87,14 +91,18 @@ class YouTubeMediaTransport(Protocol):
 class YtDlpMediaTransport:
     """Acquire bounded public video media without retaining downloader caches."""
 
+    def __init__(self, progress: IngestionProgressCallback = ignore_ingestion_progress) -> None:
+        """Bind an optional secret-free progress observer."""
+        self._progress: IngestionProgressCallback = progress
+
     def fetch(self, url: str, *, maximum_bytes: int, timeout_seconds: float) -> YouTubeMediaAcquisition:
         """Download one video to an isolated temporary directory."""
         started_at = monotonic()
-
-        def enforce_elapsed_bound(status: dict[str, object]) -> None:
-            del status
-            if monotonic() - started_at > timeout_seconds:
-                raise TimeoutError("YouTube media acquisition exceeded its elapsed-time bound")
+        progress_hook: Callable[[dict[str, object]], None] = _download_progress_hook(
+            self._progress,
+            started_at=started_at,
+            timeout_seconds=timeout_seconds,
+        )
 
         try:
             import yt_dlp
@@ -109,7 +117,7 @@ class YtDlpMediaTransport:
                     "noplaylist": True,
                     "quiet": True,
                     "no_warnings": True,
-                    "progress_hooks": [enforce_elapsed_bound],
+                    "progress_hooks": [progress_hook],
                 }
                 with yt_dlp.YoutubeDL(options) as downloader:  # pyright: ignore[reportArgumentType]
                     raw_info = downloader.extract_info(url, download=True)
@@ -150,6 +158,51 @@ class YtDlpMediaTransport:
             if isinstance(error, SourceFetchError):
                 raise
             raise SourceFetchError("YouTube media acquisition failed") from error
+
+
+def _nonnegative_float(value: object) -> float | None:
+    try:
+        converted: float = float(value)  # pyright: ignore[reportArgumentType]
+    except (TypeError, ValueError):
+        return None
+    return converted if converted >= 0 else None
+
+
+def _download_progress_hook(
+    progress: IngestionProgressCallback,
+    *,
+    started_at: float,
+    timeout_seconds: float,
+) -> Callable[[dict[str, object]], None]:
+    """Build a bounded yt-dlp hook that exposes only byte counts."""
+
+    def report(status: dict[str, object]) -> None:
+        if monotonic() - started_at > timeout_seconds:
+            raise TimeoutError("YouTube media acquisition exceeded its elapsed-time bound")
+        downloaded: float | None = _nonnegative_float(status.get("downloaded_bytes"))
+        total: float | None = _positive_float(
+            status.get("total_bytes") or status.get("total_bytes_estimate"),
+        )
+        if downloaded is not None:
+            progress(
+                IngestionProgressEvent(
+                    stage=IngestionProgressStage.DOWNLOAD_PROGRESS,
+                    current=downloaded,
+                    total=total,
+                ),
+            )
+
+    return report
+
+
+def _positive_float(value: object) -> float | None:
+    converted: float | None = _nonnegative_float(value)
+    return converted if converted is not None and converted > 0 else None
+
+
+def _definition_scoped_content_version(content_hash: str, definition_hash: str) -> str:
+    """Bind immutable YouTube bytes to the source policy revision that acquired them."""
+    return f"{content_hash}:{definition_hash}"
 
 
 class _YouTubeResourceId(BaseModel):
@@ -281,6 +334,7 @@ class YouTubeConnector:
         analyzer: MediaAnalyzer,
         transport: HttpTransport | None = None,
         media_transport: YouTubeMediaTransport | None = None,
+        progress: IngestionProgressCallback | None = None,
     ) -> None:
         """Bind playlist discovery to lazy credentials and bounded transports."""
         self._definition: SourceDefinition = definition
@@ -293,7 +347,14 @@ class YouTubeConnector:
         self._resolved_api_key: SecretStr | None = None
         self._analyzer: MediaAnalyzer = analyzer
         self._transport: HttpTransport = transport or AddressPinnedHttpTransport()
-        self._media_transport: YouTubeMediaTransport = media_transport or YtDlpMediaTransport()
+        self._media_transport: YouTubeMediaTransport = media_transport or YtDlpMediaTransport(
+            progress or ignore_ingestion_progress,
+        )
+
+    @property
+    def maximum_artifact_bytes(self) -> int:
+        """Return the configured raw-media byte limit used for cache verification."""
+        return self._config.max_media_bytes
 
     def discover(
         self,
@@ -438,9 +499,8 @@ class YouTubeConnector:
 
     def fetch(self, item: SourceItem) -> RawArtifact:
         """Acquire the actual public video for transcript and frame processing."""
-        if item.source_id != self._definition.source_id or item.source_definition_hash != source_definition_hash(
-            self._definition
-        ):
+        definition_hash: str = source_definition_hash(self._definition)
+        if item.source_id != self._definition.source_id or item.source_definition_hash != definition_hash:
             raise SourceFetchError("Cannot fetch a YouTube item from another source")
         acquisition = self._media_transport.fetch(
             str(item.canonical_uri),
@@ -459,7 +519,7 @@ class YouTubeConnector:
         return RawArtifact(
             source_item=item.model_copy(
                 update={
-                    "content_version": digest,
+                    "content_version": _definition_scoped_content_version(digest, definition_hash),
                     "published_at": published_at,
                     "updated_at": updated_at,
                 },

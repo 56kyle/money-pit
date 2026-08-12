@@ -73,6 +73,26 @@ class AssetStore:
                 temporary_path.unlink(missing_ok=True)
         return StoredAsset(digest=digest, path=destination, size_bytes=len(content))
 
+    def read_bytes(self, digest: str, *, maximum_bytes: int) -> bytes | None:
+        """Return verified bounded bytes, or ``None`` when the asset is absent."""
+        if maximum_bytes <= 0:
+            raise ValueError("maximum_bytes must be positive.")
+        path: Path = self.path_for_digest(digest)
+        if not path.exists():
+            return None
+        try:
+            with path.open("rb") as asset_file:
+                content: bytes = asset_file.read(maximum_bytes + 1)
+        except OSError as error:
+            raise AssetWriteError(f"Could not read existing asset {digest}.") from error
+        if len(content) > maximum_bytes:
+            raise AssetIntegrityError(
+                f"Existing asset {digest} exceeds the configured byte bound.",
+            )
+        if hashlib.sha256(content).hexdigest() != digest:
+            raise AssetIntegrityError(f"Existing asset at {path} does not match digest {digest}.")
+        return content
+
     def _verify_existing(self, path: Path, digest: str) -> StoredAsset:
         """Return an existing asset after checking its full content."""
         try:

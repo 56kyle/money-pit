@@ -39,3 +39,8 @@ class DirectUrlSourceConnector(Protocol):
     def source_item_from_url(self, url: str) -> SourceItem:
         """Validate a URL and return its stable configured-source identity."""
         ...
+
+    @property
+    def maximum_artifact_bytes(self) -> int:
+        """Return the byte bound that cached raw content must satisfy."""
+        ...

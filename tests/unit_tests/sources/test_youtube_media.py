@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
+from typing import ClassVar
 from typing import cast
 
 
@@ -18,6 +19,8 @@ from pydantic import SecretStr
 from pytest import MonkeyPatch
 
 from money_pit.evidence.media import MediaAnalysis
+from money_pit.progress import IngestionProgressEvent
+from money_pit.progress import IngestionProgressStage
 from money_pit.schemas.sources import AllowedUse
 from money_pit.schemas.sources import SourceCursor
 from money_pit.schemas.sources import SourceCursorPurpose
@@ -155,7 +158,9 @@ def test_youtube_connector_fetch_returns_injected_video_media_not_watch_html() -
         Path("video.mp4"),
     )
     assert b"<html" not in artifact.content
-    assert artifact.source_item.content_version == hashlib.sha256(VIDEO).hexdigest()
+    content_digest = hashlib.sha256(VIDEO).hexdigest()
+    assert artifact.content_hash == content_digest
+    assert artifact.source_item.content_version == f"{content_digest}:{source_definition_hash(definition)}"
     assert media_transport.calls == [
         ("https://www.youtube.com/watch?v=dQw4w9WgXcQ", 1_024, 7.0),
     ]
@@ -402,6 +407,7 @@ def test_youtube_sync_pages_until_the_previous_high_water_after_an_upload_burst(
 class _FakeYoutubeDl:
     extension: str = "mp4"
     invoke_hook: bool = False
+    hook_status: ClassVar[dict[str, object]] = {}
 
     def __init__(self, options: dict[str, object]) -> None:
         self._options: dict[str, object] = options
@@ -418,7 +424,7 @@ class _FakeYoutubeDl:
             hooks = cast("list[object]", self._options["progress_hooks"])
             hook = cast("Callable[[dict[str, object]], object]", hooks[0])
             if callable(hook):
-                _ = hook({})
+                _ = hook(self.hook_status)
         output = str(self._options["outtmpl"]).replace("%(ext)s", self.extension)
         _ = Path(output).write_bytes(VIDEO)
         return {
@@ -455,6 +461,7 @@ def test_yt_dlp_media_transport_normalizes_elapsed_hook_timeout(
 ) -> None:
     _FakeYoutubeDl.extension = "mp4"
     _FakeYoutubeDl.invoke_hook = True
+    _FakeYoutubeDl.hook_status = {}
     monkeypatch.setitem(sys.modules, "yt_dlp", SimpleNamespace(YoutubeDL=_FakeYoutubeDl))
     elapsed = iter((0.0, 8.0))
     monkeypatch.setattr("money_pit.sources.youtube.monotonic", lambda: next(elapsed))
@@ -465,3 +472,34 @@ def test_yt_dlp_media_transport_normalizes_elapsed_hook_timeout(
             maximum_bytes=1_024,
             timeout_seconds=7,
         )
+
+
+def test_yt_dlp_media_transport_maps_progress_to_secret_free_typed_byte_counts(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    events: list[IngestionProgressEvent] = []
+    _FakeYoutubeDl.extension = "mp4"
+    _FakeYoutubeDl.invoke_hook = True
+    _FakeYoutubeDl.hook_status = {
+        "downloaded_bytes": 25,
+        "total_bytes_estimate": 100,
+        "filename": "https://user:secret@example.test/private-video.mp4",
+        "info_dict": {"cookies": "private-cookie"},
+    }
+    monkeypatch.setitem(sys.modules, "yt_dlp", SimpleNamespace(YoutubeDL=_FakeYoutubeDl))
+
+    _ = YtDlpMediaTransport(progress=events.append).fetch(
+        "https://www.youtube.com/watch?v=video-id",
+        maximum_bytes=1_024,
+        timeout_seconds=7,
+    )
+
+    assert events == [
+        IngestionProgressEvent(
+            stage=IngestionProgressStage.DOWNLOAD_PROGRESS,
+            current=25,
+            total=100,
+        ),
+    ]
+    assert "secret" not in events[0].model_dump_json()
+    assert "cookie" not in events[0].model_dump_json()

@@ -18,6 +18,7 @@ from money_pit.evidence.media import MediaEvidenceProcessor
 from money_pit.evidence.media import OpenAIVisionFrameReader
 from money_pit.evidence.pdf import PdfEvidenceProcessor
 from money_pit.evidence.results import EvidenceProcessingBundle
+from money_pit.progress import ignore_ingestion_progress
 from money_pit.schemas.evidence import EvidenceDocument
 from money_pit.schemas.evidence import EvidenceFragment
 from money_pit.schemas.evidence import TextLocator
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
     from email.message import Message
 
+    from money_pit.progress import IngestionProgressCallback
     from money_pit.schemas.sources import RawArtifact
     from money_pit.secrets import InferenceCredentialResolver
 
@@ -261,6 +263,7 @@ def builtin_evidence_processors(
     credentials: InferenceCredentialResolver,
     *,
     model: str,
+    progress: IngestionProgressCallback | None = None,
 ) -> EvidenceProcessorRegistry:
     """Return processors whose extraction semantics are media-generic."""
     registry = EvidenceProcessorRegistry()
@@ -272,10 +275,11 @@ def builtin_evidence_processors(
     registry.register(
         MediaEvidenceProcessor(
             DefaultMediaAnalyzer(
+                progress=progress or ignore_ingestion_progress,
                 frame_reader=OpenAIVisionFrameReader(
                     lambda: credentials.openai(reason="Interpret financial evidence in a video frame"),
                     model,
-                )
+                ),
             ),
         )
     )

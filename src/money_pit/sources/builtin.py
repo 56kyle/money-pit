@@ -1,9 +1,11 @@
 """Module composing the built-in generic source adapter registry."""
 
-from money_pit.config import StrategyIntelligenceConfig
-from money_pit.schemas.sources import SourceDefinition
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from money_pit.progress import ignore_ingestion_progress
 from money_pit.secrets import CredentialResolutionError
-from money_pit.secrets import InferenceCredentialResolver
 from money_pit.secrets import SourceCredentialResolver
 from money_pit.sources.feeds import FeedConnector
 from money_pit.sources.http import WebConnector
@@ -12,9 +14,16 @@ from money_pit.sources.local import local_audio_connector
 from money_pit.sources.local import local_email_connector
 from money_pit.sources.local import local_pdf_connector
 from money_pit.sources.local import local_text_connector
-from money_pit.sources.protocol import SourceConnector
 from money_pit.sources.registry import AdapterRegistry
 from money_pit.sources.sec import SecFilingsConnector
+
+
+if TYPE_CHECKING:
+    from money_pit.config import StrategyIntelligenceConfig
+    from money_pit.progress import IngestionProgressCallback
+    from money_pit.schemas.sources import SourceDefinition
+    from money_pit.secrets import InferenceCredentialResolver
+    from money_pit.sources.protocol import SourceConnector
 
 
 def builtin_adapter_registry(
@@ -22,6 +31,7 @@ def builtin_adapter_registry(
     strategy: StrategyIntelligenceConfig,
     *,
     inference_credentials: InferenceCredentialResolver | None = None,
+    progress: IngestionProgressCallback | None = None,
 ) -> AdapterRegistry:
     """Return a fresh registry containing every bundled connector."""
     registry = AdapterRegistry()
@@ -61,13 +71,15 @@ def builtin_adapter_registry(
                 reason=f"Discover uploads for YouTube source {definition.source_id}",
             ).youtube_api_key,
             DefaultMediaAnalyzer(
+                progress=progress or ignore_ingestion_progress,
                 frame_reader=OpenAIVisionFrameReader(
                     lambda: media_inference_credentials.openai(
                         reason="Interpret financial evidence in a video frame",
                     ),
                     strategy.llm_model,
-                )
+                ),
             ),
+            progress=progress,
         )
 
     registry.register("youtube", youtube_connector)

@@ -22,9 +22,14 @@ from money_pit.evidence.errors import EvidenceProcessingError
 from money_pit.evidence.errors import EvidenceProcessorNotFoundError
 from money_pit.evidence.repository import persist_processing_attempt
 from money_pit.evidence.results import EvidenceProcessingBundle
+from money_pit.progress import IngestionProgressCallback
+from money_pit.progress import IngestionProgressEvent
+from money_pit.progress import IngestionProgressStage
+from money_pit.progress import ignore_ingestion_progress
 from money_pit.schemas.evidence import EvidenceDocument
 from money_pit.schemas.evidence import EvidenceProcessingAttempt
 from money_pit.schemas.evidence import EvidenceProcessingStatus
+from money_pit.schemas.sources import RawArtifact
 from money_pit.schemas.sources import SourceCursor
 from money_pit.schemas.sources import SourceCursorPurpose
 from money_pit.schemas.sources import SourceItem
@@ -37,6 +42,7 @@ from money_pit.sources.errors import UnsupportedDirectIngestionError
 from money_pit.sources.protocol import DirectUrlSourceConnector
 from money_pit.storage.database import Database
 from money_pit.storage.database import TransactionMode
+from money_pit.storage.errors import AssetIntegrityError
 
 
 if TYPE_CHECKING:
@@ -46,7 +52,6 @@ if TYPE_CHECKING:
     from money_pit.evidence.processors import EvidenceProcessorRegistry
     from money_pit.evidence.repository import EvidenceProcessingAttemptRepository
     from money_pit.schemas.evidence import EvidenceFragment
-    from money_pit.schemas.sources import RawArtifact
     from money_pit.schemas.sources import SourceDefinition
     from money_pit.schemas.sources import SourceRegistryDocument
     from money_pit.sources.protocol import SourceConnector
@@ -84,6 +89,7 @@ class SourceStateRepository(Protocol):
     ) -> bool:
         """Delete one cursor timeline, returning whether it existed."""
         ...
+
 
 class SourceSyncResult(BaseModel):
     """Durable outcome of synchronizing one configured source."""
@@ -153,6 +159,88 @@ class EvidenceRepository:
                 inserted: bool = self._persist_fragment(connection, fragment)
                 fragment_inserted = inserted or fragment_inserted
         return asset_inserted or acquisition_inserted or fragment_inserted
+
+    def latest_cached_raw_artifact(
+        self,
+        item: SourceItem,
+        *,
+        asset_store: AssetStore,
+        maximum_bytes: int,
+    ) -> RawArtifact | None:
+        """Reconstruct the latest verified raw acquisition for one source revision."""
+        with self._database.transaction() as connection:
+            row: sqlite3.Row | None = cast(
+                "sqlite3.Row | None",
+                connection.execute(
+                    """
+                    SELECT source_item.source_item_id, source_item.source_id,
+                           source_item.source_definition_hash, source_item.canonical_uri,
+                           source_item.published_at, source_item.updated_at,
+                           source_item.discovered_at, source_item.content_version,
+                           acquisition.asset_id, acquisition.retrieved_at,
+                           acquisition.media_type, asset.content_hash, asset.local_path
+                    FROM source_items AS source_item
+                    JOIN evidence_asset_acquisitions AS acquisition
+                      ON acquisition.source_item_id = source_item.source_item_id
+                     AND acquisition.content_version = source_item.content_version
+                     AND acquisition.source_definition_hash = source_item.source_definition_hash
+                    JOIN evidence_assets AS asset ON asset.asset_id = acquisition.asset_id
+                    WHERE source_item.source_item_id = ?
+                      AND source_item.source_definition_hash = ?
+                      AND source_item.canonical_uri = ?
+                      AND (
+                          acquisition.media_type LIKE 'video/%'
+                          OR acquisition.media_type LIKE 'audio/%'
+                      )
+                    ORDER BY acquisition.retrieved_at DESC
+                    LIMIT 1
+                    """,
+                    (
+                        item.source_item_id,
+                        item.source_definition_hash,
+                        item.canonical_uri,
+                    ),
+                ).fetchone(),
+            )
+        if row is None:
+            return None
+        content_hash: str = str(_column(row, "content_hash"))
+        asset_id: str = str(_column(row, "asset_id"))
+        if content_hash != asset_id:
+            raise AssetIntegrityError("Cached acquisition metadata violates content identity.")
+        expected_path: Path = asset_store.path_for_digest(content_hash)
+        if Path(str(_column(row, "local_path"))) != expected_path:
+            raise AssetIntegrityError("Cached acquisition path is not canonical for this asset store.")
+        content: bytes | None = asset_store.read_bytes(content_hash, maximum_bytes=maximum_bytes)
+        if content is None:
+            return None
+        try:
+            source_item = SourceItem.model_validate(
+                {
+                    "source_item_id": _column(row, "source_item_id"),
+                    "source_id": _column(row, "source_id"),
+                    "source_definition_hash": _column(row, "source_definition_hash"),
+                    "canonical_uri": _column(row, "canonical_uri"),
+                    "published_at": _column(row, "published_at"),
+                    "updated_at": _column(row, "updated_at"),
+                    "discovered_at": _column(row, "discovered_at"),
+                    "content_version": _column(row, "content_version"),
+                },
+            )
+            media_type: str = str(_column(row, "media_type"))
+            return RawArtifact.model_validate(
+                {
+                    "source_item": source_item,
+                    "content": content,
+                    "media_type": media_type,
+                    "retrieved_at": _column(row, "retrieved_at"),
+                    "canonical_uri": _column(row, "canonical_uri"),
+                    "filename": _cached_filename(media_type),
+                    "content_hash": content_hash,
+                },
+            )
+        except ValueError as error:
+            raise AssetIntegrityError("Cached acquisition metadata is malformed.") from error
 
     def persist_ingestion_batch(
         self,
@@ -510,6 +598,7 @@ class SourceSyncService:
         *,
         attempt_repository: EvidenceProcessingAttemptRepository,
         processor_registry: EvidenceProcessorRegistry | None = None,
+        progress: IngestionProgressCallback = ignore_ingestion_progress,
     ) -> None:
         """Bind a validated registry to its durable synchronization dependencies."""
         self._registry_document: SourceRegistryDocument = registry_document
@@ -519,6 +608,7 @@ class SourceSyncService:
         self._asset_store: AssetStore = asset_store
         self._processor_registry: EvidenceProcessorRegistry | None = processor_registry
         self._attempt_repository: EvidenceProcessingAttemptRepository = attempt_repository
+        self._progress: IngestionProgressCallback = progress
 
     def register_definitions(self) -> int:
         """Persist all configured definitions and return the changed count."""
@@ -573,7 +663,7 @@ class SourceSyncService:
                 break
         return tuple(results)
 
-    def ingest(self, source_id: str, url: str) -> SourceIngestResult:
+    def ingest(self, source_id: str, url: str, *, refresh: bool = False) -> SourceIngestResult:
         """Ingest one caller-selected URL without reading or changing discovery cursors."""
         definition: SourceDefinition = self._definition(source_id)
         connector: SourceConnector = self._adapters.create(definition)
@@ -582,7 +672,26 @@ class SourceSyncService:
                 f"Source adapter does not support direct URL ingestion: {definition.adapter_name}",
             )
         item: SourceItem = connector.source_item_from_url(url)
-        artifact: RawArtifact = connector.fetch(item)
+        artifact: RawArtifact | None = None
+        if refresh:
+            self._emit(IngestionProgressStage.CACHE_REFRESH)
+        else:
+            artifact = self._evidence_repository.latest_cached_raw_artifact(
+                item,
+                asset_store=self._asset_store,
+                maximum_bytes=connector.maximum_artifact_bytes,
+            )
+            self._emit(
+                IngestionProgressStage.CACHE_HIT if artifact is not None else IngestionProgressStage.CACHE_MISS,
+            )
+        if artifact is None:
+            self._emit(IngestionProgressStage.DOWNLOAD_STARTED)
+            artifact = connector.fetch(item)
+            self._emit(
+                IngestionProgressStage.DOWNLOAD_COMPLETED,
+                current=float(len(artifact.content)),
+                total=float(connector.maximum_artifact_bytes),
+            )
         records, attempts = self._process_artifact(
             definition.source_id,
             connector,
@@ -597,6 +706,8 @@ class SourceSyncService:
             cursor_purpose=SourceCursorPurpose.SYNC,
             attempts=attempts,
         )
+        self._emit(IngestionProgressStage.PERSISTENCE, detail="ingestion result")
+        self._emit(IngestionProgressStage.COMPLETED)
         return SourceIngestResult(
             source_id=definition.source_id,
             source_item_id=artifact.source_item.source_item_id,
@@ -656,6 +767,7 @@ class SourceSyncService:
         *,
         cursor_purpose: SourceCursorPurpose,
     ) -> tuple[tuple[SourceIngestionRecord, ...], tuple[EvidenceProcessingAttempt, ...]]:
+        self._emit(IngestionProgressStage.PERSISTENCE, detail="raw acquisition")
         stored = self._asset_store.put_bytes(artifact.content)
         if stored.digest != artifact.content_hash:
             raise SourceDiscoveryError("Fetched artifact hash changed during persistence")
@@ -690,6 +802,7 @@ class SourceSyncService:
             SourceIngestionRecord(source_item=artifact.source_item, evidence_document=primary),
             *derived_records,
         )
+        self._emit(IngestionProgressStage.PERSISTENCE, detail="processed evidence")
         fragment_ids = tuple(fragment.fragment_id for fragment in primary.fragments)
         primary_attempt = EvidenceProcessingAttempt(
             attempt_id=str(uuid4()),
@@ -721,6 +834,23 @@ class SourceSyncService:
             for record in derived_records
         )
         return records, (primary_attempt, *derived_attempts)
+
+    def _emit(
+        self,
+        stage: IngestionProgressStage,
+        *,
+        detail: str | None = None,
+        current: float | None = None,
+        total: float | None = None,
+    ) -> None:
+        self._progress(
+            IngestionProgressEvent(
+                stage=stage,
+                detail=detail,
+                current=current,
+                total=total,
+            ),
+        )
 
     def _validate_and_store_bundle(
         self,
@@ -815,6 +945,19 @@ def _optional_text(value: object) -> str | None:
     if not isinstance(value, str):
         raise SourceDiscoveryError("Stored source-item timestamp is malformed")
     return value
+
+
+def _cached_filename(media_type: str) -> Path | None:
+    suffix_by_media_type: dict[str, str] = {
+        "audio/mp4": ".m4a",
+        "audio/mpeg": ".mp3",
+        "audio/x-matroska": ".mka",
+        "video/mp4": ".mp4",
+        "video/webm": ".webm",
+        "video/x-matroska": ".mkv",
+    }
+    suffix: str | None = suffix_by_media_type.get(media_type.partition(";")[0].casefold())
+    return Path(f"cached{suffix}") if suffix is not None else None
 
 
 def default_sources_path() -> Path:

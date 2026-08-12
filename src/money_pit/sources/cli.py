@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path  # noqa: TC003 - Typer resolves command annotations at runtime.
 from typing import TYPE_CHECKING
+from typing import Annotated
 
 import typer
 
@@ -36,6 +37,8 @@ from money_pit.storage.sources import SourceRepository
 if TYPE_CHECKING:
     from datetime import datetime
 
+    from money_pit.progress import IngestionProgressCallback
+    from money_pit.progress import IngestionProgressEvent
     from money_pit.schemas.sources import SourceDefinition
     from money_pit.schemas.sources import SourceRegistryDocument
 
@@ -67,6 +70,8 @@ def _source_repository_for_listing(sources_path: Path) -> SourceRepository:
 
 def _source_runtime(
     sources_path: Path,
+    *,
+    progress: IngestionProgressCallback | None = None,
 ) -> tuple[SourceSyncService, SourceRepository]:
     configuration = load_application_config(
         sources_path=sources_path,
@@ -78,6 +83,7 @@ def _source_runtime(
         source_credentials,
         configuration.intelligence,
         inference_credentials=inference_credentials,
+        progress=progress,
     )
     document: SourceRegistryDocument = load_source_registry(sources_path, adapters)
     database = Database(DATA_ROOT / STATE_DATABASE_FILENAME)
@@ -93,7 +99,9 @@ def _source_runtime(
         processor_registry=builtin_evidence_processors(
             inference_credentials,
             model=configuration.intelligence.llm_model,
+            progress=progress,
         ),
+        **({"progress": progress} if progress is not None else {}),
     )
     _ = service.register_definitions()
     return service, repository
@@ -155,12 +163,32 @@ def ingest(
     source_id: str,
     url: str,
     sources_path: Path = _DEFAULT_SOURCES_PATH,
+    refresh: Annotated[
+        bool,
+        typer.Option(
+            "--refresh",
+            help="Download again instead of reusing cached media.",
+        ),
+    ] = False,
 ) -> None:
     """Ingest one caller-selected URL through its configured source policy."""
     try:
-        service, _ = _source_runtime(sources_path)
-        result: SourceIngestResult = service.ingest(source_id, url)
+        service, _ = _source_runtime(sources_path, progress=_render_ingestion_progress)
+        result: SourceIngestResult = service.ingest(source_id, url, refresh=refresh)
     except (ConfigurationError, SourceError, StorageError, OSError) as error:
         typer.echo(f"Cannot ingest URL for source {source_id}: {error}", err=True)
         raise typer.Exit(code=1) from error
     typer.echo(result.model_dump_json(indent=2))
+
+
+def _render_ingestion_progress(event: IngestionProgressEvent) -> None:
+    """Render one ingestion update to stderr without contaminating JSON stdout."""
+    parts: list[str] = [event.stage.value.replace("_", " ")]
+    if event.detail is not None:
+        parts.append(event.detail)
+    if event.current is not None and event.total is not None:
+        percentage: float = min(event.current / event.total * 100.0, 100.0)
+        parts.append(f"{percentage:.1f}%")
+    elif event.current is not None:
+        parts.append(f"{event.current:g}")
+    typer.echo(": ".join(parts), err=True)

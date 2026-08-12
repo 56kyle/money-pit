@@ -1,3 +1,4 @@
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC
@@ -16,6 +17,9 @@ from money_pit.evidence.media import MediaEvidenceProcessor
 from money_pit.evidence.media import TimedTranscriptSegment
 from money_pit.evidence.processors import EvidenceProcessorRegistry
 from money_pit.evidence.repository import EvidenceProcessingAttemptRepository
+from money_pit.progress import IngestionProgressEvent
+from money_pit.progress import IngestionProgressStage
+from money_pit.progress import ignore_ingestion_progress
 from money_pit.schemas.evidence import EvidenceDocument
 from money_pit.schemas.evidence import EvidenceProcessingAttempt
 from money_pit.schemas.evidence import EvidenceProcessingStatus
@@ -31,6 +35,7 @@ from money_pit.schemas.sources import SourceTrustSetting
 from money_pit.schemas.sources import TrustCategory
 from money_pit.schemas.sources import TrustLevel
 from money_pit.sources._shared import evidence_asset
+from money_pit.sources._shared import source_definition_hash
 from money_pit.sources.errors import SourceDiscoveryError
 from money_pit.sources.errors import UnsupportedDirectIngestionError
 from money_pit.sources.http import HttpResponse
@@ -43,6 +48,7 @@ from money_pit.sources.youtube import YouTubeConnector
 from money_pit.sources.youtube import YouTubeMediaAcquisition
 from money_pit.storage.assets import AssetStore
 from money_pit.storage.database import Database
+from money_pit.storage.errors import AssetIntegrityError
 from money_pit.storage.sources import SourceRepository
 
 
@@ -166,6 +172,8 @@ def _service(
     tmp_path: Path,
     definition: SourceDefinition,
     adapters: AdapterRegistry,
+    *,
+    progress: list[IngestionProgressEvent] | None = None,
 ) -> tuple[SourceSyncService, Database, _CursorTrackingSourceRepository]:
     database = Database(tmp_path / "intelligence.sqlite3")
     database.initialize()
@@ -180,6 +188,7 @@ def _service(
         AssetStore(tmp_path / "assets"),
         attempt_repository=EvidenceProcessingAttemptRepository(database),
         processor_registry=processors,
+        progress=progress.append if progress is not None else ignore_ingestion_progress,
     )
     _ = service.register_definitions()
     return service, database, repository
@@ -190,6 +199,7 @@ def _direct_runtime(
     *,
     media_transport: _MediaTransport | None = None,
     playlist_transport: _PlaylistHttpTransport | None = None,
+    progress: list[IngestionProgressEvent] | None = None,
 ) -> tuple[
     SourceSyncService,
     Database,
@@ -218,7 +228,7 @@ def _direct_runtime(
             selected_media_transport,
         ),
     )
-    service, database, repository = _service(tmp_path, definition, adapters)
+    service, database, repository = _service(tmp_path, definition, adapters, progress=progress)
     return service, database, repository, selected_media_transport, credential_calls
 
 
@@ -230,6 +240,128 @@ def test_ingest_uses_direct_media_seam_without_discovery_credentials(tmp_path: P
     assert (media_transport.calls, credential_calls) == (
         [("https://www.youtube.com/watch?v=dQw4w9WgXcQ", 1_024, 7.0)],
         [],
+    )
+
+
+def test_ingest_reuses_a_verified_durable_raw_acquisition_without_media_transport(tmp_path: Path) -> None:
+    service, _, _, media_transport, _ = _direct_runtime(tmp_path)
+
+    _ = service.ingest("youtube", "https://youtu.be/dQw4w9WgXcQ")
+    _ = service.ingest("youtube", "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+
+    assert media_transport.calls == [
+        ("https://www.youtube.com/watch?v=dQw4w9WgXcQ", 1_024, 7.0),
+    ]
+
+
+def test_ingest_with_refresh_forces_media_transport_after_a_cacheable_acquisition(tmp_path: Path) -> None:
+    service, _, _, media_transport, _ = _direct_runtime(tmp_path)
+
+    _ = service.ingest("youtube", "https://youtu.be/dQw4w9WgXcQ")
+    _ = service.ingest("youtube", "https://youtu.be/dQw4w9WgXcQ", refresh=True)
+
+    assert len(media_transport.calls) == 2
+
+
+def test_ingest_reacquires_and_persists_unchanged_media_for_a_new_source_definition(tmp_path: Path) -> None:
+    service, database, _, media_transport, _ = _direct_runtime(tmp_path)
+    _ = service.ingest("youtube", "https://youtu.be/dQw4w9WgXcQ")
+    changed_definition = _definition().model_copy(
+        update={"adapter_config": {"max_media_bytes": 2_048, "timeout_seconds": 7}},
+    )
+    changed_adapters = AdapterRegistry()
+    changed_adapters.register(
+        "youtube",
+        lambda configured: YouTubeConnector(
+            configured,
+            lambda: SecretStr("unused"),
+            _MediaAnalyzer(),
+            _UnusedHttpTransport(),
+            media_transport,
+        ),
+    )
+    processors = EvidenceProcessorRegistry()
+    processors.register(MediaEvidenceProcessor(_MediaAnalyzer()))
+    changed_service = SourceSyncService(
+        SourceRegistryDocument(version="0.0.3", sources=(changed_definition,)),
+        changed_adapters,
+        SourceRepository(database),
+        EvidenceRepository(database),
+        AssetStore(tmp_path / "assets"),
+        attempt_repository=EvidenceProcessingAttemptRepository(database),
+        processor_registry=processors,
+    )
+    _ = changed_service.register_definitions()
+
+    _ = changed_service.ingest("youtube", "https://youtu.be/dQw4w9WgXcQ")
+    _ = changed_service.ingest("youtube", "https://youtu.be/dQw4w9WgXcQ")
+    with database.transaction() as connection:
+        rows = cast(
+            "list[sqlite3.Row]",
+            connection.execute(
+                "SELECT DISTINCT source_definition_hash FROM evidence_asset_acquisitions",
+            ).fetchall(),
+        )
+        persisted_definition_hashes = {
+            str(cast("object", row["source_definition_hash"]))
+            for row in rows
+        }
+
+    assert len(media_transport.calls) == 2
+    assert persisted_definition_hashes == {
+        source_definition_hash(_definition()),
+        source_definition_hash(changed_definition),
+    }
+
+
+def test_ingest_refetches_when_the_cached_asset_file_is_missing(tmp_path: Path) -> None:
+    service, _, _, media_transport, _ = _direct_runtime(tmp_path)
+    _ = service.ingest("youtube", "https://youtu.be/dQw4w9WgXcQ")
+    digest = hashlib.sha256(_VIDEO).hexdigest()
+    AssetStore(tmp_path / "assets").path_for_digest(digest).unlink()
+
+    _ = service.ingest("youtube", "https://youtu.be/dQw4w9WgXcQ")
+
+    assert len(media_transport.calls) == 2
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        pytest.param(b"corrupt-video-content", id="corrupt"),
+        pytest.param(b"x" * 1_025, id="oversized"),
+    ],
+)
+def test_ingest_rejects_an_invalid_cached_asset_without_refetching(
+    tmp_path: Path,
+    replacement: bytes,
+) -> None:
+    service, _, _, media_transport, _ = _direct_runtime(tmp_path)
+    _ = service.ingest("youtube", "https://youtu.be/dQw4w9WgXcQ")
+    digest = hashlib.sha256(_VIDEO).hexdigest()
+    _ = AssetStore(tmp_path / "assets").path_for_digest(digest).write_bytes(replacement)
+
+    with pytest.raises(AssetIntegrityError):
+        _ = service.ingest("youtube", "https://youtu.be/dQw4w9WgXcQ")
+
+    assert len(media_transport.calls) == 1
+
+
+def test_ingest_emits_typed_progress_for_cache_and_processing_stages(tmp_path: Path) -> None:
+    progress: list[IngestionProgressEvent] = []
+    service, _, _, _, _ = _direct_runtime(tmp_path, progress=progress)
+
+    _ = service.ingest("youtube", "https://youtu.be/dQw4w9WgXcQ")
+
+    assert all(isinstance(event, IngestionProgressEvent) for event in progress)
+    assert tuple(event.stage for event in progress) == (
+        IngestionProgressStage.CACHE_MISS,
+        IngestionProgressStage.DOWNLOAD_STARTED,
+        IngestionProgressStage.DOWNLOAD_COMPLETED,
+        IngestionProgressStage.PERSISTENCE,
+        IngestionProgressStage.PERSISTENCE,
+        IngestionProgressStage.PERSISTENCE,
+        IngestionProgressStage.COMPLETED,
     )
 
 

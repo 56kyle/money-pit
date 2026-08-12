@@ -6,8 +6,11 @@ import pytest
 import tomllib
 from pydantic import SecretStr
 from pydantic import ValidationError
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.openai import OpenAIResponsesModel
 
 from money_pit.agents.models import openai_chat_model
+from money_pit.agents.models import openai_responses_model
 from money_pit.config import ExecutionConfig
 from money_pit.config import StrategyConfig
 from money_pit.config import StrategyIntelligenceConfig
@@ -98,6 +101,19 @@ def test_openai_chat_model_uses_explicit_credentials_and_strategy_model() -> Non
     assert (model.model_name, provider.client.api_key) == ("configured-model", "explicit-key")
 
 
+def test_openai_responses_model_uses_explicit_credentials_and_frame_model() -> None:
+    model = openai_responses_model(
+        OpenAICredentials(api_key=SecretStr("frame-key")),
+        model_name="gpt-5.6-sol",
+    )
+    provider = model.provider
+    if provider is None:
+        pytest.fail("OpenAI Responses model did not preserve its explicit provider")
+
+    assert isinstance(model, OpenAIResponsesModel)
+    assert (model.model_name, provider.client.api_key) == ("gpt-5.6-sol", "frame-key")
+
+
 def test_openai_vision_frame_reader_resolves_credentials_lazily() -> None:
     resolutions: list[str] = []
 
@@ -111,6 +127,21 @@ def test_openai_vision_frame_reader_resolves_credentials_lazily() -> None:
     _ = reader._inference_agent()  # pyright: ignore[reportPrivateUsage]  # Pins the lazy provider-construction seam.
 
     assert resolutions == ["inference"]
+
+
+def test_openai_vision_frame_reader_uses_responses_while_strategy_agents_remain_chat() -> None:
+    reader = OpenAIVisionFrameReader(
+        lambda: OpenAICredentials(api_key=SecretStr("frame-key")),
+        "gpt-5.6-sol",
+    )
+    frame_agent = reader._inference_agent()  # pyright: ignore[reportPrivateUsage]
+    strategy_model = openai_chat_model(
+        OpenAICredentials(api_key=SecretStr("strategy-key")),
+        model_name="strategy-model",
+    )
+
+    assert isinstance(frame_agent.model, OpenAIResponsesModel)
+    assert isinstance(strategy_model, OpenAIChatModel)
 
 
 class _YouTubeCredentials:

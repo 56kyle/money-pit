@@ -35,8 +35,8 @@ support direct URL ingestion. The YouTube connector accepts canonical HTTPS watc
 URLs, validates the stable 11-character video ID, and normalizes provenance to the canonical watch
 URL. After acquisition, yt-dlp metadata must identify the same video and a channel whose `UC` ID
 maps exactly to the configured `UU` uploads-playlist ID. The source item identity is
-`SOURCE_ID:VIDEO_ID`. The fetched content digest replaces the provisional video ID as the content
-version.
+`SOURCE_ID:VIDEO_ID`. The fetched content digest and source-definition hash replace the provisional
+video ID as a definition-scoped content version; the raw asset identity remains the plain digest.
 
 Direct ingestion uses the configured connector's bounded `yt-dlp` media transport and the existing
 raw-asset, processing-attempt, and evidence persistence lifecycle. It does not call cursor repository

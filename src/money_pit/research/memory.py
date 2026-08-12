@@ -11,6 +11,7 @@ from typing import cast
 from money_pit.contracts import ResearchRoundExecution
 from money_pit.contracts import ResearchTaskDraft
 from money_pit.evidence.aliases import project_evidence
+from money_pit.research.errors import ResearchBudgetExceededError
 from money_pit.schemas.research import CandidateThesisResearchScope
 from money_pit.schemas.research import EvidenceAliasBinding
 from money_pit.schemas.research import MaterialAnchorAssessment
@@ -120,6 +121,7 @@ class PlannedResearchTaskStore:
         self,
         task: ResearchTaskDraft,
         *,
+        allocated_maximum_results: int,
         run_id: str,
         session_id: str,
         round_number: int,
@@ -129,6 +131,8 @@ class PlannedResearchTaskStore:
         candidate_id: str | None = task.candidate_thesis_id
         if candidate_id is None:
             raise ValueError("Research task must identify a candidate")
+        if allocated_maximum_results < 1 or allocated_maximum_results > task.maximum_results:
+            raise ValueError("Allocated result limit must be within the planned task limit")
         task_json: str = task.model_dump_json()
         planned_id: str = _planned_task_id(run_id, candidate_id, task_json)
         execution_task = ResearchTask(
@@ -142,7 +146,7 @@ class PlannedResearchTaskStore:
                 purpose=task.purpose,
                 material_claim_keys=task.material_claim_keys,
                 requested_at=as_of,
-                max_results=task.maximum_results,
+                max_results=allocated_maximum_results,
             ),
             created_at=as_of,
         )
@@ -188,6 +192,23 @@ class PlannedResearchTaskStore:
                 )
                 if cursor.rowcount != 1:
                     raise KeyError(planned_id)
+
+
+def _allocate_result_limits(
+    tasks: tuple[ResearchTaskDraft, ...],
+    *,
+    fetch_budget: int,
+) -> tuple[int, ...]:
+    """Reserve one result per task before adding depth in task order."""
+    if len(tasks) > fetch_budget:
+        raise ResearchBudgetExceededError("Research tasks exceed the assigned fetch budget")
+    remaining_fetches: int = fetch_budget - len(tasks)
+    allocated: list[int] = []
+    for task in tasks:
+        additional_results: int = min(task.maximum_results - 1, remaining_fetches)
+        allocated.append(1 + additional_results)
+        remaining_fetches -= additional_results
+    return tuple(allocated)
 
 
 class DurableResearchRoundRunner:
@@ -279,20 +300,22 @@ class DurableResearchRoundRunner:
         """Materialize plans, execute providers, and complete durable queue rows."""
         del candidate
         if len(tasks) > query_budget:
-            raise ValueError("Research tasks exceed the assigned query budget")
-        if sum(task.maximum_results for task in tasks) > fetch_budget:
-            raise ValueError("Research tasks exceed the assigned fetch budget")
+            raise ResearchBudgetExceededError("Research tasks exceed the assigned query budget")
+        if len(tasks) > fetch_budget:
+            raise ResearchBudgetExceededError("Research tasks exceed the assigned fetch budget")
+        allocated_result_limits: tuple[int, ...] = _allocate_result_limits(tasks, fetch_budget=fetch_budget)
         for task in tasks:
             _ = self._planned_tasks.append_task(task, run_id=run_id, known_at=decision_at)
         materialized = tuple(
             self._planned_tasks.materialize(
                 task,
+                allocated_maximum_results=allocated_result_limit,
                 run_id=run_id,
                 session_id=session_id,
                 round_number=round_number,
                 as_of=decision_at,
             )
-            for task in tasks
+            for task, allocated_result_limit in zip(tasks, allocated_result_limits, strict=True)
         )
         try:
             before = self._repository.budget_state(session_id)

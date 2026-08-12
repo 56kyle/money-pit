@@ -2,6 +2,7 @@ from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 from typing import cast
 
 import pytest
@@ -11,8 +12,10 @@ from money_pit.evidence.work import EvidenceInterpretationWork
 from money_pit.pipeline.interpretation import InterpretationOutcome
 from money_pit.pipeline.interpretation import InterpretationService
 from money_pit.portfolio.theses import ThesisRepository
+from money_pit.research.errors import ResearchBudgetExceededError
 from money_pit.research.memory import DurableResearchRoundRunner
 from money_pit.research.memory import PlannedResearchTaskStore
+from money_pit.research.memory import _allocate_result_limits  # pyright: ignore[reportPrivateUsage]
 from money_pit.research.repository import ResearchBudgetState
 from money_pit.research.repository import ResearchRepository
 from money_pit.research.service import ResearchRoundResult
@@ -36,6 +39,10 @@ from money_pit.schemas.theses import ThesisDirection
 from money_pit.schemas.universe import DiscoveryBasis
 from money_pit.sources._shared import source_definition_hash
 from money_pit.storage.database import Database
+
+
+if TYPE_CHECKING:
+    import sqlite3
 
 
 _AS_OF = datetime(2026, 8, 1, tzinfo=UTC)
@@ -140,6 +147,7 @@ def test_materialize_binds_an_a2_plan_to_the_bounded_a3_session(tmp_path: Path) 
 
     _, execution_task = planned.materialize(
         task,
+        allocated_maximum_results=task.maximum_results,
         run_id=_RUN_ID,
         session_id=session.session_id,
         round_number=1,
@@ -177,18 +185,32 @@ def _draft(*, query: str = "query", maximum_results: int = 1) -> ResearchTaskDra
     )
 
 
+def test__allocate_result_limits_reserves_breadth_before_ordered_depth() -> None:
+    tasks = tuple(
+        _draft(query=f"query-{index}", maximum_results=maximum) for index, maximum in enumerate((5, 5, 5, 5, 20))
+    )
+
+    assert _allocate_result_limits(tasks, fetch_budget=19) == (5, 5, 5, 3, 1)
+
+
+def test__allocate_result_limits_rejects_more_tasks_than_available_fetches() -> None:
+    tasks = (_draft(), _draft(query="other"))
+
+    with pytest.raises(ResearchBudgetExceededError):
+        _ = _allocate_result_limits(tasks, fetch_budget=1)
+
+
 @pytest.mark.parametrize(
-    ("tasks", "query_budget", "fetch_budget", "expected_message"),
+    ("tasks", "query_budget", "fetch_budget"),
     [
-        ((_draft(), _draft(query="other")), 1, 2, "Research tasks exceed the assigned query budget"),
-        ((_draft(maximum_results=2),), 1, 1, "Research tasks exceed the assigned fetch budget"),
+        ((_draft(), _draft(query="other")), 1, 2),
+        ((_draft(), _draft(query="other")), 2, 1),
     ],
 )
 def test_run_round_rejects_allocations_before_service_or_queue_io(
     tasks: tuple[ResearchTaskDraft, ...],
     query_budget: int,
     fetch_budget: int,
-    expected_message: str,
 ) -> None:
     unused = _UnusedDependency()
     runner = DurableResearchRoundRunner(
@@ -197,7 +219,7 @@ def test_run_round_rejects_allocations_before_service_or_queue_io(
         cast("PlannedResearchTaskStore", cast("object", unused)),
     )
 
-    with pytest.raises(ValueError, match=expected_message):
+    with pytest.raises(ResearchBudgetExceededError):
         _ = runner.run_round(
             session_id="session-1",
             run_id=_RUN_ID,
@@ -225,6 +247,7 @@ class _PlannedQueue:
         self,
         task: ResearchTaskDraft,
         *,
+        allocated_maximum_results: int,
         run_id: str,
         session_id: str,
         round_number: int,
@@ -243,7 +266,7 @@ class _PlannedQueue:
                     candidate_thesis_id=task.candidate_thesis_id,
                     purpose=task.purpose,
                     requested_at=as_of,
-                    max_results=task.maximum_results,
+                    max_results=allocated_maximum_results,
                 ),
                 created_at=as_of,
             ),
@@ -293,11 +316,13 @@ class _RoundService:
     def __init__(self, *, fail: bool = False, include_work: bool = False) -> None:
         self.fail: bool = fail
         self.include_work: bool = include_work
+        self.tasks: tuple[ResearchTask, ...] = ()
 
     def run_round(
         self, session: ResearchSession, tasks: tuple[ResearchTask, ...], **kwargs: object
     ) -> ResearchRoundResult:
         del kwargs
+        self.tasks = tasks
         if self.fail:
             raise RuntimeError("service failed")
         definition = SourceDefinition(
@@ -406,3 +431,66 @@ def test_run_round_interprets_normal_a3_evidence_with_full_baseline_context() ->
 
     assert interpreter.baseline_only == [False]
     assert queue.completed == ("planned:query",)
+
+
+def test_run_round_materializes_allocated_caps_without_leaving_original_plans_pending(tmp_path: Path) -> None:
+    database = Database(tmp_path / "intelligence.sqlite3")
+    database.initialize()
+    with database.transaction() as connection:
+        _ = connection.execute(
+            """INSERT INTO runs (
+                run_id, requested_as_of, started_at, known_at, through_stage,
+                source_config_hash, intelligence_config_hash, manifest_json
+            ) VALUES (?, ?, ?, ?, 'A3', ?, ?, '{}')""",
+            (_RUN_ID, _AS_OF.isoformat(), _AS_OF.isoformat(), _AS_OF.isoformat(), "a" * 64, "b" * 64),
+        )
+    candidate = _candidate()
+    ThesisRepository(database).append_candidate(candidate)
+    session = ResearchSession(
+        session_id="session-1",
+        run_id=_RUN_ID,
+        scope=CandidateThesisResearchScope(candidate_thesis_id=candidate.candidate_thesis_id),
+        started_at=_AS_OF,
+        deadline_at=_AS_OF + timedelta(hours=1),
+        maximum_rounds=3,
+        maximum_queries=12,
+        maximum_fetches=24,
+    )
+    repository = ResearchRepository(database)
+    _ = repository.create_session(session)
+    planned = PlannedResearchTaskStore(database)
+    tasks = tuple(
+        _draft(query=f"query-{index}", maximum_results=maximum) for index, maximum in enumerate((5, 5, 5, 5, 20))
+    )
+    for task in tasks:
+        _ = planned.append_task(task, run_id=_RUN_ID, known_at=_AS_OF)
+    service = _RoundService()
+
+    _ = DurableResearchRoundRunner(
+        cast("ResearchService", cast("object", service)),
+        repository,
+        planned,
+    ).run_round(
+        session_id=session.session_id,
+        run_id=_RUN_ID,
+        candidate=candidate,
+        round_number=1,
+        tasks=tasks,
+        requested_as_of=_AS_OF,
+        decision_at=_AS_OF,
+        historical_explicit=False,
+        query_budget=10,
+        fetch_budget=19,
+    )
+
+    with database.transaction() as connection:
+        rows = cast(
+            "list[sqlite3.Row]",
+            connection.execute("SELECT status, task_json FROM planned_research_tasks").fetchall(),
+        )
+    durable_tasks = tuple(ResearchTaskDraft.model_validate_json(cast("str", row["task_json"])) for row in rows)
+    requested_caps = {task.query: task.maximum_results for task in durable_tasks}
+    assert tuple(task.query.max_results for task in service.tasks) == (5, 5, 5, 3, 1)
+    assert requested_caps == {f"query-{index}": maximum for index, maximum in enumerate((5, 5, 5, 5, 20))}
+    assert {cast("str", row["status"]) for row in rows} == {"completed"}
+    assert planned.pending_for_candidate(candidate.candidate_thesis_id, run_id=_RUN_ID, as_of=_AS_OF) == ()

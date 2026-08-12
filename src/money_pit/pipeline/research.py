@@ -108,6 +108,19 @@ def deduplicate_tasks(tasks: tuple[ResearchTaskDraft, ...]) -> tuple[ResearchTas
     return tuple(unique)
 
 
+def _select_research_tasks(
+    tasks: tuple[ResearchTaskDraft, ...],
+    *,
+    query_budget: int,
+    fetch_budget: int,
+) -> tuple[ResearchTaskDraft, ...]:
+    """Select only tasks that can receive one query and one fetch."""
+    admitted_count: int = min(len(tasks), query_budget, fetch_budget)
+    if admitted_count <= 0:
+        return ()
+    return tasks[:admitted_count]
+
+
 def reindex_research_aliases(
     contexts: tuple[ResearchCumulativeContext, ...],
 ) -> tuple[tuple[ResearchEvidenceRecord, ...], tuple[EvidenceAliasBinding, ...]]:
@@ -284,7 +297,11 @@ def research_candidate(  # noqa: C901 - explicit hard-stop branches belong to th
         if not novel_pending:
             stop_reason = ResearchStopReason.NO_NEW_INDEPENDENT_PROVENANCE
             break
-        selected: tuple[ResearchTaskDraft, ...] = novel_pending[:remaining_queries]
+        selected: tuple[ResearchTaskDraft, ...] = _select_research_tasks(
+            novel_pending,
+            query_budget=remaining_queries,
+            fetch_budget=remaining_fetches,
+        )
         query_keys_seen.update((task.provider.casefold(), " ".join(task.query.split()).casefold()) for task in selected)
         execution: ResearchRoundExecution = runner.run_round(
             session_id=session_id,

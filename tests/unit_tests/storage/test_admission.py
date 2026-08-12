@@ -4,6 +4,8 @@ from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
+from typing import cast
 
 import pytest
 from pydantic import JsonValue
@@ -39,6 +41,10 @@ from money_pit.storage.research_semantics import canonical_research_context
 from money_pit.storage.research_semantics import canonical_research_payload
 from money_pit.storage.runs import RunRepository
 from money_pit.storage.sources import SourceRepository
+
+
+if TYPE_CHECKING:
+    import sqlite3
 
 
 _NOW = datetime(2026, 8, 9, 12, tzinfo=UTC)
@@ -78,14 +84,19 @@ def _artifact(
     )
 
 
-def _observation(observation_id: str, *, source_item_id: str = "source-item") -> ClaimObservation:
+def _observation(
+    observation_id: str,
+    *,
+    source_item_id: str = "source-item",
+    evidence_fragment_ids: tuple[str, ...] = ("fragment-1",),
+) -> ClaimObservation:
     return ClaimObservation(
         observation_id=observation_id,
         claim_text=f"Claim {observation_id}",
         claim_kind=ClaimKind.FACTUAL,
         category=ClaimCategory.FUNDAMENTAL,
         source_item_id=source_item_id,
-        evidence_fragment_ids=("fragment-1",),
+        evidence_fragment_ids=evidence_fragment_ids,
         asserted_at=_NOW,
         known_at=_NOW,
         effective_from=_NOW,
@@ -158,6 +169,49 @@ def _prepare_a1(database: Database) -> None:
         )
 
 
+def _prepare_second_asset_attempt(database: Database) -> None:
+    with database.transaction(TransactionMode.WRITE) as connection:
+        definition_row = cast(
+            "sqlite3.Row | None",
+            connection.execute(
+                """SELECT source_definition_hash FROM source_items
+                WHERE source_item_id = 'source-item' AND content_version = 'content-1'"""
+            ).fetchone(),
+        )
+        if definition_row is None:
+            raise AssertionError("A1 source item fixture was not prepared.")
+        definition_hash = str(cast("object", definition_row[0]))
+        _ = connection.execute(
+            "INSERT INTO evidence_assets VALUES (?, ?, ?, '{}')",
+            ("b" * 64, "b" * 64, "assets/b"),
+        )
+        _ = connection.execute(
+            """
+            INSERT INTO evidence_asset_acquisitions VALUES (
+                'acquisition-2', ?, 'source-item', 'content-1', ?, ?, 'text/plain'
+            )
+            """,
+            ("b" * 64, definition_hash, _NOW.isoformat()),
+        )
+        _ = connection.execute(
+            """
+            INSERT INTO evidence_fragments (
+                fragment_id, asset_id, fragment_kind, locator_json, extraction_method
+            ) VALUES ('fragment-2', ?, 'web_span', '{}', 'manual')
+            """,
+            ("b" * 64,),
+        )
+        _ = connection.execute(
+            """
+            INSERT INTO claim_interpretation_attempts (
+                attempt_id, source_item_id, content_version, asset_id, run_id,
+                interpreter_version, started_at, outcome, observation_ids_json
+            ) VALUES ('attempt-2', 'source-item', 'content-1', ?, ?, 'agent-1', ?, 'pending', '[]')
+            """,
+            ("b" * 64, _RUN_ID, _NOW.isoformat()),
+        )
+
+
 def test_admit_interpretation_rolls_back_all_records_on_late_failure(tmp_path: Path) -> None:
     database = Database(tmp_path / "intelligence.sqlite3")
     database.initialize()
@@ -213,6 +267,67 @@ def test_admit_research_interpretation_commits_without_stage_artifact(tmp_path: 
             == "succeeded"
         )
         assert connection.execute("SELECT COUNT(*) FROM stage_artifacts").fetchone()[0] == 0
+
+
+def test_admit_interpretation_atomically_succeeds_for_distinct_assets_of_one_source_item(tmp_path: Path) -> None:
+    database = Database(tmp_path / "intelligence.sqlite3")
+    database.initialize()
+    _prepare_a1(database)
+    _prepare_second_asset_attempt(database)
+    observations = (
+        _observation("observation-1"),
+        _observation("observation-2", evidence_fragment_ids=("fragment-2",)),
+    )
+    admissions = tuple(
+        InterpretationAdmission(attempt_id=f"attempt-{index}", observations=(observation,))
+        for index, observation in enumerate(observations, start=1)
+    )
+
+    IntelligenceAdmissionRepository(database).admit_interpretation(
+        admissions,
+        completed_at=_NOW,
+        known_at=_NOW,
+        artifact=_artifact(
+            "A1",
+            (
+                *(
+                    bind_artifact_record(ArtifactRecordKind.INTERPRETATION_ATTEMPT, item.attempt_id)
+                    for item in admissions
+                ),
+                *(bind_artifact_record(ArtifactRecordKind.OBSERVATION, item.observation_id) for item in observations),
+            ),
+        ),
+    )
+
+    with database.transaction() as connection:
+        attempt_rows = cast(
+            "list[sqlite3.Row]",
+            connection.execute(
+                """SELECT asset_id, outcome, observation_ids_json
+                FROM claim_interpretation_attempts ORDER BY asset_id"""
+            ).fetchall(),
+        )
+        observation_rows = cast(
+            "list[sqlite3.Row]",
+            connection.execute("SELECT observation_id FROM claim_observations ORDER BY observation_id").fetchall(),
+        )
+    assert (
+        tuple(
+            (
+                str(cast("object", row[0])),
+                str(cast("object", row[1])),
+                str(cast("object", row[2])),
+            )
+            for row in attempt_rows
+        ),
+        tuple(str(cast("object", row[0])) for row in observation_rows),
+    ) == (
+        (
+            ("a" * 64, "succeeded", '["observation-1"]'),
+            ("b" * 64, "succeeded", '["observation-2"]'),
+        ),
+        ("observation-1", "observation-2"),
+    )
 
 
 def test_admit_synthesis_rolls_back_resolution_when_later_verification_fails(tmp_path: Path) -> None:

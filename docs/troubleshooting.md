@@ -6,7 +6,7 @@ Run `secretspec check --scope SCOPE --reason "Diagnose money-pit credentials"`. 
 
 ## Database fingerprint rejected
 
-The selected database is non-empty and does not match the 0.0.2 baseline. Stop and verify the configured data root. Do not rename, migrate, or delete an unknown database automatically.
+The selected database is non-empty and matches neither the 0.0.3 schema nor the exact retained 0.0.2 predecessor. An exact 0.0.2 database migrates automatically in one transaction. Unknown releases, metadata drift, and catalog drift are rejected without mutation. Stop and verify the configured data root; do not rename, manually migrate, or delete an unknown database automatically.
 
 ## Candidate cannot create exposure
 

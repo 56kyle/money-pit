@@ -1,6 +1,6 @@
 # Architecture
 
-money-pit 0.0.2 is one persistent staged system. SQLite owns cross-run intelligence and immutable files own acquired assets, run artifacts, and reports. Every run has a UUID and an explicit `as_of` cutoff.
+money-pit 0.0.3 is one persistent staged system. SQLite owns cross-run intelligence and immutable files own acquired assets, run artifacts, and reports. Every run has a UUID and an explicit `as_of` cutoff.
 
 ## Stages
 
@@ -17,7 +17,7 @@ SecretSpec resolves credentials at the outer capability boundary. Each credentia
 
 ## Persistence and replay
 
-The database starts from the single 0.0.2 schema. Initialization rejects a non-empty database with an unknown fingerprint. Claims, verifications, thesis revisions, decisions, plans, approvals, executions, and outcomes are append-only. Point-in-time reads filter by `known_at` and the requested cutoff; replay cannot observe later state and never executes A6.
+The database starts from the 0.0.3 schema. Initialization atomically migrates only a database whose metadata and live catalog exactly match the retained 0.0.2 predecessor. Unknown releases, metadata drift, and catalog drift are rejected before mutation. Claims, verifications, thesis revisions, decisions, plans, approvals, executions, and outcomes are append-only. Point-in-time reads filter by `known_at` and the requested cutoff; replay cannot observe later state and never executes A6.
 
 ## Capital authority
 

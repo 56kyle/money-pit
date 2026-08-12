@@ -1,8 +1,8 @@
-# money-pit 0.0.2
+# money-pit 0.0.3
 
 `money-pit` is a persistent, point-in-time investment-research harness for long-only US equities and ETFs. It discovers theses from configured sources and a layered universe, performs bounded research, preserves immutable claim and thesis history, and produces optimizer-derived portfolio plans.
 
-Nothing has reached production. Release 0.0.2 uses one SQLite baseline and one A1–A6 workflow. Live execution requires an exact, unexpired plan approval by default.
+Nothing has reached production. Release 0.0.3 uses one SQLite baseline and one A1–A6 workflow. Live execution requires an exact, unexpired plan approval by default.
 
 ## Configuration
 

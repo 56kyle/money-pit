@@ -43,7 +43,7 @@ class Database:
         return self._path
 
     def initialize(self) -> None:
-        """Create an empty database or verify an exact existing 0.0.2 schema."""
+        """Create 0.0.3, verify it, or migrate an exact 0.0.2 predecessor."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self.transaction(TransactionMode.WRITE) as connection:
             if is_logically_empty(connection):

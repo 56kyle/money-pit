@@ -11,7 +11,7 @@ from platformdirs import user_log_path
 
 APP_NAME: Final[str] = "money_pit"
 APP_AUTHOR: Final[str] = "56kyle"
-APP_VERSION: Final[str] = "0.0.2"
+APP_VERSION: Final[str] = "0.0.3"
 APP_START_TIME: Final[datetime.datetime] = datetime.datetime.now(tz=datetime.timezone.utc)
 
 DATA_ROOT: Final[Path] = Path("data")

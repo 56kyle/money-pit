@@ -4,10 +4,15 @@ from pathlib import Path
 
 from typing_extensions import override
 
+from money_pit.contracts import ClaimObservationDraft
 from money_pit.contracts import InterpretationDraft
 from money_pit.contracts import InterpretationRequest
 from money_pit.evidence.work import EvidenceInterpretationWork
+from money_pit.pipeline.interpretation import interpret_document
 from money_pit.pipeline.interpretation import make_interpretation_node
+from money_pit.schemas.claims import ClaimCategory
+from money_pit.schemas.claims import ClaimKind
+from money_pit.schemas.claims import HorizonClass
 from money_pit.schemas.evidence import EvidenceAsset
 from money_pit.schemas.evidence import EvidenceDocument
 from money_pit.schemas.evidence import EvidenceFragment
@@ -95,6 +100,58 @@ class _AdmissionMemory(IntelligenceAdmissionRepository):
 def _zero_claim_agent(request: InterpretationRequest) -> InterpretationDraft:
     assert request.evidence
     return InterpretationDraft(observations=())
+
+
+def test_interpret_document_materializes_fallback_assertion_at_requested_boundary() -> None:
+    requested_as_of = datetime(2026, 8, 12, 15, 30, tzinfo=UTC)
+    context_known_at = datetime(2026, 8, 12, 15, 30, 0, 99_000, tzinfo=UTC)
+    asset_id = "a" * 64
+    document = EvidenceDocument(
+        asset=EvidenceAsset(
+            asset_id=asset_id,
+            content_hash=asset_id,
+            media_type="text/plain",
+            source_item_id="manual:item",
+            local_path=Path("aa") / asset_id,
+            retrieved_at=requested_as_of,
+        ),
+        fragments=(
+            EvidenceFragment(
+                fragment_id="fragment-1",
+                asset_id=asset_id,
+                kind="web_span",
+                locator=TextLocator(start_offset=0, end_offset=18),
+                extracted_text="A supported claim.",
+                extraction_method="test",
+            ),
+        ),
+    )
+
+    def fallback_agent(request: InterpretationRequest) -> InterpretationDraft:
+        return InterpretationDraft(
+            observations=(
+                ClaimObservationDraft(
+                    claim_text="A supported claim.",
+                    claim_kind=ClaimKind.FACTUAL,
+                    category=ClaimCategory.MARKET,
+                    evidence_aliases=(request.evidence[0].alias,),
+                    asserted_at=request.requested_as_of,
+                    horizon_class=HorizonClass.TACTICAL,
+                ),
+            ),
+        )
+
+    observations = interpret_document(
+        document,
+        agent=fallback_agent,
+        requested_as_of=requested_as_of,
+        decision_at=context_known_at,
+        known_at=context_known_at,
+        character_budget=10_000,
+        baseline_only=True,
+    )
+
+    assert observations[0].asserted_at == requested_as_of
 
 
 def test_make_interpretation_node_records_success_for_a_zero_claim_document(tmp_path: Path) -> None:

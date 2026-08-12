@@ -74,11 +74,41 @@ class ClaimObservationDraft(BaseModel):
     claim_kind: ClaimKind
     category: ClaimCategory
     evidence_aliases: tuple[str, ...] = Field(min_length=1)
-    asserted_at: AwareDatetime
-    effective_from: AwareDatetime | None = None
-    event_at: AwareDatetime | None = None
-    review_at: AwareDatetime | None = None
-    valid_until: AwareDatetime | None = None
+    asserted_at: AwareDatetime = Field(
+        description=(
+            "Claim assertion time in RFC 3339 format with an explicit UTC offset. "
+            "Use the source-supported assertion time and offset; when the source does "
+            "not supply both, conservatively use the request requested_as_of."
+        ),
+    )
+    effective_from: AwareDatetime | None = Field(
+        default=None,
+        description=(
+            "Economic effective time in RFC 3339 format with an explicit UTC offset. "
+            "Use null unless the evidence supplies the time and its timezone."
+        ),
+    )
+    event_at: AwareDatetime | None = Field(
+        default=None,
+        description=(
+            "Economic event time in RFC 3339 format with an explicit UTC offset. "
+            "Use null unless the evidence supplies the time and its timezone."
+        ),
+    )
+    review_at: AwareDatetime | None = Field(
+        default=None,
+        description=(
+            "Economic review time in RFC 3339 format with an explicit UTC offset. "
+            "Use null unless the evidence supplies the time and its timezone."
+        ),
+    )
+    valid_until: AwareDatetime | None = Field(
+        default=None,
+        description=(
+            "Economic validity end in RFC 3339 format with an explicit UTC offset. "
+            "Use null unless the evidence supplies the time and its timezone."
+        ),
+    )
     horizon_class: HorizonClass
     instruments: tuple[str, ...] = ()
     themes: tuple[str, ...] = ()

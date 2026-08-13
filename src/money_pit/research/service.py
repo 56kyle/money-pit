@@ -16,13 +16,16 @@ from money_pit.constants import APP_VERSION
 from money_pit.evidence.admission import materialize_processing_bundle
 from money_pit.evidence.errors import EvidenceProcessingError
 from money_pit.evidence.work import EvidenceInterpretationWork
+from money_pit.pipeline.identity import interpretation_policy_version
 from money_pit.research.errors import HistoricalResearchUnavailableError
 from money_pit.research.errors import ResearchBudgetExceededError
 from money_pit.research.errors import ResearchError
 from money_pit.research.errors import ResearchEvidenceCutoffError
+from money_pit.research.errors import ResearchUriReuseMismatchError
 from money_pit.schemas.evidence import EvidenceDocument
 from money_pit.schemas.evidence import EvidenceProcessingAttempt
 from money_pit.schemas.evidence import EvidenceProcessingStatus
+from money_pit.schemas.research import ResearchDiscoveryBatch
 from money_pit.schemas.research import ResearchFetch
 from money_pit.schemas.research import ResearchFetchStatus
 from money_pit.schemas.research import ResearchSession
@@ -43,17 +46,20 @@ if TYPE_CHECKING:
     from money_pit.evidence.processors import EvidenceProcessor
     from money_pit.evidence.processors import EvidenceProcessorRegistry
     from money_pit.evidence.repository import EvidenceProcessingAttemptRepository
+    from money_pit.evidence.work import EvidenceWorkStore
     from money_pit.research.protocol import ResearchProvider
     from money_pit.research.registry import ResearchProviderRegistry
     from money_pit.research.repository import ResearchBudgetState
     from money_pit.research.repository import ResearchRepository
-    from money_pit.schemas.research import ResearchDiscoveryBatch
     from money_pit.schemas.research import ResearchDiscoveryResult
     from money_pit.schemas.research import ResearchScope
     from money_pit.schemas.sources import RawArtifact
     from money_pit.sources.service import EvidenceRepository
     from money_pit.sources.service import SourceStateRepository
     from money_pit.storage.assets import AssetStore
+from money_pit.storage.intelligence_work import IntelligenceWorkRepository
+from money_pit.storage.intelligence_work import ResearchUriAdmissionRecord
+from money_pit.storage.intelligence_work import UriDisposition
 
 
 class ResearchSourceAssociation(BaseModel):
@@ -123,7 +129,11 @@ class ResearchService:
         processor_registry: EvidenceProcessorRegistry,
         attempt_repository: EvidenceProcessingAttemptRepository,
         asset_store: AssetStore,
+        work_repository: IntelligenceWorkRepository | None = None,
         *,
+        evidence_work: EvidenceWorkStore | None = None,
+        interpretation_model: str = APP_VERSION,
+        interpretation_prompt_version: str = APP_VERSION,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
         """Bind read-only providers to durable source and research boundaries."""
@@ -134,6 +144,10 @@ class ResearchService:
         self._processor_registry: EvidenceProcessorRegistry = processor_registry
         self._attempt_repository: EvidenceProcessingAttemptRepository = attempt_repository
         self._asset_store: AssetStore = asset_store
+        self._work_repository: IntelligenceWorkRepository | None = work_repository
+        self._evidence_work: EvidenceWorkStore | None = evidence_work
+        self._interpretation_model: str = interpretation_model
+        self._interpretation_prompt_version: str = interpretation_prompt_version
         self._clock: Callable[[], datetime] = clock
 
     def start(self, session: ResearchSession) -> bool:
@@ -163,7 +177,7 @@ class ResearchService:
         tasks: tuple[ResearchTask, ...] = tuple(task for task in pending if task.round_number == next_round)
         return self.run_round(session, tasks, selected_result_ids=selected_result_ids)
 
-    def run_round(
+    def run_round(  # noqa: C901 - explicit durable provider phase recovery
         self,
         session: ResearchSession,
         tasks: tuple[ResearchTask, ...],
@@ -172,6 +186,7 @@ class ResearchService:
         requested_as_of: datetime | None = None,
         decision_at: datetime | None = None,
         historical_explicit: bool = False,
+        job_id: str | None = None,
     ) -> ResearchRoundResult:
         """Search tasks and fetch selected results into durable evidence."""
         _validate_round_inputs(session, tasks)
@@ -191,7 +206,8 @@ class ResearchService:
         observed_result_ids: set[str] = set()
         for task in tasks:
             inserted: bool = self._repository.add_task(task)
-            if not inserted and self._repository.task_status(task.task_id) is not ResearchTaskStatus.PENDING:
+            durable_status = self._repository.task_status(task.task_id)
+            if not inserted and durable_status is ResearchTaskStatus.FAILED:
                 continue
             provider = self._providers.get(task.query.provider)
             if historical_explicit and not (
@@ -200,32 +216,47 @@ class ResearchService:
                 failure_kinds.append(HistoricalResearchUnavailableError.__name__)
                 self._repository.record_search_failure(task)
                 continue
-            self._repository.reserve_query(task, attempted_at=self._clock())
-            try:
-                batch = (
-                    provider.search_as_of(task.query, requested_as_of=cutoff)
-                    if historical_explicit
-                    else provider.search(task.query)
+            if durable_status in {
+                ResearchTaskStatus.SEARCHED,
+                ResearchTaskStatus.FETCHING,
+                ResearchTaskStatus.COMPLETED,
+            }:
+                recovered_results = self._repository.results_for_task(task.task_id)
+                batch = ResearchDiscoveryBatch(
+                    query=task.query,
+                    results=recovered_results,
+                    searched_at=max(
+                        (result.discovered_at for result in recovered_results),
+                        default=actual_decision_at,
+                    ),
                 )
-                batch = batch.model_copy(
-                    update={
-                        "results": tuple(
-                            result.model_copy(
-                                update={
-                                    "result_id": hashlib.sha256(
-                                        f"{task.task_id}\0{result.result_id}".encode("utf-8"),
-                                    ).hexdigest(),
-                                },
-                            )
-                            for result in batch.results
-                        ),
-                    },
-                )
-                _ = self._repository.record_search(task, batch)
-            except (ResearchError, SourceError) as error:
-                failure_kinds.append(type(error).__name__)
-                self._repository.record_search_failure(task)
-                continue
+            else:
+                self._repository.reserve_query(task, attempted_at=self._clock())
+                try:
+                    batch = (
+                        provider.search_as_of(task.query, requested_as_of=cutoff)
+                        if historical_explicit
+                        else provider.search(task.query)
+                    )
+                    batch = batch.model_copy(
+                        update={
+                            "results": tuple(
+                                result.model_copy(
+                                    update={
+                                        "result_id": hashlib.sha256(
+                                            f"{task.task_id}\0{result.result_id}".encode("utf-8"),
+                                        ).hexdigest(),
+                                    },
+                                )
+                                for result in batch.results
+                            ),
+                        },
+                    )
+                    _ = self._repository.record_search(task, batch)
+                except (ResearchError, SourceError) as error:
+                    failure_kinds.append(type(error).__name__)
+                    self._repository.record_search_failure(task)
+                    continue
 
             fetched = self._fetch_batch_results(
                 session.session_id,
@@ -235,6 +266,7 @@ class ResearchService:
                 selected_result_ids=selected_result_ids,
                 cutoff=cutoff,
                 enforce_cutoff=historical_explicit,
+                job_id=job_id,
             )
             observed_result_ids.update(fetched[0])
             source_item_ids.extend(fetched[1])
@@ -287,6 +319,7 @@ class ResearchService:
         selected_result_ids: frozenset[str] | None,
         cutoff: datetime,
         enforce_cutoff: bool,
+        job_id: str | None,
     ) -> tuple[
         set[str],
         list[str],
@@ -317,6 +350,7 @@ class ResearchService:
                 result,
                 requested_as_of=cutoff,
                 historical_explicit=enforce_cutoff,
+                job_id=job_id,
             )
             if failure_kind is not None:
                 failures.append(failure_kind)
@@ -331,7 +365,10 @@ class ResearchService:
                 source_definition=source_definition,
             )
             source_ids.append(source_item_id)
-            asset_ids.extend(work.document.asset.asset_id for work in fetched_work)
+            if fetched_work:
+                asset_ids.extend(work.document.asset.asset_id for work in fetched_work)
+            else:
+                asset_ids.append(asset_id)
             work_items.extend(fetched_work)
             if task.query.material_claim_keys:
                 interpretation_targets.extend(
@@ -353,7 +390,7 @@ class ResearchService:
             interpretation_targets,
         )
 
-    def _fetch_result(
+    def _fetch_result(  # noqa: C901 - ordered URI policy, reuse, and fetch gates
         self,
         session_id: str,
         task: ResearchTask,
@@ -362,6 +399,7 @@ class ResearchService:
         *,
         requested_as_of: datetime,
         historical_explicit: bool,
+        job_id: str | None,
     ) -> tuple[
         str | None,
         str | None,
@@ -370,9 +408,66 @@ class ResearchService:
         SourceDefinition | None,
     ]:
         """Fetch and persist one result, returning durable IDs or a failure kind."""
-        self._repository.reserve_fetch(session_id, attempted_at=self._clock())
+        durable_fetch = self._repository.fetch_for_result(task.task_id, result.result_id)
+        if durable_fetch is not None:
+            if durable_fetch.status is ResearchFetchStatus.FAILED:
+                return None, None, durable_fetch.failure_kind, (), None
+            if durable_fetch.status is ResearchFetchStatus.SKIPPED:
+                return None, None, "PreviouslySkippedUri", (), None
+            source_definition = provider.source_definition_for(result)
+            recovered_work: tuple[EvidenceInterpretationWork, ...] = ()
+            if (
+                self._evidence_work is not None
+                and durable_fetch.source_item_id is not None
+                and durable_fetch.asset_id is not None
+            ):
+                recovered_work = (
+                    self._evidence_work.document_for_asset(
+                        source_item_id=durable_fetch.source_item_id,
+                        asset_id=durable_fetch.asset_id,
+                    ),
+                )
+            return (
+                durable_fetch.source_item_id,
+                durable_fetch.asset_id,
+                None,
+                recovered_work,
+                source_definition,
+            )
+        prior = (
+            None
+            if job_id is None or self._work_repository is None
+            else self._work_repository.uri_admission_for_job(job_id, result.canonical_uri)
+        )
+        if prior is not None and prior.disposition is UriDisposition.REJECTED:
+            return None, None, prior.reason or "PreviouslyRejectedUri", (), None
         try:
             source_definition: SourceDefinition = provider.source_definition_for(result)
+        except (ResearchError, SourceError) as error:
+            self._record_uri_admission(
+                job_id,
+                result.canonical_uri,
+                disposition=UriDisposition.REJECTED,
+                reason=type(error).__name__,
+            )
+            return None, None, type(error).__name__, (), None
+        if prior is not None:
+            try:
+                work_items = self._job_owned_reusable_work(source_definition, prior)
+            except (ResearchError, EvidenceProcessingError):
+                pass
+            else:
+                if self._interpretations_are_reusable(work_items):
+                    document = work_items[0].document
+                    return (
+                        document.asset.source_item_id,
+                        document.asset.asset_id,
+                        None,
+                        work_items,
+                        source_definition,
+                    )
+        self._repository.reserve_fetch(session_id, attempted_at=self._clock())
+        try:
             _ = self._source_repository.register_definition(
                 source_definition,
                 registry_version=APP_VERSION,
@@ -387,8 +482,28 @@ class ResearchService:
                 source_definition,
             ):
                 raise ResearchError("Research provider artifact does not match its publisher policy")
-            work_items = self._persist_evidence(artifact)
-            document = work_items[0].document
+            processor = self._processor_registry.select(artifact.media_type)
+            reusable = (
+                None
+                if self._work_repository is None or self._evidence_work is None
+                else self._work_repository.reusable_uri_admission(
+                    result.canonical_uri,
+                    content_hash=artifact.content_hash,
+                    content_version=artifact.source_item.content_version,
+                    source_definition_hash=artifact.source_item.source_definition_hash,
+                    processor_name=processor.name,
+                    processor_version=processor.version,
+                    interpretation_model=self._interpretation_model,
+                    interpretation_prompt_version=self._interpretation_prompt_version,
+                )
+            )
+            reusable_work = self._reusable_work_or_empty(
+                reusable,
+                content_version=artifact.source_item.content_version,
+            )
+            exact_reuse = bool(reusable_work) and self._interpretations_are_reusable(reusable_work)
+            work_items = reusable_work if exact_reuse else self._persist_evidence(artifact, processor=processor)
+            document = next(iter(work_items)).document
         except (ResearchError, EvidenceProcessingError, SourceError, OSError) as error:
             failure_kind: str = type(error).__name__
             _ = self._repository.record_fetch(
@@ -407,21 +522,109 @@ class ResearchService:
                 fetch_id=f"{task.task_id}:{result.result_id}",
                 task_id=task.task_id,
                 result_id=result.result_id,
-                source_item_id=artifact.source_item.source_item_id,
+                source_item_id=document.asset.source_item_id,
                 asset_id=document.asset.asset_id,
                 status=ResearchFetchStatus.SUCCEEDED,
                 attempted_at=self._clock(),
             ),
         )
+        if prior is None or not _admission_matches_identity(
+            prior,
+            content_hash=artifact.content_hash,
+            content_version=artifact.source_item.content_version,
+            source_definition_hash=artifact.source_item.source_definition_hash,
+            processor_name=processor.name,
+            processor_version=processor.version,
+            interpretation_model=self._interpretation_model,
+            interpretation_prompt_version=self._interpretation_prompt_version,
+        ):
+            self._record_uri_admission(
+                job_id,
+                result.canonical_uri,
+                disposition=(UriDisposition.REUSED if exact_reuse else UriDisposition.ACCEPTED),
+                provenance_group=source_definition.provenance_group,
+                source_item_id=document.asset.source_item_id,
+                asset_id=document.asset.asset_id,
+                content_hash=artifact.content_hash,
+                content_version=artifact.source_item.content_version,
+                source_definition_hash=artifact.source_item.source_definition_hash,
+                processor_name=processor.name,
+                processor_version=processor.version,
+            )
         return (
-            artifact.source_item.source_item_id,
+            document.asset.source_item_id,
             document.asset.asset_id,
             None,
             work_items,
             source_definition,
         )
 
-    def _persist_evidence(self, artifact: RawArtifact) -> tuple[EvidenceInterpretationWork, ...]:
+    def _record_uri_admission(
+        self,
+        job_id: str | None,
+        canonical_uri: str,
+        *,
+        disposition: UriDisposition,
+        reason: str | None = None,
+        provenance_group: str | None = None,
+        source_item_id: str | None = None,
+        asset_id: str | None = None,
+        content_hash: str | None = None,
+        content_version: str | None = None,
+        source_definition_hash: str | None = None,
+        processor_name: str | None = None,
+        processor_version: str | None = None,
+    ) -> None:
+        """Persist one job-owned URI decision when incremental work is active."""
+        if job_id is None or job_id.startswith("legacy:") or self._work_repository is None:
+            return
+        admission_identity = "\0".join(
+            (
+                job_id,
+                canonical_uri,
+                content_hash or "",
+                content_version or "",
+                source_definition_hash or "",
+                processor_name or "",
+                processor_version or "",
+                self._interpretation_model if disposition is not UriDisposition.REJECTED else "",
+                (self._interpretation_prompt_version if disposition is not UriDisposition.REJECTED else ""),
+            )
+        )
+        admission_id = hashlib.sha256(admission_identity.encode()).hexdigest()
+        self._work_repository.append_uri_admission(
+            ResearchUriAdmissionRecord(
+                admission_id=admission_id,
+                job_id=job_id,
+                canonical_uri=canonical_uri,
+                disposition=disposition,
+                provenance_group=provenance_group,
+                consumes_fetch_capacity=disposition is UriDisposition.ACCEPTED,
+                admitted_at=self._clock(),
+                reason=reason,
+                source_item_id=source_item_id,
+                asset_id=asset_id,
+                content_hash=content_hash,
+                content_version=content_version,
+                source_definition_hash=source_definition_hash,
+                processor_name=processor_name,
+                processor_version=processor_version,
+                interpretation_model=(
+                    self._interpretation_model if disposition is not UriDisposition.REJECTED else None
+                ),
+                interpretation_prompt_version=(
+                    self._interpretation_prompt_version if disposition is not UriDisposition.REJECTED else None
+                ),
+                payload={},
+            )
+        )
+
+    def _persist_evidence(
+        self,
+        artifact: RawArtifact,
+        *,
+        processor: EvidenceProcessor | None = None,
+    ) -> tuple[EvidenceInterpretationWork, ...]:
         """Persist fetched bytes and processed evidence before returning citation IDs."""
         stored = self._asset_store.put_bytes(artifact.content)
         if stored.digest != artifact.content_hash:
@@ -436,7 +639,7 @@ class ResearchService:
             next_cursor=None,
             updated_at=self._clock(),
         )
-        processor = self._processor_registry.select(artifact.media_type)
+        processor = processor or self._processor_registry.select(artifact.media_type)
         started_at = self._clock()
         attempt_id: str = str(uuid4())
         try:
@@ -511,6 +714,113 @@ class ResearchService:
             )
         )
 
+    def _job_owned_reusable_work(
+        self,
+        source_definition: SourceDefinition,
+        admission: ResearchUriAdmissionRecord,
+    ) -> tuple[EvidenceInterpretationWork, ...]:
+        """Reconstruct an immutable job URI decision without provider I/O."""
+        expected_definition_hash = source_definition_hash(source_definition)
+        if admission.source_definition_hash != expected_definition_hash:
+            raise ResearchUriReuseMismatchError(
+                "Job URI admission source policy differs from the current provider policy",
+            )
+        if (
+            admission.interpretation_model != self._interpretation_model
+            or admission.interpretation_prompt_version != self._interpretation_prompt_version
+        ):
+            raise ResearchUriReuseMismatchError(
+                "Job URI admission interpretation policy differs from the current policy",
+            )
+        work_items = self._reusable_work(
+            source_item_id=admission.source_item_id,
+            content_version=admission.content_version,
+            asset_id=admission.asset_id,
+            processor_name=admission.processor_name,
+            processor_version=admission.processor_version,
+        )
+        admitted_document = next(
+            work.document for work in work_items if work.document.asset.asset_id == admission.asset_id
+        )
+        processor = self._processor_registry.select(admitted_document.asset.media_type)
+        if processor.name != admission.processor_name or processor.version != admission.processor_version:
+            raise ResearchUriReuseMismatchError(
+                "Job URI admission processor differs from the current processor",
+            )
+        return work_items
+
+    def _interpretations_are_reusable(
+        self,
+        work_items: tuple[EvidenceInterpretationWork, ...],
+    ) -> bool:
+        """Return whether every document has an exact completed interpretation."""
+        evidence_work = self._evidence_work
+        if evidence_work is None:
+            return False
+        interpreter_version = interpretation_policy_version(
+            prompt_version=self._interpretation_prompt_version,
+            model=self._interpretation_model,
+        )
+        return all(
+            evidence_work.reusable_interpretation(
+                work,
+                interpreter_version=interpreter_version,
+            )
+            is not None
+            for work in work_items
+        )
+
+    def _reusable_work_or_empty(
+        self,
+        admission: ResearchUriAdmissionRecord | None,
+        *,
+        content_version: str,
+    ) -> tuple[EvidenceInterpretationWork, ...]:
+        """Reconstruct a reuse candidate or reject incomplete durable state."""
+        if admission is None:
+            return ()
+        try:
+            return self._reusable_work(
+                source_item_id=admission.source_item_id,
+                content_version=content_version,
+                asset_id=admission.asset_id,
+                processor_name=admission.processor_name,
+                processor_version=admission.processor_version,
+            )
+        except (ResearchError, EvidenceProcessingError):
+            return ()
+
+    def _reusable_work(
+        self,
+        *,
+        source_item_id: str | None,
+        content_version: str | None,
+        asset_id: str | None,
+        processor_name: str | None,
+        processor_version: str | None,
+    ) -> tuple[EvidenceInterpretationWork, ...]:
+        """Reconstruct exact processed work or reject an incomplete reuse candidate."""
+        evidence_work = self._evidence_work
+        if (
+            evidence_work is None
+            or source_item_id is None
+            or content_version is None
+            or asset_id is None
+            or processor_name is None
+            or processor_version is None
+        ):
+            raise ResearchError("Reusable URI admission omitted durable evidence identity")
+        work_items = evidence_work.documents_for_bundle(
+            source_item_id=source_item_id,
+            content_version=content_version,
+            processor_name=processor_name,
+            processor_version=processor_version,
+        )
+        asset_ids: set[str] = {work.document.asset.asset_id for work in work_items}
+        if not work_items or asset_id not in asset_ids:
+            raise ResearchError("Reusable URI admission has no complete processed evidence bundle")
+        return work_items
+
     def _process_bundle(
         self,
         artifact: RawArtifact,
@@ -525,6 +835,29 @@ class ResearchService:
             SourceIngestionRecord(source_item=artifact.source_item, evidence_document=document)
             for document in documents[1:]
         ]
+
+
+def _admission_matches_identity(
+    admission: ResearchUriAdmissionRecord,
+    *,
+    content_hash: str,
+    content_version: str,
+    source_definition_hash: str,
+    processor_name: str,
+    processor_version: str,
+    interpretation_model: str,
+    interpretation_prompt_version: str,
+) -> bool:
+    """Return whether an admission binds one exact reusable policy identity."""
+    return (
+        admission.content_hash == content_hash
+        and admission.content_version == content_version
+        and admission.source_definition_hash == source_definition_hash
+        and admission.processor_name == processor_name
+        and admission.processor_version == processor_version
+        and admission.interpretation_model == interpretation_model
+        and admission.interpretation_prompt_version == interpretation_prompt_version
+    )
 
 
 def _validate_round_inputs(session: ResearchSession, tasks: tuple[ResearchTask, ...]) -> None:

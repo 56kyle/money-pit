@@ -330,9 +330,7 @@ def load_application_config(
     return ApplicationConfig(
         sources=_load_model(sources_path or default_sources_config_path(), SourceRegistryDocument),
         intelligence=StrategyIntelligenceConfig.model_validate(strategy_document),
-        strategy=(
-            None if scope is ConfigurationScope.INTELLIGENCE else StrategyConfig.model_validate(strategy_document)
-        ),
+        strategy=StrategyConfig.model_validate(strategy_document),
         execution=(
             _load_model(execution_path or default_execution_config_path(), ExecutionConfig)
             if scope is ConfigurationScope.EXECUTION

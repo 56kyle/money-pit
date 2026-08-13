@@ -313,9 +313,7 @@ def test_secret_spec_resolver_youtube_discovery_with_invalid_key_is_typed_and_sa
         monkeypatch.setenv("YOUTUBE_API_KEY", invalid_value)
 
     with pytest.raises(CredentialResolutionError) as captured:
-        _ = SecretSpecSourceResolver(secretspec_manifest, profile="ci").youtube_discovery(
-            reason="test missing key"
-        )
+        _ = SecretSpecSourceResolver(secretspec_manifest, profile="ci").youtube_discovery(reason="test missing key")
 
     assert not any(value in str(captured.value) for value in secret_environment.values())
 

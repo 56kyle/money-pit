@@ -1,13 +1,17 @@
 from datetime import UTC
 from datetime import datetime
 from pathlib import Path
+from typing import cast
 
 from typing_extensions import override
 
+from money_pit.agents.inference import InferenceResult
+from money_pit.agents.inference import InferenceUsage
 from money_pit.contracts import ClaimObservationDraft
 from money_pit.contracts import InterpretationDraft
 from money_pit.contracts import InterpretationRequest
 from money_pit.evidence.work import EvidenceInterpretationWork
+from money_pit.evidence.work import ReusableInterpretation
 from money_pit.pipeline.interpretation import interpret_document
 from money_pit.pipeline.interpretation import make_interpretation_node
 from money_pit.schemas.claims import ClaimCategory
@@ -23,6 +27,10 @@ from money_pit.schemas.runs import bind_artifact_record
 from money_pit.storage.admission import IntelligenceAdmissionRepository
 from money_pit.storage.admission import InterpretationAdmission
 from money_pit.storage.database import Database
+from money_pit.storage.intelligence_work import IntelligenceWorkRepository
+from money_pit.storage.intelligence_work import InterpretationBundleRecord
+from money_pit.storage.intelligence_work import InterpretationChunkRecord
+from money_pit.storage.intelligence_work import InterpretationChunkSpec
 
 
 class _EvidenceMemory:
@@ -44,8 +52,39 @@ class _EvidenceMemory:
         limit: int,
         interpreter_version: str,
     ) -> tuple[EvidenceInterpretationWork, ...]:
-        del as_of, source_id, limit, interpreter_version
-        return self.works
+        del as_of, source_id, interpreter_version
+        return self.works[:limit]
+
+    def documents_for_bundle(
+        self,
+        *,
+        source_item_id: str,
+        content_version: str,
+        processor_name: str | None = None,
+        processor_version: str | None = None,
+    ) -> tuple[EvidenceInterpretationWork, ...]:
+        del processor_name, processor_version
+        return tuple(
+            item
+            for item in self.works
+            if item.document.asset.source_item_id == source_item_id and item.content_version == content_version
+        )
+
+    def reusable_interpretation(
+        self,
+        work: EvidenceInterpretationWork,
+        *,
+        interpreter_version: str,
+    ) -> ReusableInterpretation | None:
+        del work, interpreter_version
+        return None
+
+    def preserved_legacy_interpretation(
+        self,
+        work: EvidenceInterpretationWork,
+    ) -> ReusableInterpretation | None:
+        del work
+        return None
 
     def begin_interpretation(
         self,
@@ -92,14 +131,40 @@ class _AdmissionMemory(IntelligenceAdmissionRepository):
         completed_at: datetime,
         known_at: datetime,
         artifact: StageArtifactRecord,
+        bundle_id: str | None = None,
     ) -> None:
-        del completed_at, known_at
+        del completed_at, known_at, bundle_id
         self.records.append((admissions, artifact))
 
 
-def _zero_claim_agent(request: InterpretationRequest) -> InterpretationDraft:
+class _BundleWorkMemory:
+    def __init__(self) -> None:
+        self.bundle: InterpretationBundleRecord | None = None
+        self.chunks: tuple[InterpretationChunkSpec, ...] = ()
+
+    def ensure_interpretation_bundle(
+        self,
+        bundle: InterpretationBundleRecord,
+        chunks: tuple[InterpretationChunkSpec, ...],
+    ) -> None:
+        self.bundle = bundle
+        self.chunks = chunks
+
+    def claim_interpretation_chunk(self, **_kwargs: object) -> InterpretationChunkRecord | None:
+        return None
+
+    def ready_interpretation_bundle(self, source_id: str | None) -> str | None:
+        del source_id
+        return None
+
+
+def _result(output: InterpretationDraft) -> InferenceResult[InterpretationDraft]:
+    return InferenceResult(output=output, usage=InferenceUsage(), request_hash="0" * 64)
+
+
+def _zero_claim_agent(request: InterpretationRequest) -> InferenceResult[InterpretationDraft]:
     assert request.evidence
-    return InterpretationDraft(observations=())
+    return _result(InterpretationDraft(observations=()))
 
 
 def test_interpret_document_materializes_fallback_assertion_at_requested_boundary() -> None:
@@ -127,18 +192,20 @@ def test_interpret_document_materializes_fallback_assertion_at_requested_boundar
         ),
     )
 
-    def fallback_agent(request: InterpretationRequest) -> InterpretationDraft:
-        return InterpretationDraft(
-            observations=(
-                ClaimObservationDraft(
-                    claim_text="A supported claim.",
-                    claim_kind=ClaimKind.FACTUAL,
-                    category=ClaimCategory.MARKET,
-                    evidence_aliases=(request.evidence[0].alias,),
-                    asserted_at=request.requested_as_of,
-                    horizon_class=HorizonClass.TACTICAL,
+    def fallback_agent(request: InterpretationRequest) -> InferenceResult[InterpretationDraft]:
+        return _result(
+            InterpretationDraft(
+                observations=(
+                    ClaimObservationDraft(
+                        claim_text="A supported claim.",
+                        claim_kind=ClaimKind.FACTUAL,
+                        category=ClaimCategory.MARKET,
+                        evidence_aliases=(request.evidence[0].alias,),
+                        asserted_at=request.requested_as_of,
+                        horizon_class=HorizonClass.TACTICAL,
+                    ),
                 ),
-            ),
+            )
         )
 
     observations = interpret_document(
@@ -266,3 +333,66 @@ def test_make_interpretation_node_deduplicates_shared_asset_and_fragment_inputs(
     assert artifact.input_ids.count(bind_artifact_record(ArtifactRecordKind.ASSET, asset_id)) == 1
     assert artifact.input_ids.count(bind_artifact_record(ArtifactRecordKind.DOCUMENT, asset_id)) == 1
     assert artifact.input_ids.count(bind_artifact_record(ArtifactRecordKind.FRAGMENT, "fragment-shared")) == 1
+
+
+def test_make_interpretation_node_bundles_complete_source_version_beyond_document_limit(
+    tmp_path: Path,
+) -> None:
+    as_of = datetime(2026, 8, 1, tzinfo=UTC)
+    works = tuple(
+        EvidenceInterpretationWork(
+            content_version="version-1",
+            document=EvidenceDocument(
+                asset=EvidenceAsset(
+                    asset_id=str(index) * 64,
+                    content_hash=str(index) * 64,
+                    media_type="text/plain",
+                    source_item_id="video:item",
+                    local_path=Path(str(index) * 2) / (str(index) * 64),
+                    retrieved_at=as_of,
+                ),
+                fragments=(
+                    EvidenceFragment(
+                        fragment_id=f"fragment-{index}",
+                        asset_id=str(index) * 64,
+                        kind="web_span",
+                        locator=TextLocator(start_offset=0, end_offset=8),
+                        extracted_text=f"claim {index}",
+                        extraction_method="test",
+                    ),
+                ),
+            ),
+        )
+        for index in range(1, 4)
+    )
+    evidence = _EvidenceMemory(works)
+    bundle_work = _BundleWorkMemory()
+    node = make_interpretation_node(
+        evidence=evidence,
+        admission=_AdmissionMemory(Database(tmp_path / "unused-admission.sqlite3")),
+        agent=_zero_claim_agent,
+        implementation_version="interpretation-v2",
+        document_limit=1,
+        clock=lambda: as_of,
+        work_repository=cast("IntelligenceWorkRepository", cast("object", bundle_work)),
+    )
+
+    _ = node(
+        {
+            "run_id": "run-1",
+            "run_dir": str(tmp_path / "runs" / "run-1"),
+            "requested_as_of": as_of,
+            "run_started_at": as_of,
+        }
+    )
+
+    assert bundle_work.bundle is not None
+    assert bundle_work.bundle.payload == {"asset_ids": [str(index) * 64 for index in range(1, 4)]}
+    fragment_ids = {
+        fragment_id
+        for chunk in bundle_work.chunks
+        if isinstance(chunk.payload, dict)
+        for fragment_ids in cast("dict[str, list[str]]", chunk.payload["alias_map"]).values()
+        for fragment_id in fragment_ids
+    }
+    assert fragment_ids == {"fragment-1", "fragment-2", "fragment-3"}

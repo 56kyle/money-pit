@@ -1,6 +1,9 @@
 """Module implementing the bounded iterative A3 research loop."""
 
+import hashlib
+import json
 from collections.abc import Callable
+from contextlib import nullcontext
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -10,11 +13,15 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import JsonValue
+from pydantic import TypeAdapter
 
 from money_pit.agents.budget import request_character_allowance
 from money_pit.agents.budget import serialized_inference_request_size
+from money_pit.agents.inference import InferenceTracking
+from money_pit.contracts import ClaimMemory
 from money_pit.contracts import ResearchPlanningAgent
 from money_pit.contracts import ResearchPlanningRequest
+from money_pit.contracts import ResearchProgressDigest
 from money_pit.contracts import ResearchRoundExecution
 from money_pit.contracts import ResearchRoundPlan
 from money_pit.contracts import ResearchRoundRunner
@@ -33,8 +40,8 @@ from money_pit.pipeline.artifacts import build_stage_artifact
 from money_pit.pipeline.artifacts import try_install_stage_artifact_file
 from money_pit.pipeline.chain import Stage
 from money_pit.pipeline.discovery import UnknownResearchProviderError
+from money_pit.pipeline.identity import stable_identifier
 from money_pit.pipeline.temporal import require_model_temporal_authority
-from money_pit.schemas.claims import ClaimObservation
 from money_pit.schemas.research import EvidenceAliasBinding
 from money_pit.schemas.research import MaterialAnchorAssessment
 from money_pit.schemas.research import ProvisionalAnchorEvidence
@@ -42,8 +49,15 @@ from money_pit.schemas.research import RecoveredResearchStage
 from money_pit.schemas.research import ResearchCumulativeContext
 from money_pit.schemas.research import ResearchEvidenceRecord
 from money_pit.schemas.research import ResearchStopReason
+from money_pit.schemas.runs import ArtifactRecordKind
+from money_pit.schemas.runs import bind_artifact_record
 from money_pit.schemas.theses import CandidateThesis
 from money_pit.storage.admission import IntelligenceAdmissionRepository
+from money_pit.storage.intelligence_work import IncrementalResearchAdmissionRecord
+from money_pit.storage.intelligence_work import IntelligenceWorkRepository
+from money_pit.storage.intelligence_work import ResearchCheckpointRecord
+from money_pit.storage.intelligence_work import ResearchJobRecord
+from money_pit.storage.intelligence_work import SynthesisUnitRecord
 
 
 class ResearchBudgetViolationError(Exception):
@@ -68,9 +82,15 @@ class ResearchBudget(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
 
     maximum_rounds: int = Field(default=3, ge=1)
-    maximum_queries: int = Field(default=12, ge=1)
-    maximum_fetches: int = Field(default=24, ge=1)
+    maximum_queries: int = Field(default=6, ge=1)
+    maximum_fetches: int = Field(default=12, ge=1)
     maximum_elapsed: timedelta = Field(default=timedelta(minutes=10), gt=timedelta(0))
+
+
+_MAXIMUM_CANDIDATES_PER_UPDATE = 2
+_MAXIMUM_QUERIES_PER_WAVE = 2
+_MAXIMUM_FETCHES_PER_WAVE = 4
+_JSON_VALUE_ADAPTER: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
 
 
 class CandidateResearchSummary(BaseModel):
@@ -84,6 +104,7 @@ class CandidateResearchSummary(BaseModel):
     stop_reason: ResearchStopReason
     planner_requests: tuple[ResearchPlanningRequest, ...] = ()
     planner_responses: tuple[ResearchRoundPlan, ...] = ()
+    normalized_queries: tuple[str, ...] = ()
 
 
 class ResearchArtifactPayload(BaseModel):
@@ -152,6 +173,7 @@ def research_candidate(  # noqa: C901 - explicit hard-stop branches belong to th
     candidate: CandidateThesis,
     *,
     run_id: str,
+    job_id: str | None = None,
     requested_as_of: datetime,
     historical_explicit: bool,
     initial_tasks: tuple[ResearchTaskDraft, ...],
@@ -162,11 +184,14 @@ def research_candidate(  # noqa: C901 - explicit hard-stop branches belong to th
     clock: Callable[[], datetime],
     prompt_character_budget: int,
     allowed_provider_names: tuple[str, ...],
+    tracking: InferenceTracking | None = None,
+    prior_checkpoint: ResearchCheckpointRecord | None = None,
+    checkpoint_wave: Callable[[ResearchCheckpointRecord], None] | None = None,
 ) -> CandidateResearchSummary:
     """Run research until a typed stop condition or deterministic bound is reached."""
     started_at: datetime = clock()
     deadline: datetime = started_at + budget.maximum_elapsed
-    session_id: str = runner.start_session(
+    session_id: str = runner.resume_or_start_session(
         run_id=run_id,
         candidate=candidate,
         started_at=started_at,
@@ -175,18 +200,32 @@ def research_candidate(  # noqa: C901 - explicit hard-stop branches belong to th
         maximum_queries=budget.maximum_queries,
         maximum_fetches=budget.maximum_fetches,
     )
+    prior_summary, prior_contexts = _restore_research_checkpoint(prior_checkpoint)
     executions: list[ResearchRoundExecution] = []
-    queries_used: int = 0
-    fetches_used: int = 0
-    provenance_seen: set[str] = set()
+    queries_used: int = 0 if prior_checkpoint is None else prior_checkpoint.search_count
+    fetches_used: int = 0 if prior_checkpoint is None else prior_checkpoint.accepted_fetch_count
+    provenance_seen: set[str] = {group for context in prior_contexts for group in context.provenance_groups}
     query_keys_seen: set[tuple[str, str]] = set()
-    pending: tuple[ResearchTaskDraft, ...] = deduplicate_tasks(initial_tasks)
+    for value in () if prior_summary is None else prior_summary.normalized_queries:
+        provider, separator, query = value.partition(":")
+        if separator:
+            query_keys_seen.add((provider, query))
+    resumed_tasks = runner.pending_tasks_for_session(session_id)
+    durable_planner_tasks = task_memory.pending_for_candidate(
+        candidate.candidate_thesis_id,
+        run_id=run_id,
+        as_of=started_at,
+    )
+    pending: tuple[ResearchTaskDraft, ...] = deduplicate_tasks(resumed_tasks or durable_planner_tasks or initial_tasks)
     stop_reason: ResearchStopReason | None = None
     planner_requests: list[ResearchPlanningRequest] = []
     planner_responses: list[ResearchRoundPlan] = []
 
     def cumulative_context() -> ResearchCumulativeContext:
-        round_contexts = tuple(execution.context for execution in executions if execution.context is not None)
+        round_contexts = (
+            *prior_contexts,
+            *(execution.context for execution in executions if execution.context is not None),
+        )
         assessments = tuple(context.material_anchor_assessment for context in round_contexts)
         material_keys = tuple(dict.fromkeys((key for task in initial_tasks for key in task.material_claim_keys)))
         material_keys = tuple(
@@ -244,7 +283,15 @@ def research_candidate(  # noqa: C901 - explicit hard-stop branches belong to th
             ),
         )
 
-    for round_number in range(1, budget.maximum_rounds + 1):
+    starting_wave = 1 if prior_checkpoint is None else prior_checkpoint.wave_number + 1
+    recovered_assessment = cumulative_context().material_anchor_assessment
+    if recovered_assessment.decisive_contradiction:
+        stop_reason = ResearchStopReason.DECISIVE_CONTRADICTION
+    elif recovered_assessment.evidence_standard_satisfied:
+        stop_reason = ResearchStopReason.EVIDENCE_STANDARD_SATISFIED
+    for round_number in range(starting_wave, min(budget.maximum_rounds, starting_wave) + 1):
+        if stop_reason is not None:
+            break
         remaining_queries: int = budget.maximum_queries - queries_used
         remaining_fetches: int = budget.maximum_fetches - fetches_used
         if clock() >= deadline or remaining_queries <= 0 or remaining_fetches <= 0:
@@ -253,17 +300,51 @@ def research_candidate(  # noqa: C901 - explicit hard-stop branches belong to th
         if not pending:
             planning_request = ResearchPlanningRequest(
                 candidate=candidate,
-                completed_rounds=tuple(executions),
+                progress=ResearchProgressDigest(
+                    material_anchor_assessment=cumulative_context().material_anchor_assessment,
+                    provenance_groups=tuple(sorted(provenance_seen)),
+                    normalized_prior_queries=tuple(
+                        sorted(f"{provider}:{query}" for provider, query in query_keys_seen)
+                    ),
+                    accepted_fetch_count=fetches_used,
+                    rejected_result_count=sum(len(item.failure_kinds) for item in executions),
+                    completed_wave_count=starting_wave - 1 + len(executions),
+                ),
                 remaining_queries=remaining_queries,
                 remaining_fetches=remaining_fetches,
                 deadline=deadline,
                 requested_as_of=requested_as_of,
                 context_known_at=clock(),
-                cumulative_context=cumulative_context(),
                 allowed_provider_names=allowed_provider_names,
             )
             planning_request = _bound_planning_request(planning_request, prompt_character_budget)
-            plan = planner(planning_request)
+            durable_plan = (
+                None
+                if job_id is None
+                else task_memory.planner_result(
+                    job_id=job_id,
+                    wave_number=round_number,
+                )
+            )
+            if durable_plan is None:
+                scope = (
+                    nullcontext()
+                    if tracking is None
+                    else tracking.scope(run_id=run_id, work_unit_id=f"research:{candidate.candidate_thesis_id}")
+                )
+                with scope:
+                    plan = planner(planning_request).output
+                if job_id is not None:
+                    task_memory.checkpoint_planner_result(
+                        job_id=job_id,
+                        wave_number=round_number,
+                        run_id=run_id,
+                        known_at=clock(),
+                        request=planning_request,
+                        result=plan,
+                    )
+            else:
+                plan = durable_plan
             unknown_providers = {
                 task.provider for task in plan.tasks if task.provider not in frozenset(allowed_provider_names)
             }
@@ -275,7 +356,11 @@ def research_candidate(  # noqa: C901 - explicit hard-stop branches belong to th
             planner_responses.append(plan)
             if plan.stop_reason is not None:
                 _validate_stop_reason(plan.stop_reason, planning_request)
-                stop_reason = plan.stop_reason
+                stop_reason = (
+                    ResearchStopReason.NO_NEW_INDEPENDENT_PROVENANCE
+                    if plan.stop_reason is ResearchStopReason.UNRESOLVED and not plan.tasks
+                    else plan.stop_reason
+                )
                 break
             pending = deduplicate_tasks(
                 tuple(
@@ -284,10 +369,13 @@ def research_candidate(  # noqa: C901 - explicit hard-stop branches belong to th
                 ),
             )
             if not pending:
-                stop_reason = ResearchStopReason.UNRESOLVED
+                stop_reason = ResearchStopReason.NO_NEW_INDEPENDENT_PROVENANCE
                 break
-            for task in pending:
-                _ = task_memory.append_task(task, run_id=run_id, known_at=clock())
+            _ = task_memory.checkpoint_planner_tasks(
+                pending,
+                run_id=run_id,
+                known_at=clock(),
+            )
 
         novel_pending = tuple(
             task
@@ -299,12 +387,51 @@ def research_candidate(  # noqa: C901 - explicit hard-stop branches belong to th
             break
         selected: tuple[ResearchTaskDraft, ...] = _select_research_tasks(
             novel_pending,
-            query_budget=remaining_queries,
-            fetch_budget=remaining_fetches,
+            query_budget=min(remaining_queries, _MAXIMUM_QUERIES_PER_WAVE),
+            fetch_budget=min(remaining_fetches, _MAXIMUM_FETCHES_PER_WAVE),
         )
         query_keys_seen.update((task.provider.casefold(), " ".join(task.query.split()).casefold()) for task in selected)
+
+        checkpoint_wave_number = round_number
+        checkpoint_queries_used = queries_used
+        checkpoint_fetches_used = fetches_used
+
+        def persist_completed_wave(
+            completed: ResearchRoundExecution,
+            wave_number: int = checkpoint_wave_number,
+            prior_search_count: int = checkpoint_queries_used,
+            prior_fetch_count: int = checkpoint_fetches_used,
+        ) -> None:
+            if checkpoint_wave is None or job_id is None:
+                return
+            checkpoint_summary = CandidateResearchSummary(
+                candidate_thesis_id=candidate.candidate_thesis_id,
+                session_id=session_id,
+                rounds=(completed,),
+                stop_reason=ResearchStopReason.UNRESOLVED,
+                planner_requests=tuple(planner_requests),
+                planner_responses=tuple(planner_responses),
+                normalized_queries=tuple(sorted(f"{provider}:{query}" for provider, query in query_keys_seen)),
+            )
+            checkpoint_wave(
+                ResearchCheckpointRecord(
+                    checkpoint_id=stable_identifier(
+                        "research-checkpoint",
+                        {"job_id": job_id, "wave_number": wave_number},
+                    ),
+                    job_id=job_id,
+                    run_id=run_id,
+                    wave_number=wave_number,
+                    search_count=prior_search_count + completed.query_count,
+                    accepted_fetch_count=prior_fetch_count + completed.fetch_count,
+                    recorded_at=clock(),
+                    digest=_merge_checkpoint_digest(prior_checkpoint, checkpoint_summary),
+                )
+            )
+
         execution: ResearchRoundExecution = runner.run_round(
             session_id=session_id,
+            job_id=job_id or f"legacy:{candidate.candidate_thesis_id}",
             run_id=run_id,
             candidate=candidate,
             round_number=round_number,
@@ -312,8 +439,9 @@ def research_candidate(  # noqa: C901 - explicit hard-stop branches belong to th
             requested_as_of=requested_as_of,
             decision_at=clock(),
             historical_explicit=historical_explicit,
-            query_budget=remaining_queries,
-            fetch_budget=remaining_fetches,
+            query_budget=min(remaining_queries, _MAXIMUM_QUERIES_PER_WAVE),
+            fetch_budget=min(remaining_fetches, _MAXIMUM_FETCHES_PER_WAVE),
+            on_completed=persist_completed_wave,
         )
         if execution.query_count > remaining_queries or execution.fetch_count > remaining_fetches:
             raise ResearchBudgetViolationError("Research service exceeded its assigned query or fetch budget")
@@ -343,6 +471,7 @@ def research_candidate(  # noqa: C901 - explicit hard-stop branches belong to th
         stop_reason=stop_reason,
         planner_requests=tuple(planner_requests),
         planner_responses=tuple(planner_responses),
+        normalized_queries=tuple(sorted(f"{provider}:{query}" for provider, query in query_keys_seen)),
     )
     finalized_at = clock()
     _ = runner.finalize_session(
@@ -367,13 +496,168 @@ def _candidate_summary_payload(summary: CandidateResearchSummary) -> JsonValue:
     }
 
 
+def _merge_checkpoint_digest(
+    prior: ResearchCheckpointRecord | None,
+    summary: CandidateResearchSummary,
+) -> JsonValue:
+    """Carry all durable research context into the next cumulative checkpoint."""
+    current = _candidate_summary_payload(summary)
+    if prior is None:
+        return current
+    if not isinstance(prior.digest, dict) or not isinstance(current, dict):
+        raise PromptProjectionError("Research checkpoint digest must be an object")
+    prior_contexts = prior.digest.get("contexts", [])
+    current_contexts = current.get("contexts", [])
+    if not isinstance(prior_contexts, list) or not isinstance(current_contexts, list):
+        raise PromptProjectionError("Research checkpoint contexts must be a list")
+    return {**current, "contexts": [*prior_contexts, *current_contexts]}
+
+
+def _install_wave_checkpoint(
+    work: IntelligenceWorkRepository,
+    checkpoint: ResearchCheckpointRecord,
+) -> None:
+    """Atomically bind a validated checkpoint to its durable wave outbox."""
+    wave = work.uncheckpointed_wave(checkpoint.job_id)
+    if wave is None:
+        work.append_research_checkpoint(checkpoint)
+        return
+    work.checkpoint_research_wave(wave_result_id=wave.wave_result_id, checkpoint=checkpoint)
+
+
+def _recover_wave_checkpoint(
+    work: IntelligenceWorkRepository,
+    job: ResearchJobRecord,
+) -> None:
+    """Reconcile a completed wave after a hard kill before its callback."""
+    wave = work.uncheckpointed_wave(job.job_id)
+    if wave is None:
+        return
+    if not isinstance(wave.execution, dict):
+        raise PromptProjectionError("Research wave outbox must be an object")
+    execution_value = wave.execution
+    context_value = wave.context
+    execution = ResearchRoundExecution.model_validate(
+        {
+            **execution_value,
+            "context": (None if context_value is None else ResearchCumulativeContext.model_validate(context_value)),
+        }
+    )
+    prior = work.latest_research_checkpoint(job.job_id)
+    summary = CandidateResearchSummary(
+        candidate_thesis_id=job.candidate_thesis_id,
+        session_id=wave.session_id,
+        rounds=(execution,),
+        stop_reason=ResearchStopReason.UNRESOLVED,
+        normalized_queries=(),
+    )
+    checkpoint = ResearchCheckpointRecord(
+        checkpoint_id=stable_identifier(
+            "research-checkpoint",
+            {"job_id": job.job_id, "wave_number": wave.wave_number},
+        ),
+        job_id=job.job_id,
+        run_id=wave.run_id,
+        wave_number=wave.wave_number,
+        search_count=(0 if prior is None else prior.search_count) + wave.search_count_delta,
+        accepted_fetch_count=(0 if prior is None else prior.accepted_fetch_count)
+        + _json_nonnegative_int(
+            wave.accepted_fetch_count_delta,
+            "accepted fetch count delta",
+        ),
+        recorded_at=wave.recorded_at,
+        digest=_merge_checkpoint_digest(prior, summary),
+    )
+    work.checkpoint_research_wave(wave_result_id=wave.wave_result_id, checkpoint=checkpoint)
+
+
+def _json_nonnegative_int(value: JsonValue | None, label: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise PromptProjectionError(f"Research wave outbox has invalid {label}")
+    return value
+
+
+def _checkpoint_writer(
+    work: IntelligenceWorkRepository,
+) -> Callable[[ResearchCheckpointRecord], None]:
+    return lambda checkpoint: _install_wave_checkpoint(work, checkpoint)
+
+
+def _recover_claimed_waves(
+    work: IntelligenceWorkRepository,
+    jobs: tuple[ResearchJobRecord, ...],
+) -> None:
+    for job in jobs:
+        _recover_wave_checkpoint(work, job)
+
+
+def _next_research_review(
+    digest: JsonValue,
+    completed_at: datetime,
+    *,
+    material_claim_refreshes: tuple[datetime, ...] = (),
+) -> datetime | None:
+    """Return the earliest future claim review or evidence expiry."""
+    context_values = digest.get("contexts") if isinstance(digest, dict) else None
+    if not isinstance(context_values, list):
+        expiries: tuple[datetime, ...] = ()
+    else:
+        expiries = tuple(
+            observation.valid_until
+            for value in context_values
+            for observation in ResearchCumulativeContext.model_validate(value).new_observations
+            if observation.valid_until is not None and observation.valid_until > completed_at
+        )
+    due = (*expiries, *(value for value in material_claim_refreshes if value > completed_at))
+    return min(due) if due else None
+
+
+def _material_claim_keys(job: ResearchJobRecord) -> tuple[str, ...]:
+    """Recover exact material claim identities from the immutable job premise."""
+    if not isinstance(job.payload, dict):
+        return ()
+    premises = job.payload.get("premises")
+    if not isinstance(premises, dict):
+        return ()
+    values = premises.get("material_claims")
+    if not isinstance(values, list):
+        return ()
+    return tuple(
+        key
+        for value in values
+        if isinstance(value, dict) and isinstance((key := value.get("canonical_claim_key")), str)
+    )
+
+
+def _restore_research_checkpoint(
+    checkpoint: ResearchCheckpointRecord | None,
+) -> tuple[CandidateResearchSummary | None, tuple[ResearchCumulativeContext, ...]]:
+    """Restore compact progress and durable context from the latest completed wave."""
+    if checkpoint is None:
+        return None, ()
+    if not isinstance(checkpoint.digest, dict):
+        raise PromptProjectionError("Research checkpoint digest must be an object")
+    summary_value = checkpoint.digest.get("candidate")
+    contexts_value = checkpoint.digest.get("contexts")
+    if "backfilled_session_id" in checkpoint.digest:
+        return None, ()
+    if not isinstance(summary_value, dict) or not isinstance(contexts_value, list):
+        raise PromptProjectionError("Research checkpoint digest is incomplete")
+    return (
+        CandidateResearchSummary.model_validate(summary_value),
+        tuple(ResearchCumulativeContext.model_validate(value) for value in contexts_value),
+    )
+
+
 def _research_context_payload(context: ResearchCumulativeContext) -> dict[str, JsonValue]:
-    return context.model_dump(mode="json")
+    payload = context.model_dump(mode="json")
+    payload["alias_bindings"] = [binding.model_dump(mode="json") for binding in context.alias_bindings]
+    return payload
 
 
 def _validate_stop_reason(reason: ResearchStopReason, request: ResearchPlanningRequest) -> None:
     """Reject agent-authored stop claims that deterministic state cannot prove."""
-    assessment = request.cumulative_context.material_anchor_assessment
+    assessment = request.progress.material_anchor_assessment
     if reason is ResearchStopReason.EVIDENCE_STANDARD_SATISFIED and not assessment.evidence_standard_satisfied:
         raise InvalidResearchStopReasonError("Evidence-standard stop is not supported by deterministic assessment")
     if reason is ResearchStopReason.DECISIVE_CONTRADICTION and not assessment.decisive_contradiction:
@@ -387,8 +671,9 @@ def _validate_stop_reason(reason: ResearchStopReason, request: ResearchPlanningR
         raise InvalidResearchStopReasonError("Budget-expired stop was proposed before a hard budget was exhausted")
 
 
-def make_research_node(
+def make_research_node(  # noqa: C901 - explicit incremental recovery branches remain visible
     *,
+    claims: ClaimMemory,
     theses: ThesisMemory,
     tasks: ResearchTaskMemory,
     runner: ResearchRoundRunner,
@@ -400,6 +685,8 @@ def make_research_node(
     model_point_in_time_certified: bool = False,
     prompt_character_budget: int = 120_000,
     allowed_provider_names: tuple[str, ...],
+    tracking: InferenceTracking | None = None,
+    work_repository: IntelligenceWorkRepository | None = None,
 ) -> PipelineNode:
     """Return A3 with read-only provider execution and durable research bookkeeping."""
     resolved_budget: ResearchBudget = budget or ResearchBudget()
@@ -408,7 +695,7 @@ def make_research_node(
         request_character_allowance(planner, fallback=prompt_character_budget),
     )
 
-    def node(state: PipelineState) -> PipelineState:
+    def node(state: PipelineState) -> PipelineState:  # noqa: C901 - bounded stage orchestration
         require_predecessor(state, Stage.A3)
         run_id: str = require_run_id(state)
         requested_as_of: datetime = require_requested_as_of(state)
@@ -430,20 +717,119 @@ def make_research_node(
             point_in_time_certified=model_point_in_time_certified,
         )
         selected_ids: set[str] = set(state.get("candidate_thesis_ids", ()))
-        candidates: tuple[CandidateThesis, ...] = theses.candidates_due_for_research(
-            as_of=requested_as_of,
-            exact_candidate_ids=tuple(sorted(selected_ids)),
-        )
-        _ = tuple(
+        claimed_jobs = ()
+        if work_repository is not None:
+            selected_ids.update(work_repository.candidates_for_research_reconciliation(state.get("source_id")))
+            for candidate_id in sorted(selected_ids):
+                candidate = theses.candidates_by_ids((candidate_id,))[0]
+                origin_unit_ids = work_repository.discovery_origin_unit_ids(
+                    candidate_id,
+                    state.get("source_id"),
+                )
+                initial_tasks = tasks.pending_for_candidate(
+                    candidate_id,
+                    run_id=run_id,
+                    as_of=requested_as_of,
+                    origin_unit_ids=origin_unit_ids,
+                )
+                latest_job = work_repository.latest_research_job_for_candidate(
+                    candidate_id,
+                    state.get("source_id"),
+                )
+                if not initial_tasks and latest_job is not None:
+                    initial_tasks = _research_job_tasks(latest_job)
+                premise_claim_keys = tuple(
+                    dict.fromkeys(key for task in initial_tasks for key in task.material_claim_keys)
+                )
+                projections = claims.projections_with_deltas(
+                    requested_as_of=requested_as_of,
+                    observation_ids=state.get("observation_ids", ()),
+                    resolution_ids=state.get("claim_resolution_decision_ids", ()),
+                    verification_ids=state.get("verification_result_ids", ()),
+                )
+                material_projections = tuple(
+                    projection.model_dump(mode="json", exclude={"projected_as_of"})
+                    for projection in projections
+                    if projection.canonical_claim_key in premise_claim_keys
+                )
+                premise_payload = _JSON_VALUE_ADAPTER.validate_python(
+                    {
+                        "candidate": candidate.model_dump(mode="json"),
+                        "discovery_origin_unit_ids": list(origin_unit_ids),
+                        "material_claims": list(material_projections),
+                        "tasks": [task.model_dump(mode="json") for task in deduplicate_tasks(initial_tasks)],
+                    }
+                )
+                premise_fingerprint = hashlib.sha256(
+                    json.dumps(premise_payload, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest()
+                job_id = stable_identifier(
+                    "research-job",
+                    {"candidate_id": candidate_id, "premise_fingerprint": premise_fingerprint},
+                )
+                work_repository.ensure_research_job(
+                    ResearchJobRecord(
+                        job_id=job_id,
+                        candidate_thesis_id=candidate_id,
+                        premise_fingerprint=premise_fingerprint,
+                        source_discovery_unit_id=(origin_unit_ids[0] if len(origin_unit_ids) == 1 else None),
+                        created_at=candidate.created_at,
+                        payload={"candidate_id": candidate_id, "premises": premise_payload},
+                    ),
+                    origin_unit_ids=origin_unit_ids,
+                )
+            claimed_at = clock()
+            claimed_jobs = work_repository.claim_research_jobs(
+                run_id=run_id,
+                claimed_at=claimed_at,
+                reclaim_before=claimed_at - timedelta(minutes=30),
+                maximum_jobs=_MAXIMUM_CANDIDATES_PER_UPDATE,
+                source_id=state.get("source_id"),
+            )
+            _recover_claimed_waves(work_repository, claimed_jobs)
+            selected_ids = {job.candidate_thesis_id for job in claimed_jobs}
+            if not claimed_jobs:
+                return {
+                    "completed_stages": completed_with(state, Stage.A3.value),
+                    "artifact_ids": state.get("artifact_ids", ()),
+                    "observation_ids": state.get("observation_ids", ()),
+                    "evidence_fragment_ids": state.get("evidence_fragment_ids", ()),
+                    "interpretation_attempt_ids": state.get("interpretation_attempt_ids", ()),
+                    "research_failure_ids": state.get("research_failure_ids", ()),
+                    "research_contexts": state.get("research_contexts", ()),
+                    "decision_at": clock(),
+                }
+        candidates: tuple[CandidateThesis, ...] = (
+            theses.candidates_due_for_research(
+                as_of=requested_as_of,
+                exact_candidate_ids=tuple(sorted(selected_ids)),
+            )
+            if work_repository is None
+            else theses.candidates_by_ids(tuple(sorted(selected_ids)))
+        )[:_MAXIMUM_CANDIDATES_PER_UPDATE]
+        summaries = tuple(
             research_candidate(
                 candidate,
                 run_id=run_id,
+                job_id=(
+                    None
+                    if work_repository is None
+                    else next(
+                        job.job_id for job in claimed_jobs if job.candidate_thesis_id == candidate.candidate_thesis_id
+                    )
+                ),
                 requested_as_of=requested_as_of,
                 historical_explicit=(state.get("requested_as_of_explicit", False) and requested_as_of < started_at),
-                initial_tasks=tasks.pending_for_candidate(
-                    candidate.candidate_thesis_id,
-                    run_id=run_id,
-                    as_of=decision_at,
+                initial_tasks=(
+                    tasks.pending_for_candidate(
+                        candidate.candidate_thesis_id,
+                        run_id=run_id,
+                        as_of=decision_at,
+                    )
+                    if work_repository is None
+                    else _research_job_tasks(
+                        next(job for job in claimed_jobs if job.candidate_thesis_id == candidate.candidate_thesis_id)
+                    )
                 ),
                 runner=runner,
                 planner=planner,
@@ -452,11 +838,108 @@ def make_research_node(
                 clock=clock,
                 prompt_character_budget=resolved_prompt_character_budget,
                 allowed_provider_names=allowed_provider_names,
+                tracking=tracking,
+                prior_checkpoint=(
+                    None
+                    if work_repository is None
+                    else work_repository.latest_research_checkpoint(
+                        next(
+                            job.job_id
+                            for job in claimed_jobs
+                            if job.candidate_thesis_id == candidate.candidate_thesis_id
+                        )
+                    )
+                ),
+                checkpoint_wave=(None if work_repository is None else _checkpoint_writer(work_repository)),
             )
             for candidate in candidates
         )
+        if work_repository is not None:
+            jobs_by_candidate = {job.candidate_thesis_id: job for job in claimed_jobs}
+            for summary in summaries:
+                job = jobs_by_candidate[summary.candidate_thesis_id]
+                searches = sum(item.query_count for item in summary.rounds)
+                fetches = sum(item.fetch_count for item in summary.rounds)
+                wave_number = min(3, job.wave_count + len(summary.rounds))
+                search_count = min(6, job.search_count + searches)
+                fetch_count = min(12, job.accepted_fetch_count + fetches)
+                prior_checkpoint = work_repository.latest_research_checkpoint(job.job_id)
+                digest = _candidate_summary_payload(summary) if prior_checkpoint is None else prior_checkpoint.digest
+                terminal = (
+                    summary.stop_reason
+                    in {
+                        ResearchStopReason.EVIDENCE_STANDARD_SATISFIED,
+                        ResearchStopReason.DECISIVE_CONTRADICTION,
+                        ResearchStopReason.NO_NEW_INDEPENDENT_PROVENANCE,
+                    }
+                    or wave_number >= 3
+                    or search_count >= 6
+                    or fetch_count >= 12
+                )
+                if terminal:
+                    completed_at = clock()
+                    material_claim_keys = set(_material_claim_keys(job))
+                    material_claim_refreshes = tuple(
+                        projection.next_refresh_at
+                        for projection in claims.projections_as_of(as_of=completed_at)
+                        if projection.canonical_claim_key in material_claim_keys
+                        and projection.next_refresh_at is not None
+                    )
+                    work_repository.finalize_research_job(
+                        job_id=job.job_id,
+                        completed_at=completed_at,
+                        stop_reason=summary.stop_reason.value,
+                        next_review_at=_next_research_review(
+                            digest,
+                            completed_at,
+                            material_claim_refreshes=material_claim_refreshes,
+                        ),
+                    )
+                    input_fingerprint = hashlib.sha256(
+                        json.dumps(digest, sort_keys=True, separators=(",", ":")).encode()
+                    ).hexdigest()
+                    origin_units = work_repository.discovery_units_by_ids(
+                        work_repository.discovery_origin_unit_ids(
+                            summary.candidate_thesis_id,
+                            state.get("source_id"),
+                        )
+                    )
+                    origin_observation_ids = tuple(
+                        dict.fromkeys(
+                            identifier
+                            for unit in origin_units
+                            for identifier in _discovery_observation_ids(unit.payload)
+                        )
+                    )
+                    work_repository.ensure_synthesis_unit(
+                        SynthesisUnitRecord(
+                            unit_id=stable_identifier(
+                                "synthesis-unit",
+                                {"job_id": job.job_id, "input_fingerprint": input_fingerprint},
+                            ),
+                            research_job_id=job.job_id,
+                            input_fingerprint=input_fingerprint,
+                            created_at=clock(),
+                            payload={
+                                "candidate_id": summary.candidate_thesis_id,
+                                "context": digest,
+                                "origin_observation_ids": list(origin_observation_ids),
+                            },
+                        )
+                    )
         decision_at = clock()
         artifact_known_at = clock()
+        if work_repository is not None:
+            return _admit_incremental_research_stage(
+                state,
+                summaries=summaries,
+                admission=admission,
+                work=work_repository,
+                jobs=claimed_jobs,
+                implementation_version=implementation_version,
+                decision_at=decision_at,
+                known_at=artifact_known_at,
+            )
         recovered = runner.recover_stage_admission(
             run_id=run_id,
             known_at=artifact_known_at,
@@ -481,6 +964,95 @@ def make_research_node(
         )
 
     return node
+
+
+def _research_job_tasks(job: ResearchJobRecord) -> tuple[ResearchTaskDraft, ...]:
+    if not isinstance(job.payload, dict):
+        raise PromptProjectionError("Research job payload must be an object")
+    premises = job.payload.get("premises")
+    if not isinstance(premises, dict):
+        raise PromptProjectionError("Research job payload has no premises")
+    values = premises.get("tasks")
+    if not isinstance(values, list):
+        raise PromptProjectionError("Research job premise tasks must be a list")
+    return deduplicate_tasks(tuple(ResearchTaskDraft.model_validate(value) for value in values))
+
+
+def _admit_incremental_research_stage(
+    state: PipelineState,
+    *,
+    summaries: tuple[CandidateResearchSummary, ...],
+    admission: IntelligenceAdmissionRepository,
+    work: IntelligenceWorkRepository,
+    jobs: tuple[ResearchJobRecord, ...],
+    implementation_version: str,
+    decision_at: datetime,
+    known_at: datetime,
+) -> PipelineState:
+    contexts = tuple(
+        execution.context for summary in summaries for execution in summary.rounds if execution.context is not None
+    )
+    _, alias_bindings = reindex_research_aliases(contexts)
+    payload = ResearchArtifactPayload(
+        candidates=summaries,
+        contexts=contexts,
+        alias_bindings=alias_bindings,
+    )
+    artifact = build_stage_artifact(
+        run_id=require_run_id(state),
+        stage=Stage.A3,
+        requested_as_of=require_requested_as_of(state),
+        started_at=require_run_started_at(state),
+        known_at=known_at,
+        decision_at=decision_at,
+        input_ids=tuple(
+            bind_artifact_record(ArtifactRecordKind.CANDIDATE_THESIS, summary.candidate_thesis_id)
+            for summary in summaries
+        ),
+        output_ids=(),
+        implementation_version=implementation_version,
+        payload=payload,
+    )
+    admission.admit_incremental_research_artifact(artifact)
+    checkpoints = tuple(
+        checkpoint for job in jobs if (checkpoint := work.latest_research_checkpoint(job.job_id)) is not None
+    )
+    wave_result_ids = tuple(
+        hashlib.sha256(f"{checkpoint.job_id}\0{checkpoint.wave_number}".encode("utf-8")).hexdigest()
+        for checkpoint in checkpoints
+    )
+    work.admit_incremental_research(
+        IncrementalResearchAdmissionRecord(
+            admission_id=stable_identifier(
+                "incremental-research-admission",
+                {"artifact_id": artifact.artifact_id},
+            ),
+            run_id=require_run_id(state),
+            artifact_id=artifact.artifact_id,
+            known_at=known_at,
+            input_job_ids=tuple(job.job_id for job in jobs),
+            input_wave_result_ids=wave_result_ids,
+            input_checkpoint_ids=tuple(item.checkpoint_id for item in checkpoints),
+            output_record_ids=artifact.output_ids,
+            payload=payload.model_dump(mode="json"),
+        )
+    )
+    _ = try_install_stage_artifact_file(require_run_dir(state), artifact)
+    return {
+        "completed_stages": completed_with(state, Stage.A3.value),
+        "artifact_ids": (*state.get("artifact_ids", ()), artifact.artifact_id),
+        "research_contexts": (*state.get("research_contexts", ()), *contexts),
+        "decision_at": decision_at,
+    }
+
+
+def _discovery_observation_ids(payload: JsonValue) -> tuple[str, ...]:
+    if not isinstance(payload, dict):
+        return ()
+    values = payload.get("observation_ids")
+    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+        return ()
+    return tuple(value for value in values if isinstance(value, str))
 
 
 def _admit_recovered_research_stage(
@@ -545,58 +1117,7 @@ def _bound_planning_request(
     request: ResearchPlanningRequest,
     character_budget: int,
 ) -> ResearchPlanningRequest:
-    """Greedily project cumulative records against the exact serialized request size."""
-    context = request.cumulative_context
-    all_ids = tuple(item.observation_id for item in context.new_observations) + tuple(
-        item.alias for item in context.evidence
-    )
-    selected_observations: list[ClaimObservation] = []
-    selected_evidence: list[ResearchEvidenceRecord] = []
-    selected_ids: list[str] = []
-
-    def candidate_request(
-        observations: tuple[ClaimObservation, ...],
-        evidence: tuple[ResearchEvidenceRecord, ...],
-        ids: tuple[str, ...],
-    ) -> ResearchPlanningRequest:
-        aliases = {item.alias for item in evidence}
-        candidate_context = context.model_copy(
-            update={
-                "new_observations": observations,
-                "evidence": evidence,
-                "alias_bindings": tuple(binding for binding in context.alias_bindings if binding.alias in aliases),
-            },
-        )
-        return request.model_copy(
-            update={
-                "cumulative_context": candidate_context,
-                "omitted_input_ids": tuple(item for item in all_ids if item not in ids),
-            },
-        )
-
-    for record in context.new_observations:
-        identifier = record.observation_id
-        atomic = candidate_request((record,), (), (identifier,))
-        if serialized_inference_request_size(atomic) > character_budget:
-            raise PromptProjectionError(f"Atomic research-planning record exceeds budget: {identifier}")
-        candidate = candidate_request(
-            (*selected_observations, record), tuple(selected_evidence), (*selected_ids, identifier)
-        )
-        if serialized_inference_request_size(candidate) <= character_budget:
-            selected_observations.append(record)
-            selected_ids.append(identifier)
-    for record in context.evidence:
-        identifier = record.alias
-        atomic = candidate_request((), (record,), (identifier,))
-        if serialized_inference_request_size(atomic) > character_budget:
-            raise PromptProjectionError(f"Atomic research-planning record exceeds budget: {identifier}")
-        candidate = candidate_request(
-            tuple(selected_observations), (*selected_evidence, record), (*selected_ids, identifier)
-        )
-        if serialized_inference_request_size(candidate) <= character_budget:
-            selected_evidence.append(record)
-            selected_ids.append(identifier)
-    bounded = candidate_request(tuple(selected_observations), tuple(selected_evidence), tuple(selected_ids))
-    if serialized_inference_request_size(bounded) > character_budget:
+    """Project a compact decision digest without replaying fetched evidence."""
+    if serialized_inference_request_size(request) > character_budget:
         raise PromptProjectionError("Research-planning fixed context exceeds the character budget")
-    return bounded
+    return request

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import cast
 
+import pytest
 from typing_extensions import override
 
 
@@ -23,6 +24,7 @@ from money_pit.evidence.processors import EvidenceProcessorRegistry
 from money_pit.evidence.repository import EvidenceProcessingAttemptRepository
 from money_pit.pipeline.interpretation import InterpretationService
 from money_pit.portfolio.theses import ThesisRepository
+from money_pit.research.composition import ResearchRuntime
 from money_pit.research.composition import build_research_runtime
 from money_pit.research.errors import HistoricalResearchUnavailableError
 from money_pit.research.protocol import ResearchProviderCapabilities
@@ -34,6 +36,7 @@ from money_pit.schemas.claims import HorizonClass
 from money_pit.schemas.research import CandidateThesisResearchScope
 from money_pit.schemas.research import ResearchDiscoveryBatch
 from money_pit.schemas.research import ResearchDiscoveryResult
+from money_pit.schemas.research import ResearchFetch
 from money_pit.schemas.research import ResearchQuery
 from money_pit.schemas.research import ResearchSession
 from money_pit.schemas.research import ResearchTask
@@ -280,6 +283,116 @@ class _MediaAnalyzer:
             transcript=(TimedTranscriptSegment(start_seconds=0, end_seconds=1, text="claim"),),
             frames=(FrameReading(timestamp_seconds=1, on_screen_text=("frame",), image_png=_FRAME),),
         )
+
+
+def _certified_runtime_work(
+    tmp_path: Path,
+) -> tuple[ResearchRuntime, ResearchSession, ResearchTask, _CertifiedProvider]:
+    database = Database(tmp_path / "intelligence.sqlite3")
+    database.initialize()
+    _seed_run(database)
+    candidate = CandidateThesis(
+        candidate_thesis_id="candidate-certified",
+        subject="Historical candidate",
+        direction=ThesisDirection.LONG,
+        instrument_reference="HISTORICAL",
+        horizon_class=HorizonClass.TACTICAL,
+        discovery_basis=DiscoveryBasis(source_claim_keys=("claim-1",)),
+        created_at=_DECISION_AT,
+        known_at=_DECISION_AT,
+    )
+    ThesisRepository(database).append_candidate(candidate)
+    provider = _CertifiedProvider()
+    providers = ResearchProviderRegistry()
+    providers.register(provider)
+    runtime = build_research_runtime(
+        database,
+        providers,
+        AssetStore(tmp_path / "assets"),
+        claims=_claims(database),
+        interpreter=_interpreter(),
+        credentials=SecretSpecInferenceResolver(tmp_path / "unused-secretspec.toml"),
+        model="test-model",
+    )
+    session = ResearchSession(
+        session_id="session-certified",
+        run_id=_RUN_ID,
+        scope=CandidateThesisResearchScope(candidate_thesis_id=candidate.candidate_thesis_id),
+        started_at=_DECISION_AT,
+        deadline_at=_DECISION_AT + timedelta(minutes=10),
+    )
+    _ = runtime.service.start(session)
+    task = ResearchTask(
+        task_id="task-certified",
+        session_id=session.session_id,
+        round_number=1,
+        query=ResearchQuery(
+            provider=provider.name,
+            query_text="historical fact",
+            candidate_thesis_id=candidate.candidate_thesis_id,
+            purpose="verify historical premise",
+            requested_at=_DECISION_AT,
+            max_results=1,
+        ),
+        created_at=_DECISION_AT,
+    )
+    return runtime, session, task, provider
+
+
+@pytest.mark.parametrize("committed_phase", ["record_search", "record_fetch"])
+def test_run_round_resumes_after_hard_kill_without_repeating_committed_provider_phase(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    committed_phase: str,
+) -> None:
+    runtime, session, task, provider = _certified_runtime_work(tmp_path)
+    original_search = runtime.repository.record_search
+    original_fetch = runtime.repository.record_fetch
+    if committed_phase == "record_search":
+
+        def commit_search_then_kill(
+            value: ResearchTask,
+            batch: ResearchDiscoveryBatch,
+        ) -> int:
+            _ = original_search(value, batch)
+            raise SystemExit("hard kill after durable search")
+
+        monkeypatch.setattr(runtime.repository, "record_search", commit_search_then_kill)
+    else:
+
+        def commit_fetch_then_kill(value: ResearchFetch) -> bool:
+            _ = original_fetch(value)
+            raise SystemExit("hard kill after durable fetch")
+
+        monkeypatch.setattr(runtime.repository, "record_fetch", commit_fetch_then_kill)
+    with pytest.raises(SystemExit):
+        _ = runtime.service.run_round(
+            session,
+            (task,),
+            requested_as_of=_CUTOFF,
+            decision_at=_DECISION_AT,
+            historical_explicit=True,
+        )
+    monkeypatch.setattr(runtime.repository, "record_search", original_search)
+    monkeypatch.setattr(runtime.repository, "record_fetch", original_fetch)
+
+    result = runtime.service.run_round(
+        session,
+        (task,),
+        requested_as_of=_CUTOFF,
+        decision_at=_DECISION_AT,
+        historical_explicit=True,
+    )
+
+    assert (
+        provider.search_cutoffs,
+        provider.fetch_cutoffs,
+        result.asset_ids,
+    ) == (
+        [_CUTOFF],
+        [_CUTOFF],
+        (hashlib.sha256(b"certified historical evidence").hexdigest(),),
+    )
 
 
 def test_run_round_blocks_current_only_provider_before_io_for_historical_run(tmp_path: Path) -> None:

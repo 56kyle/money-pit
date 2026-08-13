@@ -6,7 +6,7 @@ from datetime import datetime
 import typer
 
 from money_pit.claims.cli import claims_app
-from money_pit.composition import execute_harness_run
+from money_pit.composition import execute_portfolio_review
 from money_pit.config import ApplicationConfig
 from money_pit.config import ConfigurationScope
 from money_pit.config import canonical_config_hash
@@ -20,7 +20,7 @@ from money_pit.execution_control.service import ApprovalBinding
 from money_pit.execution_control.service import disable_execution
 from money_pit.execution_control.service import enable_execution
 from money_pit.execution_control.service import record_plan_decision
-from money_pit.pipeline.chain import Stage
+from money_pit.intelligence_cli import intelligence_app
 from money_pit.pipeline.replay import make_replay_node
 from money_pit.plans.repository import PortfolioPlanRepository
 from money_pit.portfolio.composition import PortfolioRuntime
@@ -48,6 +48,7 @@ portfolio_app = typer.Typer(help="Capture and review portfolio decisions.")
 plan_app = typer.Typer(help="Inspect, decide, and execute exact-hash plans.")
 execution_app = typer.Typer(help="Manage global execution authority.")
 app.add_typer(source_app, name="source")
+app.add_typer(intelligence_app, name="intelligence")
 app.add_typer(research_app, name="research")
 app.add_typer(claims_app, name="claims")
 app.add_typer(theses_app, name="theses")
@@ -83,39 +84,6 @@ def _portfolio_runtime(
             SecretSpecExecutionResolver.from_environment() if scope is ConfigurationScope.EXECUTION else None
         ),
     )
-
-
-def _run_harness(*, source: str | None, as_of: datetime | None, through: Stage) -> object:
-    database = _database()
-    scope = (
-        ConfigurationScope.EXECUTION
-        if through is Stage.A6
-        else ConfigurationScope.CAPITAL
-        if through is Stage.A5
-        else ConfigurationScope.INTELLIGENCE
-    )
-    config = load_application_config(scope=scope)
-    paths = RepositoryPaths.from_data_root(DATA_ROOT)
-    return execute_harness_run(
-        database=database,
-        config=config,
-        paths=paths,
-        source_id=source,
-        requested_as_of=as_of,
-        through=through,
-        implementation_version=APP_VERSION,
-    )
-
-
-@app.command()
-def run(
-    source: str | None = None,
-    as_of: datetime | None = None,
-    through: Stage | None = None,
-) -> None:
-    """Process pending durable evidence through the selected harness stage."""
-    result = _run_harness(source=source, as_of=as_of, through=through or Stage.A6)
-    typer.echo(str(result))
 
 
 @research_app.command(name="list")
@@ -159,12 +127,6 @@ def theses_show(revision_id: str) -> None:
     typer.echo(revision.model_dump_json(indent=2))
 
 
-@theses_app.command(name="review")
-def theses_review() -> None:
-    """Run thesis review through A4."""
-    typer.echo(str(_run_harness(source=None, as_of=None, through=Stage.A4)))
-
-
 @portfolio_app.command(name="snapshot")
 def portfolio_snapshot() -> None:
     """Capture and persist the current read-only broker portfolio state."""
@@ -176,8 +138,16 @@ def portfolio_snapshot() -> None:
 
 @portfolio_app.command(name="review")
 def portfolio_review() -> None:
-    """Start a portfolio-wide review at A5."""
-    typer.echo(str(_run_harness(source=None, as_of=None, through=Stage.A5)))
+    """Run A5 portfolio planning from current durable intelligence."""
+    database = _database()
+    result = execute_portfolio_review(
+        database=database,
+        config=load_application_config(scope=ConfigurationScope.CAPITAL),
+        paths=RepositoryPaths.from_data_root(DATA_ROOT),
+        requested_as_of=None,
+        implementation_version=APP_VERSION,
+    )
+    typer.echo(result.model_dump_json(indent=2))
 
 
 def _plan(plan_id: str) -> PortfolioPlan:

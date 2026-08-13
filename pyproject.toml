@@ -1,6 +1,6 @@
 [project]
 name = "money-pit"
-version = "0.0.3"
+version = "0.0.4"
 description = "money-pit"
 authors = [
     { name = "Kyle Oliver", email = "56kyleoliver@gmail.com" },

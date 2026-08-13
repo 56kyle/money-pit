@@ -13,6 +13,7 @@ from typing import cast
 from money_pit.research.errors import ResearchBudgetExceededError
 from money_pit.research.errors import ResearchFetchCollisionError
 from money_pit.research.errors import ResearchResultCollisionError
+from money_pit.research.errors import ResearchSessionOwnershipError
 from money_pit.research.errors import ResearchSessionStoppedError
 from money_pit.research.errors import ResearchStageAlreadyAdmittedError
 from money_pit.research.errors import ResearchStageRecoveryIncompleteError
@@ -21,6 +22,7 @@ from money_pit.schemas.research import CandidateThesisResearchScope
 from money_pit.schemas.research import CanonicalClaimResearchScope
 from money_pit.schemas.research import RecoveredResearchStage
 from money_pit.schemas.research import ResearchDiscoveryBatch
+from money_pit.schemas.research import ResearchDiscoveryResult
 from money_pit.schemas.research import ResearchFetch
 from money_pit.schemas.research import ResearchScope
 from money_pit.schemas.research import ResearchSession
@@ -48,6 +50,23 @@ class ResearchBudgetState:
     session: ResearchSession
     query_count: int
     fetch_count: int
+
+
+@dataclass(frozen=True)
+class DurableResearchRoundState:
+    """Complete normalized journal projection for one research wave."""
+
+    session_id: str
+    round_number: int
+    tasks: tuple[ResearchTask, ...]
+    results: tuple[ResearchDiscoveryResult, ...]
+    fetches: tuple[ResearchFetch, ...]
+    failure_ids: tuple[str, ...]
+    source_item_ids: tuple[str, ...]
+    asset_ids: tuple[str, ...]
+    fragment_ids: tuple[str, ...]
+    interpretation_attempt_ids: tuple[str, ...]
+    observation_ids: tuple[str, ...]
 
 
 class ResearchRepository:
@@ -168,6 +187,34 @@ class ResearchRepository:
             return None
         return ResearchSession.model_validate_json(str(_column(row, "session_json")))
 
+    def adopt_interrupted_session(
+        self,
+        session: ResearchSession,
+        *,
+        run_id: str,
+        reclaim_before: datetime,
+        deadline: datetime,
+    ) -> ResearchSession:
+        """Move interrupted work to a retry run with a fresh bounded deadline."""
+        adopted = session.model_copy(update={"run_id": run_id, "deadline_at": deadline})
+        with self._database.transaction(TransactionMode.WRITE) as connection:
+            cursor = connection.execute(
+                """UPDATE research_sessions SET run_id = ?, deadline_at = ?, session_json = ?
+                WHERE session_id = ? AND status = 'active'
+                  AND (started_at <= ? OR EXISTS (
+                    SELECT 1 FROM run_terminal_events WHERE run_id = research_sessions.run_id))""",
+                (
+                    run_id,
+                    _utc_text(deadline),
+                    adopted.model_dump_json(),
+                    session.session_id,
+                    _utc_text(reclaim_before),
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ResearchSessionOwnershipError("Active research session is still owned by a live run")
+        return adopted
+
     def pending_tasks(self, session_id: str) -> tuple[ResearchTask, ...]:
         """Return pending tasks in deterministic round and creation order."""
         with self._database.transaction() as connection:
@@ -184,6 +231,129 @@ class ResearchRepository:
                 ).fetchall(),
             )
         return tuple(ResearchTask.model_validate_json(str(_column(row, "task_json"))) for row in rows)
+
+    def research_round_state(self, session_id: str, round_number: int) -> DurableResearchRoundState:
+        """Project every committed task/result/fetch/interpretation for one wave."""
+        if round_number < 1:
+            raise ValueError("Research round number must be positive")
+        with self._database.transaction() as connection:
+            task_rows = cast(
+                "list[sqlite3.Row]",
+                connection.execute(
+                    """SELECT task_json, status FROM research_tasks
+                WHERE session_id = ? AND round_number = ? ORDER BY created_at, task_id""",
+                    (session_id, round_number),
+                ).fetchall(),
+            )
+            tasks = tuple(
+                ResearchTask.model_validate_json(str(_column(row, "task_json"))).model_copy(
+                    update={"status": ResearchTaskStatus(str(_column(row, "status")))}
+                )
+                for row in task_rows
+            )
+            task_ids = tuple(task.task_id for task in tasks)
+            encoded_ids = json.dumps(task_ids)
+            result_rows = cast(
+                "list[sqlite3.Row]",
+                connection.execute(
+                    """SELECT result_json FROM research_results
+                WHERE task_id IN (SELECT value FROM json_each(?))
+                ORDER BY discovered_at, result_id""",
+                    (encoded_ids,),
+                ).fetchall(),
+            )
+            fetch_rows = cast(
+                "list[sqlite3.Row]",
+                connection.execute(
+                    """SELECT fetch_json FROM research_fetches
+                WHERE task_id IN (SELECT value FROM json_each(?))
+                ORDER BY attempted_at, fetch_id""",
+                    (encoded_ids,),
+                ).fetchall(),
+            )
+            failures = cast(
+                "list[sqlite3.Row]",
+                connection.execute(
+                    """SELECT failure_id FROM research_failures
+                WHERE session_id = ? AND (task_id IS NULL OR task_id IN (SELECT value FROM json_each(?)))
+                ORDER BY occurred_at, failure_id""",
+                    (session_id, encoded_ids),
+                ).fetchall(),
+            )
+            descendants = _round_descendant_ids(connection, task_ids)
+        return DurableResearchRoundState(
+            session_id=session_id,
+            round_number=round_number,
+            tasks=tasks,
+            results=tuple(
+                ResearchDiscoveryResult.model_validate_json(str(_column(row, "result_json"))) for row in result_rows
+            ),
+            fetches=tuple(ResearchFetch.model_validate_json(str(_column(row, "fetch_json"))) for row in fetch_rows),
+            failure_ids=tuple(str(_column(row, "failure_id")) for row in failures),
+            source_item_ids=descendants[0],
+            asset_ids=descendants[1],
+            fragment_ids=descendants[2],
+            interpretation_attempt_ids=descendants[3],
+            observation_ids=descendants[4],
+        )
+
+    def latest_research_round_state(self, session_id: str) -> DurableResearchRoundState | None:
+        """Return the newest materialized wave for an active durable session."""
+        with self._database.transaction() as connection:
+            row: sqlite3.Row | None = cast(
+                "sqlite3.Row | None",
+                connection.execute(
+                    "SELECT max(round_number) AS round_number FROM research_tasks WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone(),
+            )
+        round_number_value: object | None = None if row is None else _column(row, "round_number")
+        if round_number_value is None:
+            return None
+        return self.research_round_state(session_id, int(str(round_number_value)))
+
+    def tasks_for_round(self, session_id: str, round_number: int) -> tuple[ResearchTask, ...]:
+        """Return every durable task with its current status for one wave."""
+        return self.research_round_state(session_id, round_number).tasks
+
+    def results_for_task(self, task_id: str) -> tuple[ResearchDiscoveryResult, ...]:
+        """Return all committed discoveries for one task."""
+        with self._database.transaction() as connection:
+            rows = cast(
+                "list[sqlite3.Row]",
+                connection.execute(
+                    """SELECT result_json FROM research_results
+                WHERE task_id = ? ORDER BY discovered_at, result_id""",
+                    (task_id,),
+                ).fetchall(),
+            )
+        return tuple(ResearchDiscoveryResult.model_validate_json(str(_column(row, "result_json"))) for row in rows)
+
+    def fetches_for_task(self, task_id: str) -> tuple[ResearchFetch, ...]:
+        """Return every terminal fetch disposition for one task."""
+        with self._database.transaction() as connection:
+            rows = cast(
+                "list[sqlite3.Row]",
+                connection.execute(
+                    """SELECT fetch_json FROM research_fetches
+                WHERE task_id = ? ORDER BY attempted_at, fetch_id""",
+                    (task_id,),
+                ).fetchall(),
+            )
+        return tuple(ResearchFetch.model_validate_json(str(_column(row, "fetch_json"))) for row in rows)
+
+    def fetch_for_result(self, task_id: str, result_id: str) -> ResearchFetch | None:
+        """Return the durable terminal fetch disposition for one task result."""
+        with self._database.transaction() as connection:
+            row = cast(
+                "sqlite3.Row | None",
+                connection.execute(
+                    """SELECT fetch_json FROM research_fetches
+                WHERE task_id = ? AND result_id = ? ORDER BY attempted_at DESC LIMIT 1""",
+                    (task_id, result_id),
+                ).fetchone(),
+            )
+        return None if row is None else ResearchFetch.model_validate_json(str(_column(row, "fetch_json")))
 
     def task_status(self, task_id: str) -> ResearchTaskStatus | None:
         """Return one durable task status."""
@@ -670,6 +840,49 @@ def _summary_json_values(
         ).fetchall(),
     )
     return tuple(str(_column(row, "summary_json")) for row in rows)
+
+
+def _round_descendant_ids(
+    connection: sqlite3.Connection,
+    task_ids: tuple[str, ...],
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    encoded = json.dumps(task_ids)
+
+    def identifiers(query: str) -> tuple[str, ...]:
+        rows = cast("list[sqlite3.Row]", connection.execute(query, (encoded,)).fetchall())
+        return tuple(str(_column(row, "identifier")) for row in rows)
+
+    source_items = identifiers(
+        """SELECT DISTINCT source_item_id AS identifier FROM research_fetches
+        WHERE task_id IN (SELECT value FROM json_each(?)) AND status = 'succeeded'
+        ORDER BY source_item_id"""
+    )
+    assets = identifiers(
+        """SELECT DISTINCT asset_id AS identifier FROM research_fetches
+        WHERE task_id IN (SELECT value FROM json_each(?)) AND status = 'succeeded'
+        ORDER BY asset_id"""
+    )
+    fragments = identifiers(
+        """SELECT DISTINCT fragment.fragment_id AS identifier FROM evidence_fragments AS fragment
+        JOIN research_fetches AS fetch ON fetch.asset_id = fragment.asset_id
+        WHERE fetch.task_id IN (SELECT value FROM json_each(?)) ORDER BY fragment.fragment_id"""
+    )
+    attempts = identifiers(
+        """SELECT DISTINCT attempt.attempt_id AS identifier FROM claim_interpretation_attempts AS attempt
+        JOIN research_fetches AS fetch ON fetch.asset_id = attempt.asset_id
+         AND fetch.source_item_id = attempt.source_item_id
+        WHERE fetch.task_id IN (SELECT value FROM json_each(?)) AND attempt.outcome = 'succeeded'
+        ORDER BY attempt.attempt_id"""
+    )
+    observations = identifiers(
+        """SELECT DISTINCT observation.value AS identifier FROM claim_interpretation_attempts AS attempt
+        JOIN research_fetches AS fetch ON fetch.asset_id = attempt.asset_id
+         AND fetch.source_item_id = attempt.source_item_id
+        JOIN json_each(attempt.observation_ids_json) AS observation
+        WHERE fetch.task_id IN (SELECT value FROM json_each(?)) AND attempt.outcome = 'succeeded'
+        ORDER BY observation.value"""
+    )
+    return source_items, assets, fragments, attempts, observations
 
 
 def _canonical_json(value: JsonValue) -> str:

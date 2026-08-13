@@ -18,7 +18,9 @@ from pydantic import Field
 from pydantic import JsonValue
 from pydantic import model_validator
 
+from money_pit.agents.inference import InferenceResult
 from money_pit.evidence.work import EvidenceInterpretationWork
+from money_pit.evidence.work import ReusableInterpretation
 from money_pit.portfolio.universe import LayeredUniverse
 from money_pit.schemas.claims import CanonicalClaim
 from money_pit.schemas.claims import ClaimCategory
@@ -29,6 +31,7 @@ from money_pit.schemas.claims import HorizonClass
 from money_pit.schemas.claims import UnresolvedObservationCursor
 from money_pit.schemas.claims import UnresolvedObservationPage
 from money_pit.schemas.claims import VerificationResult
+from money_pit.schemas.research import MaterialAnchorAssessment
 from money_pit.schemas.research import RecoveredResearchStage
 from money_pit.schemas.research import ResearchCumulativeContext
 from money_pit.schemas.research import ResearchStageAdmission
@@ -165,7 +168,19 @@ class DiscoveryRequest(BaseModel):
     requested_as_of: AwareDatetime
     context_known_at: AwareDatetime
     allowed_provider_names: tuple[str, ...]
-    omitted_input_ids: tuple[str, ...] = ()
+    signals: tuple["DiscoverySignal", ...] = ()
+
+
+class DiscoverySignal(BaseModel):
+    """Compact material change supplied to candidate discovery."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+    signal_id: str = Field(min_length=1)
+    claim_key: str = Field(min_length=1)
+    status: str = Field(min_length=1)
+    instruments: tuple[str, ...] = ()
+    themes: tuple[str, ...] = ()
+    claim_texts: tuple[str, ...] = ()
 
 
 class DiscoveryDraft(BaseModel):
@@ -212,15 +227,25 @@ class ResearchPlanningRequest(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
 
     candidate: CandidateThesis
-    completed_rounds: tuple[ResearchRoundExecution, ...]
+    progress: "ResearchProgressDigest"
     remaining_queries: int = Field(ge=0)
     remaining_fetches: int = Field(ge=0)
     deadline: AwareDatetime
     requested_as_of: AwareDatetime
     context_known_at: AwareDatetime
-    cumulative_context: ResearchCumulativeContext
-    omitted_input_ids: tuple[str, ...] = ()
     allowed_provider_names: tuple[str, ...]
+
+
+class ResearchProgressDigest(BaseModel):
+    """Compact durable state supplied to the A3 planner."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+    material_anchor_assessment: MaterialAnchorAssessment
+    provenance_groups: tuple[str, ...] = ()
+    normalized_prior_queries: tuple[str, ...] = ()
+    accepted_fetch_count: int = Field(ge=0)
+    rejected_result_count: int = Field(ge=0)
+    completed_wave_count: int = Field(ge=0)
 
 
 class ResolutionDraft(BaseModel):
@@ -329,7 +354,6 @@ class SynthesisRequest(BaseModel):
     requested_as_of: AwareDatetime
     context_known_at: AwareDatetime
     research_context: ResearchCumulativeContext
-    omitted_input_ids: tuple[str, ...] = ()
 
 
 class SynthesisDraft(BaseModel):
@@ -343,10 +367,10 @@ class SynthesisDraft(BaseModel):
     contributions: tuple[ContributionDraft, ...]
 
 
-InterpretationAgent: TypeAlias = Callable[[InterpretationRequest], InterpretationDraft]
-DiscoveryAgent: TypeAlias = Callable[[DiscoveryRequest], DiscoveryDraft]
-ResearchPlanningAgent: TypeAlias = Callable[[ResearchPlanningRequest], ResearchRoundPlan]
-SynthesisAgent: TypeAlias = Callable[[SynthesisRequest], SynthesisDraft]
+InterpretationAgent: TypeAlias = Callable[[InterpretationRequest], InferenceResult[InterpretationDraft]]
+DiscoveryAgent: TypeAlias = Callable[[DiscoveryRequest], InferenceResult[DiscoveryDraft]]
+ResearchPlanningAgent: TypeAlias = Callable[[ResearchPlanningRequest], InferenceResult[ResearchRoundPlan]]
+SynthesisAgent: TypeAlias = Callable[[SynthesisRequest], InferenceResult[SynthesisDraft]]
 UniverseLoader: TypeAlias = Callable[[datetime], LayeredUniverse]
 
 
@@ -362,6 +386,33 @@ class EvidenceWorkRepository(Protocol):
         interpreter_version: str,
     ) -> tuple[EvidenceInterpretationWork, ...]:
         """Return uninterpreted evidence visible at the boundary."""
+        ...
+
+    def documents_for_bundle(
+        self,
+        *,
+        source_item_id: str,
+        content_version: str,
+        processor_name: str | None = None,
+        processor_version: str | None = None,
+    ) -> tuple[EvidenceInterpretationWork, ...]:
+        """Return every processed document for one exact source-item version."""
+        ...
+
+    def reusable_interpretation(
+        self,
+        work: EvidenceInterpretationWork,
+        *,
+        interpreter_version: str,
+    ) -> ReusableInterpretation | None:
+        """Return one exact completed interpretation without model execution."""
+        ...
+
+    def preserved_legacy_interpretation(
+        self,
+        work: EvidenceInterpretationWork,
+    ) -> ReusableInterpretation | None:
+        """Return migrated predecessor work without claiming policy equivalence."""
         ...
 
     def begin_interpretation(
@@ -502,7 +553,7 @@ class ThesisMemory(Protocol):
         as_of: datetime,
         exact_candidate_ids: tuple[str, ...] = (),
     ) -> tuple[CandidateThesis, ...]:
-        """Return deterministic pending and due candidate research work."""
+        """Return deterministic due work, restricted to exact identities when supplied."""
         ...
 
     def revisions_as_of(self, *, as_of: datetime) -> tuple[ThesisRevision, ...]:
@@ -535,10 +586,29 @@ class ResearchRoundRunner(Protocol):
         """Create the candidate session at A3's actual start time."""
         ...
 
+    def resume_or_start_session(
+        self,
+        *,
+        run_id: str,
+        candidate: CandidateThesis,
+        started_at: datetime,
+        deadline: datetime,
+        maximum_rounds: int,
+        maximum_queries: int,
+        maximum_fetches: int,
+    ) -> str:
+        """Resume interrupted durable candidate work or create a new wave session."""
+        ...
+
+    def pending_tasks_for_session(self, session_id: str) -> tuple[ResearchTaskDraft, ...]:
+        """Return durable unfinished tasks for a resumed wave."""
+        ...
+
     def run_round(
         self,
         *,
         session_id: str,
+        job_id: str,
         run_id: str,
         candidate: CandidateThesis,
         round_number: int,
@@ -548,6 +618,7 @@ class ResearchRoundRunner(Protocol):
         historical_explicit: bool,
         query_budget: int,
         fetch_budget: int,
+        on_completed: Callable[[ResearchRoundExecution], None] | None = None,
     ) -> ResearchRoundExecution:
         """Execute and persist one budgeted read-only research round."""
         ...
@@ -594,8 +665,41 @@ class ResearchTaskMemory(Protocol):
         *,
         run_id: str,
         known_at: datetime,
+        origin_unit_ids: tuple[str, ...] = (),
     ) -> str:
         """Append and return one immutable research-task identity."""
+        ...
+
+    def checkpoint_planner_tasks(
+        self,
+        tasks: tuple[ResearchTaskDraft, ...],
+        *,
+        run_id: str,
+        known_at: datetime,
+    ) -> tuple[str, ...]:
+        """Atomically persist one paid planner result before execution."""
+        ...
+
+    def planner_result(
+        self,
+        *,
+        job_id: str,
+        wave_number: int,
+    ) -> ResearchRoundPlan | None:
+        """Return one previously paid planner result, including empty results."""
+        ...
+
+    def checkpoint_planner_result(
+        self,
+        *,
+        job_id: str,
+        wave_number: int,
+        run_id: str,
+        known_at: datetime,
+        request: ResearchPlanningRequest,
+        result: ResearchRoundPlan,
+    ) -> None:
+        """Persist the complete validated planner result before downstream work."""
         ...
 
     def pending_for_candidate(
@@ -604,6 +708,7 @@ class ResearchTaskMemory(Protocol):
         *,
         run_id: str,
         as_of: datetime,
+        origin_unit_ids: tuple[str, ...] = (),
     ) -> tuple[ResearchTaskDraft, ...]:
         """Return pending tasks for one candidate."""
         ...

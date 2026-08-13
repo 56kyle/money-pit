@@ -33,6 +33,8 @@ class PipelineState(TypedDict, total=False):
     research_failure_ids: tuple[str, ...]
     research_contexts: tuple[ResearchCumulativeContext, ...]
     candidate_thesis_ids: tuple[str, ...]
+    discovery_unit_ids: tuple[str, ...]
+    research_job_ids: tuple[str, ...]
     thesis_revision_ids: tuple[str, ...]
     claim_resolution_decision_ids: tuple[str, ...]
     verification_result_ids: tuple[str, ...]

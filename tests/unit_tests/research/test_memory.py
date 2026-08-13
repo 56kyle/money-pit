@@ -16,6 +16,7 @@ from money_pit.research.errors import ResearchBudgetExceededError
 from money_pit.research.memory import DurableResearchRoundRunner
 from money_pit.research.memory import PlannedResearchTaskStore
 from money_pit.research.memory import _allocate_result_limits  # pyright: ignore[reportPrivateUsage]
+from money_pit.research.repository import DurableResearchRoundState
 from money_pit.research.repository import ResearchBudgetState
 from money_pit.research.repository import ResearchRepository
 from money_pit.research.service import ResearchRoundResult
@@ -39,6 +40,9 @@ from money_pit.schemas.theses import ThesisDirection
 from money_pit.schemas.universe import DiscoveryBasis
 from money_pit.sources._shared import source_definition_hash
 from money_pit.storage.database import Database
+from money_pit.storage.intelligence_work import DiscoveryUnitKind
+from money_pit.storage.intelligence_work import DiscoveryUnitRecord
+from money_pit.storage.intelligence_work import IntelligenceWorkRepository
 
 
 if TYPE_CHECKING:
@@ -49,7 +53,7 @@ _AS_OF = datetime(2026, 8, 1, tzinfo=UTC)
 _RUN_ID = "4fa85f64-5717-4562-b3fc-2c963f66afa6"
 
 
-def test_candidates_due_for_research_keeps_baseline_unresolved_work_with_new_candidates(
+def test_candidates_due_for_research_with_exact_ids_excludes_unrelated_backlog(
     tmp_path: Path,
 ) -> None:
     database = Database(tmp_path / "intelligence.sqlite3")
@@ -72,8 +76,8 @@ def test_candidates_due_for_research_keeps_baseline_unresolved_work_with_new_can
             "subject": "New same-run candidate",
             "discovery_basis": DiscoveryBasis(source_claim_keys=("claim-new",)),
             "status": CandidateStatus.OPEN,
-            "created_at": _AS_OF + timedelta(minutes=1),
-            "known_at": _AS_OF + timedelta(minutes=1),
+            "created_at": _AS_OF,
+            "known_at": _AS_OF,
         },
     )
     repository.append_candidate(baseline)
@@ -84,10 +88,7 @@ def test_candidates_due_for_research_keeps_baseline_unresolved_work_with_new_can
         exact_candidate_ids=(same_run.candidate_thesis_id,),
     )
 
-    assert tuple(candidate.candidate_thesis_id for candidate in due) == (
-        baseline.candidate_thesis_id,
-        same_run.candidate_thesis_id,
-    )
+    assert tuple(candidate.candidate_thesis_id for candidate in due) == (same_run.candidate_thesis_id,)
 
 
 def test_materialize_binds_an_a2_plan_to_the_bounded_a3_session(tmp_path: Path) -> None:
@@ -157,6 +158,54 @@ def test_materialize_binds_an_a2_plan_to_the_bounded_a3_session(tmp_path: Path) 
     assert execution_task.session_id == session.session_id
 
 
+def test_pending_for_candidate_preserves_a2_task_across_failed_producing_run(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "a2-task-resume.sqlite3")
+    database.initialize()
+    with database.transaction() as connection:
+        for run_id in (_RUN_ID, "run-after-failure"):
+            _ = connection.execute(
+                """INSERT INTO runs (
+                    run_id, requested_as_of, started_at, known_at, through_stage,
+                    source_config_hash, intelligence_config_hash, manifest_json
+                ) VALUES (?, ?, ?, ?, 'A3', ?, ?, '{}')""",
+                (run_id, _AS_OF.isoformat(), _AS_OF.isoformat(), _AS_OF.isoformat(), "a" * 64, "b" * 64),
+            )
+    candidate = _candidate()
+    ThesisRepository(database).append_candidate(candidate)
+    unit_id = "discovery-unit-a2"
+    IntelligenceWorkRepository(database).append_discovery_unit(
+        DiscoveryUnitRecord(
+            unit_id=unit_id,
+            kind=DiscoveryUnitKind.SOURCE_BUNDLE,
+            subject_id="source-bundle-1",
+            input_fingerprint="c" * 64,
+            source_id="source-a",
+            created_at=_AS_OF,
+            payload={"observation_ids": ["observation-1"]},
+        ),
+        (),
+    )
+    task = _draft(query="durable A2 premise")
+    planned = PlannedResearchTaskStore(database)
+    _ = planned.append_task(
+        task,
+        run_id=_RUN_ID,
+        known_at=_AS_OF,
+        origin_unit_ids=(unit_id,),
+    )
+
+    resumed = planned.pending_for_candidate(
+        candidate.candidate_thesis_id,
+        run_id="run-after-failure",
+        as_of=_AS_OF,
+        origin_unit_ids=(unit_id,),
+    )
+
+    assert resumed == (task,)
+
+
 class _UnusedDependency:
     def __getattr__(self, name: str) -> object:
         raise AssertionError(name)
@@ -222,6 +271,7 @@ def test_run_round_rejects_allocations_before_service_or_queue_io(
     with pytest.raises(ResearchBudgetExceededError):
         _ = runner.run_round(
             session_id="session-1",
+            job_id="job-1",
             run_id=_RUN_ID,
             candidate=_candidate(),
             round_number=1,
@@ -293,6 +343,22 @@ class _BudgetRepository:
     def budget_state(self, session_id: str) -> ResearchBudgetState:
         assert session_id == self.session.session_id
         return ResearchBudgetState(session=self.session, query_count=0, fetch_count=0)
+
+    def research_round_state(self, session_id: str, round_number: int) -> DurableResearchRoundState:
+        assert session_id == self.session.session_id
+        return DurableResearchRoundState(
+            session_id=session_id,
+            round_number=round_number,
+            tasks=(),
+            results=(),
+            fetches=(),
+            failure_ids=(),
+            source_item_ids=(),
+            asset_ids=(),
+            fragment_ids=(),
+            interpretation_attempt_ids=(),
+            observation_ids=(),
+        )
 
 
 def _work() -> EvidenceInterpretationWork:
@@ -398,6 +464,7 @@ def _run_with_collaborators(
     )
     _ = runner.run_round(
         session_id=repository.session.session_id,
+        job_id="legacy:test-memory",
         run_id=_RUN_ID,
         candidate=_candidate(),
         round_number=1,
@@ -472,6 +539,7 @@ def test_run_round_materializes_allocated_caps_without_leaving_original_plans_pe
         planned,
     ).run_round(
         session_id=session.session_id,
+        job_id="legacy:test-memory",
         run_id=_RUN_ID,
         candidate=candidate,
         round_number=1,

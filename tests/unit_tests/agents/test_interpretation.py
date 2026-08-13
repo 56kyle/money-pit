@@ -8,6 +8,7 @@ from pydantic import SecretStr
 from pydantic import ValidationError
 
 from money_pit.agents import interpretation as interpretation_module
+from money_pit.agents.inference import InferenceInvocationError
 from money_pit.contracts import ClaimObservationDraft
 from money_pit.contracts import EvidencePromptRecord
 from money_pit.contracts import InterpretationAgent
@@ -77,7 +78,16 @@ def _agent_with_outputs(
             output = outputs.pop(0)
             if isinstance(output, ValidationError):
                 raise output
-            return SimpleNamespace(output=output)
+            return SimpleNamespace(
+                output=output,
+                usage=SimpleNamespace(
+                    input_tokens=10,
+                    cache_write_tokens=2,
+                    cache_read_tokens=3,
+                    output_tokens=4,
+                    requests=1,
+                ),
+            )
 
     def construct_agent(*, model: object, output_type: object) -> CoreAgent:
         del model, output_type
@@ -163,8 +173,9 @@ def test_make_interpretation_agent_retries_one_validation_error_with_identical_r
 
     result = agent(_request())
 
-    assert (result, rendered_requests) == (
+    assert (result.output, result.usage.request_count, rendered_requests) == (
         InterpretationDraft.model_validate_json(_VALID_OUTPUT),
+        2,
         [rendered_requests[0], rendered_requests[0]],
     )
 
@@ -174,10 +185,10 @@ def test_make_interpretation_agent_propagates_second_validation_error(
 ) -> None:
     agent, rendered_requests = _agent_with_outputs(monkeypatch, [_NAIVE_OUTPUT, _NAIVE_OUTPUT])
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(InferenceInvocationError) as captured:
         _ = agent(_request())
 
-    assert len(rendered_requests) == 2
+    assert (captured.value.failure_kind, len(rendered_requests)) == ("ValidationError", 2)
 
 
 def test_make_interpretation_agent_does_not_retry_core_validation_error(
@@ -188,7 +199,7 @@ def test_make_interpretation_agent_does_not_retry_core_validation_error(
     core_error = captured.value
     agent, rendered_requests = _agent_with_outputs(monkeypatch, [core_error, _VALID_OUTPUT])
 
-    with pytest.raises(ValidationError) as propagated:
+    with pytest.raises(InferenceInvocationError) as propagated:
         _ = agent(_request())
 
-    assert (propagated.value is core_error, len(rendered_requests)) == (True, 1)
+    assert (propagated.value.failure_kind, len(rendered_requests)) == ("ValidationError", 1)

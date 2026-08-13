@@ -3,10 +3,19 @@ from datetime import datetime
 from datetime import timedelta
 from itertools import count
 from pathlib import Path
+from typing import TypeVar
+from typing import cast
 
+import pytest
+
+from money_pit import composition as composition_module
+from money_pit.agents.inference import InferenceResult
+from money_pit.agents.inference import InferenceUsage
 from money_pit.claims.repository import ClaimRepository
 from money_pit.composition import ApplicationDependencies
-from money_pit.composition import execute_harness_run
+from money_pit.composition import build_application_runtime
+from money_pit.composition import execute_portfolio_review
+from money_pit.composition import initial_state
 from money_pit.config import ApplicationConfig
 from money_pit.config import ClaimFreshnessPolicyConfig
 from money_pit.config import ClaimFreshnessRuleConfig
@@ -43,6 +52,10 @@ from money_pit.execution_control.orders import OrderIntent
 from money_pit.execution_control.repository import SqliteExecutionAuthorityRepository
 from money_pit.execution_control.repository import TurnoverReservationRepository
 from money_pit.pipeline.chain import Stage
+from money_pit.pipeline.orchestration import IntelligenceNodes
+from money_pit.pipeline.orchestration import IntelligenceStage
+from money_pit.pipeline.orchestration import IntelligenceUpdateReport
+from money_pit.pipeline.orchestration import run_intelligence_update
 from money_pit.plans.lifecycle import approve_plan
 from money_pit.plans.repository import PortfolioPlanRepository
 from money_pit.portfolio.composition import PortfolioReadDependencies
@@ -67,6 +80,7 @@ from money_pit.portfolio.universe import ConfiguredInstrumentResolver
 from money_pit.research.providers import SearchHit
 from money_pit.research.providers import WebResearchProvider
 from money_pit.research.registry import ResearchProviderRegistry
+from money_pit.runs.manifest import register_run
 from money_pit.runs.paths import RepositoryPaths
 from money_pit.schemas.claims import ClaimCategory
 from money_pit.schemas.claims import ClaimKind
@@ -79,6 +93,9 @@ from money_pit.schemas.instrument import InstrumentExposureClass
 from money_pit.schemas.outcomes import OutcomeBoundary
 from money_pit.schemas.portfolio_plan import PortfolioPlan
 from money_pit.schemas.research import ResearchStopReason
+from money_pit.schemas.runs import RunRecord
+from money_pit.schemas.runs import RunTerminalEvent
+from money_pit.schemas.runs import RunTerminalStatus
 from money_pit.schemas.sources import AllowedUse
 from money_pit.schemas.sources import SourceDefinition
 from money_pit.schemas.sources import SourceRegistryDocument
@@ -99,6 +116,8 @@ from money_pit.sources.service import EvidenceRepository
 from money_pit.sources.service import SourceSyncService
 from money_pit.storage.assets import AssetStore
 from money_pit.storage.database import Database
+from money_pit.storage.intelligence_work import IntelligenceWorkRepository
+from money_pit.storage.runs import RunRepository
 from money_pit.storage.sources import SourceRepository
 
 
@@ -248,114 +267,131 @@ class _OfflineLiquidityProvider:
         )
 
 
-def _interpret(request: InterpretationRequest) -> InterpretationDraft:
+_OutputT = TypeVar("_OutputT")
+
+
+def _inference_result(output: _OutputT) -> InferenceResult[_OutputT]:
+    return InferenceResult(output=output, usage=InferenceUsage(), request_hash="0" * 64)
+
+
+def _interpret(request: InterpretationRequest) -> InferenceResult[InterpretationDraft]:
     is_primary = request.source_item_id.startswith("research.primary:")
-    return InterpretationDraft(
-        observations=(
-            ClaimObservationDraft(
-                claim_text=_PRIMARY_CLAIM if is_primary else _INITIAL_CLAIM,
-                claim_kind=ClaimKind.FACTUAL,
-                category=ClaimCategory.FUNDAMENTAL,
-                evidence_aliases=(request.evidence[0].alias,),
-                asserted_at=request.context_known_at,
-                effective_from=request.context_known_at,
-                review_at=request.context_known_at + timedelta(days=30),
-                valid_until=request.context_known_at + timedelta(days=90),
-                horizon_class=HorizonClass.TACTICAL,
-                instruments=("NEW",),
-                causal_mechanisms=("backlog conversion",),
-                regime_assumptions=("stable demand",),
-            ),
-        ),
-    )
-
-
-def _discover(request: DiscoveryRequest) -> DiscoveryDraft:
-    assert "primary" in request.allowed_provider_names
-    return DiscoveryDraft(
-        candidates=(
-            CandidateThesisDraft(
-                subject="NEW backlog conversion",
-                direction=ThesisDirection.LONG,
-                instrument_reference="NEW",
-                horizon_class=HorizonClass.TACTICAL,
-                discovery_basis=DiscoveryBasis(
-                    universe_layer=UniverseLayer.WATCHLIST,
-                    universe_reference="NEW",
+    return _inference_result(
+        InterpretationDraft(
+            observations=(
+                ClaimObservationDraft(
+                    claim_text=_PRIMARY_CLAIM if is_primary else _INITIAL_CLAIM,
+                    claim_kind=ClaimKind.FACTUAL,
+                    category=ClaimCategory.FUNDAMENTAL,
+                    evidence_aliases=(request.evidence[0].alias,),
+                    asserted_at=request.context_known_at,
+                    effective_from=request.context_known_at,
+                    review_at=request.context_known_at + timedelta(days=30),
+                    valid_until=request.context_known_at + timedelta(days=90),
+                    horizon_class=HorizonClass.TACTICAL,
+                    instruments=("NEW",),
+                    causal_mechanisms=("backlog conversion",),
+                    regime_assumptions=("stable demand",),
                 ),
-                causal_mechanisms=("backlog conversion",),
-                regime_assumptions=("stable demand",),
             ),
-        ),
-        research_tasks=(
-            ResearchTaskDraft(
-                candidate_subject="NEW backlog conversion",
-                provider="primary",
-                query="NEW quarterly filing backlog",
-                purpose="Verify the candidate's material backlog premise.",
-                maximum_results=1,
-            ),
-        ),
+        )
     )
 
 
-def _plan_research(request: ResearchPlanningRequest) -> ResearchRoundPlan:
-    assert request.completed_rounds
-    return ResearchRoundPlan(stop_reason=ResearchStopReason.UNRESOLVED)
+def _discover(request: DiscoveryRequest) -> InferenceResult[DiscoveryDraft]:
+    assert "primary" in request.allowed_provider_names
+    return _inference_result(
+        DiscoveryDraft(
+            candidates=(
+                CandidateThesisDraft(
+                    subject="NEW backlog conversion",
+                    direction=ThesisDirection.LONG,
+                    instrument_reference="NEW",
+                    horizon_class=HorizonClass.TACTICAL,
+                    discovery_basis=DiscoveryBasis(
+                        universe_layer=UniverseLayer.WATCHLIST,
+                        universe_reference="NEW",
+                    ),
+                    causal_mechanisms=("backlog conversion",),
+                    regime_assumptions=("stable demand",),
+                ),
+            ),
+            research_tasks=(
+                ResearchTaskDraft(
+                    candidate_subject="NEW backlog conversion",
+                    provider="primary",
+                    query="NEW quarterly filing backlog",
+                    purpose="Verify the candidate's material backlog premise.",
+                    maximum_results=1,
+                ),
+            ),
+        )
+    )
 
 
-def _synthesize(request: SynthesisRequest) -> SynthesisDraft:
+def _reject_recursive_discovery(_request: DiscoveryRequest) -> InferenceResult[DiscoveryDraft]:
+    raise AssertionError("Candidate verification must not recursively invoke discovery.")
+
+
+def _plan_research(request: ResearchPlanningRequest) -> InferenceResult[ResearchRoundPlan]:
+    assert request.progress.completed_wave_count >= 1
+    return _inference_result(ResearchRoundPlan(stop_reason=ResearchStopReason.UNRESOLVED))
+
+
+def _synthesize(request: SynthesisRequest) -> InferenceResult[SynthesisDraft]:
     initial = next(item for item in request.observations if item.claim_text == _INITIAL_CLAIM)
     primary = next(item for item in request.observations if item.claim_text == _PRIMARY_CLAIM)
     supporting_alias = next(
         item.alias for item in request.research_context.alias_bindings if item.source_item_id == primary.source_item_id
     )
     candidate = request.candidates[0]
-    return SynthesisDraft(
-        resolutions=(
-            ResolutionDraft(
-                subject_observation_id=initial.observation_id,
-                relation="distinct",
-                rationale="This is the first bounded interpretation of the material premise.",
+    return _inference_result(
+        SynthesisDraft(
+            resolutions=(
+                ResolutionDraft(
+                    subject_observation_id=initial.observation_id,
+                    relation="distinct",
+                    rationale="This is the first bounded interpretation of the material premise.",
+                ),
+                ResolutionDraft(
+                    subject_observation_id=primary.observation_id,
+                    relation="distinct",
+                    rationale="The filing statement is a separately retained factual observation.",
+                ),
             ),
-            ResolutionDraft(
-                subject_observation_id=primary.observation_id,
-                relation="distinct",
-                rationale="The filing statement is a separately retained factual observation.",
+            verifications=(
+                VerificationDraft(
+                    observation_id=initial.observation_id,
+                    status="supported",
+                    supporting_evidence_aliases=(supporting_alias,),
+                ),
+                VerificationDraft(
+                    observation_id=primary.observation_id,
+                    status="unresolved",
+                    limitations=("The originating filing cannot independently verify itself.",),
+                ),
             ),
-        ),
-        verifications=(
-            VerificationDraft(
-                observation_id=initial.observation_id,
-                status="supported",
-                supporting_evidence_aliases=(supporting_alias,),
+            revisions=(
+                ThesisRevisionDraft(
+                    promoted_from_candidate_id=candidate.candidate_thesis_id,
+                    subject=candidate.subject,
+                    instrument="NEW",
+                    direction=ThesisDirection.LONG,
+                    horizon_class=HorizonClass.TACTICAL,
+                    effective_from=request.context_known_at,
+                    review_at=request.context_known_at + timedelta(days=30),
+                    valid_until=request.context_known_at + timedelta(days=90),
+                    scenario_distribution=(ScenarioOutcome(name="base", probability=1.0, expected_return=0.08),),
+                    invalidation_rules=("Backlog conversion falls below plan.",),
+                    supporting_observation_ids=(initial.observation_id,),
+                    causal_mechanisms=("backlog conversion",),
+                    regime_assumptions=("stable demand",),
+                    confidence=0.7,
+                    reasoning="Primary evidence supports the factual anchor for a new non-held thesis.",
+                ),
             ),
-            VerificationDraft(
-                observation_id=primary.observation_id,
-                status="unresolved",
-                limitations=("The originating filing cannot independently verify itself.",),
-            ),
-        ),
-        revisions=(
-            ThesisRevisionDraft(
-                promoted_from_candidate_id=candidate.candidate_thesis_id,
-                subject=candidate.subject,
-                instrument="NEW",
-                direction=ThesisDirection.LONG,
-                horizon_class=HorizonClass.TACTICAL,
-                effective_from=request.context_known_at,
-                review_at=request.context_known_at + timedelta(days=30),
-                valid_until=request.context_known_at + timedelta(days=90),
-                scenario_distribution=(ScenarioOutcome(name="base", probability=1.0, expected_return=0.08),),
-                invalidation_rules=("Backlog conversion falls below plan.",),
-                supporting_observation_ids=(initial.observation_id,),
-                causal_mechanisms=("backlog conversion",),
-                regime_assumptions=("stable demand",),
-                confidence=0.7,
-                reasoning="Primary evidence supports the factual anchor for a new non-held thesis.",
-            ),
-        ),
-        contributions=(),
+            contributions=(),
+        )
     )
 
 
@@ -421,7 +457,10 @@ def _strategy(tmp_path: Path) -> StrategyConfig:
     )
 
 
-def test_execute_harness_run_composes_persistent_research_plan_and_execution(tmp_path: Path) -> None:
+def test_incremental_intelligence_then_a5_review_and_approved_a6_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     source_path = tmp_path / "source.txt"
     _ = source_path.write_text(_INITIAL_CLAIM, encoding="utf-8")
     source = SourceDefinition(
@@ -511,32 +550,165 @@ def test_execute_harness_run_composes_persistent_research_plan_and_execution(tmp
             ),
         )
 
-    state = execute_harness_run(
+    work = IntelligenceWorkRepository(database)
+    dependencies = ApplicationDependencies(
+        interpretation_agent=_interpret,
+        discovery_agent=_discover,
+        research_planning_agent=_plan_research,
+        synthesis_agent=_synthesize,
+        research_providers=providers,
+        instrument_resolver=ConfiguredInstrumentResolver(frozenset({"NEW", "SPY"})),
+        clock=lambda: run_time,
+        run_id_factory=lambda: _RUN_ID,
+        inference_credentials=SecretSpecInferenceResolver(tmp_path / "unused-secretspec.toml"),
+        intelligence_work=work,
+    )
+    intelligence_runtime = build_application_runtime(
         database=database,
         config=config,
-        paths=paths,
-        source_id=source.source_id,
-        requested_as_of=None,
-        through=Stage.A5,
+        assets_root=paths.assets_root,
         implementation_version="integration-002",
+        through=Stage.A4,
+        dependencies=dependencies,
+    )
+    run_ids = (
+        _RUN_ID,
+        "8f24f64a-62c8-4a3d-8d1a-6d6d61a26349",
+        "c15c250b-80c4-4f55-8aac-2ed84d5eac60",
+        "d203ead3-6b46-4e4c-85fc-727af1051d8f",
+    )
+    reports: list[IntelligenceUpdateReport] = []
+    run_store = RunRepository(database)
+    for run_id in run_ids:
+        run_record = RunRecord(
+            run_id=run_id,
+            requested_as_of=run_time,
+            started_at=run_time,
+            known_at=run_time,
+            through_stage=Stage.A4.value,
+            source_config_hash="a" * 64,
+            intelligence_config_hash="b" * 64,
+        )
+        run_dir = register_run(paths, run_store, run_record)
+        report = run_intelligence_update(
+            initial_state(
+                run_id=run_id,
+                run_dir=run_dir,
+                requested_as_of=run_time,
+                run_started_at=run_time,
+                requested_as_of_explicit=False,
+                config=config,
+                through=Stage.A4,
+                source_id=source.source_id,
+            ),
+            nodes=IntelligenceNodes(
+                a1=intelligence_runtime.nodes.a1,
+                a2=intelligence_runtime.nodes.a2,
+                a3=intelligence_runtime.nodes.a3,
+                a4=intelligence_runtime.nodes.a4,
+            ),
+            through=IntelligenceStage.SYNTHESIS,
+            run_record=run_record,
+            work=work,
+        )
+        reports.append(report)
+        run_store.append_terminal_event(
+            RunTerminalEvent(
+                run_id=run_id,
+                status=RunTerminalStatus.COMPLETED,
+                completed_at=run_time,
+                known_at=run_time,
+            )
+        )
+        if ThesisRepository(database).revisions_as_of(as_of=run_time):
+            break
+    assert reports[0].remaining.active_research_jobs == 1
+    assert all(report.completed_stages == ("A1", "A2", "A3", "A4") for report in reports)
+
+    no_recursion_runtime = build_application_runtime(
+        database=database,
+        config=config,
+        assets_root=paths.assets_root,
+        implementation_version="integration-002",
+        through=Stage.A4,
         dependencies=ApplicationDependencies(
             interpretation_agent=_interpret,
-            discovery_agent=_discover,
+            discovery_agent=_reject_recursive_discovery,
             research_planning_agent=_plan_research,
             synthesis_agent=_synthesize,
             research_providers=providers,
             instrument_resolver=ConfiguredInstrumentResolver(frozenset({"NEW", "SPY"})),
             clock=lambda: run_time,
-            run_id_factory=lambda: _RUN_ID,
+            run_id_factory=lambda: "472d1aeb-60c8-4980-8ef3-a29c39c91584",
             inference_credentials=SecretSpecInferenceResolver(tmp_path / "unused-secretspec.toml"),
-            portfolio_runtime_factory=portfolio_runtime_factory,
+            intelligence_work=work,
         ),
+    )
+    no_recursion_run = RunRecord(
+        run_id="472d1aeb-60c8-4980-8ef3-a29c39c91584",
+        requested_as_of=run_time,
+        started_at=run_time,
+        known_at=run_time,
+        through_stage=Stage.A4.value,
+        source_config_hash="a" * 64,
+        intelligence_config_hash="b" * 64,
+    )
+    no_recursion_dir = register_run(paths, run_store, no_recursion_run)
+    no_recursion_report = run_intelligence_update(
+        initial_state(
+            run_id=no_recursion_run.run_id,
+            run_dir=no_recursion_dir,
+            requested_as_of=run_time,
+            run_started_at=run_time,
+            requested_as_of_explicit=False,
+            config=config,
+            through=Stage.A4,
+            source_id=source.source_id,
+        ),
+        nodes=IntelligenceNodes(
+            a1=no_recursion_runtime.nodes.a1,
+            a2=no_recursion_runtime.nodes.a2,
+            a3=no_recursion_runtime.nodes.a3,
+            a4=no_recursion_runtime.nodes.a4,
+        ),
+        through=IntelligenceStage.SYNTHESIS,
+        run_record=no_recursion_run,
+        work=work,
+    )
+    assert no_recursion_report.completed.discovery_units == 0
+
+    portfolio_runtime = portfolio_runtime_factory()
+
+    def _portfolio_runtime_override(**_kwargs: object) -> PortfolioRuntime:
+        return portfolio_runtime
+
+    monkeypatch.setattr(composition_module, "build_portfolio_runtime", _portfolio_runtime_override)
+    monkeypatch.setattr(composition_module, "_utc_now", lambda: run_time)
+    monkeypatch.setattr(
+        composition_module,
+        "_uuid4_string",
+        lambda: "fbb2319c-2080-4ea4-838f-a9b33949e6cf",
+    )
+    review = execute_portfolio_review(
+        database=database,
+        config=config,
+        paths=paths,
+        requested_as_of=None,
+        implementation_version="integration-002",
+        portfolio_credentials=SecretSpecPortfolioResolver(tmp_path / "unused-secretspec.toml"),
     )
 
     claims = ClaimRepository(database, refresh_policy=claim_refresh_policy(strategy))
     revisions = ThesisRepository(database).revisions_as_of(as_of=run_time)
-    plan_id = state.get("plan_id")
-    assert plan_id is not None
+    with database.transaction() as connection:
+        recursive_discovery_count = cast(
+            "int",
+            connection.execute(
+                """SELECT count(*) FROM discovery_units
+                WHERE unit_kind = 'canonical_claim'"""
+            ).fetchone()[0],
+        )
+    plan_id = review.plan_id
     plan = PortfolioPlanRepository(database).get(plan_id)
     assert plan is not None
     assert plan.payload.execution_config_hash is not None
@@ -615,8 +787,9 @@ def test_execute_harness_run_composes_persistent_research_plan_and_execution(tmp
         as_of=run_time + timedelta(days=90),
     )
     assert (
-        state.get("completed_stages"),
-        len(claims.observations_by_ids(state.get("observation_ids", ()))),
+        reports[-1].completed_stages,
+        recursive_discovery_count,
+        len(claims.observations_as_of(as_of=run_time)),
         revisions[0].instrument,
         revisions[0].promoted_from_candidate_id is not None,
         tuple(trade.instrument for trade in plan.payload.proposed_trades),
@@ -625,7 +798,8 @@ def test_execute_harness_run_composes_persistent_research_plan_and_execution(tmp
         tuple(item.boundary for item in outcome_schedules),
         {(item.thesis_revision_id, item.plan_id, item.plan_hash) for item in outcome_schedules},
     ) == (
-        ("A1", "A2", "A3", "A4", "A5"),
+        ("A1", "A2", "A3", "A4"),
+        0,
         2,
         "NEW",
         True,

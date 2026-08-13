@@ -38,6 +38,8 @@ class _WhisperModel:
         if self._device == "cuda" and self.cuda_failure is not None:
             raise RuntimeError(self.cuda_failure)
         return (), SimpleNamespace(duration=1.0)
+
+
 class _FrameReader:
     def __init__(self, events: list[IngestionProgressEvent]) -> None:
         self._events: list[IngestionProgressEvent] = events
@@ -261,9 +263,7 @@ def test__read_frames_emits_each_completion_after_its_frame_inference(
     assert tuple(reading.timestamp_seconds for reading in readings) == (1, 3)
     assert reader.progress_at_read == [(), (1.0,)]
     assert tuple(
-        (event.current, event.total)
-        for event in events
-        if event.stage == IngestionProgressStage.FRAME_PROCESSING
+        (event.current, event.total) for event in events if event.stage == IngestionProgressStage.FRAME_PROCESSING
     ) == ((1.0, 2.0), (2.0, 2.0))
 
 

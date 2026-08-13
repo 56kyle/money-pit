@@ -37,8 +37,16 @@ class ResearchEvidenceCutoffError(ResearchError):
     """Raised when provider metadata cannot prove evidence existed by the cutoff."""
 
 
+class ResearchUriReuseMismatchError(ResearchError):
+    """Raised when a job-owned canonical URI no longer matches its reuse policy."""
+
+
 class ResearchSessionStoppedError(ResearchError):
     """Raised when new work is attempted for a non-active session."""
+
+
+class ResearchSessionOwnershipError(ResearchError):
+    """Raised when an interrupted session is still owned by a live run."""
 
 
 class ResearchStageRecoveryIncompleteError(ResearchError):

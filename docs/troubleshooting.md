@@ -4,9 +4,17 @@
 
 Run `secretspec check --scope SCOPE --reason "Diagnose money-pit credentials"`. Confirm that local use selects the `development` keyring profile; an unset `SECRETSPEC_PROFILE` selects it automatically. For environment-backed automation, set `SECRETSPEC_PROFILE=ci` explicitly and supply every name declared for the requested scope. You do not need names from unrequested scopes. money-pit does not load `.env` files and does not fall back between providers. A blank profile selector is invalid.
 
+## Intelligence update reports queued work
+
+This result is normal. One invocation processes a bounded batch and does not drain the complete backlog. Run `money-pit intelligence status [--source SOURCE_ID]` to inspect pending work, then run another matching update if you want to continue. Status makes no model or research-provider calls.
+
+## Intelligence update stops after a provider failure
+
+Inspect the update with `money-pit intelligence show RUN_ID`. Completed work remains durable. Correct the provider or credential problem, then run another update. The next update resumes unfinished work and does not repeat completed model calls whose work identity and version bindings are unchanged.
+
 ## Database fingerprint rejected
 
-The selected database is non-empty and matches neither the 0.0.3 schema nor the exact retained 0.0.2 predecessor. An exact 0.0.2 database migrates automatically in one transaction. Unknown releases, metadata drift, and catalog drift are rejected without mutation. Stop and verify the configured data root; do not rename, manually migrate, or delete an unknown database automatically.
+The selected database is non-empty and matches neither the 0.0.4 schema nor the exact retained 0.0.3 predecessor. An exact 0.0.3 database migrates automatically in one transaction. Unknown releases, metadata drift, and catalog drift are rejected without mutation. Stop and verify the configured data root; do not rename, manually migrate, or delete an unknown database automatically.
 
 ## Candidate cannot create exposure
 

@@ -302,10 +302,7 @@ def test_ingest_reacquires_and_persists_unchanged_media_for_a_new_source_definit
                 "SELECT DISTINCT source_definition_hash FROM evidence_asset_acquisitions",
             ).fetchall(),
         )
-        persisted_definition_hashes = {
-            str(cast("object", row["source_definition_hash"]))
-            for row in rows
-        }
+        persisted_definition_hashes = {str(cast("object", row["source_definition_hash"])) for row in rows}
 
     assert len(media_transport.calls) == 2
     assert persisted_definition_hashes == {
@@ -678,10 +675,7 @@ def test_concurrent_ingestion_transactions_return_one_durable_temporal_identity(
         )
         for result in results
     )
-    expected_temporal_values = tuple(
-        datetime.fromisoformat(cast("str", value))
-        for value in durable_temporal_values
-    )
+    expected_temporal_values = tuple(datetime.fromisoformat(cast("str", value)) for value in durable_temporal_values)
     assert (
         {result.persisted_item_count for result in results},
         normalized_temporal_values,

@@ -7,15 +7,11 @@ import typer
 
 from money_pit.claims.repository import ClaimNotFoundError
 from money_pit.claims.repository import ClaimRepository
-from money_pit.composition import execute_harness_run
 from money_pit.config import ConfigurationScope
 from money_pit.config import claim_refresh_policy
 from money_pit.config import load_application_config
-from money_pit.constants import APP_VERSION
 from money_pit.constants import DATA_ROOT
 from money_pit.constants import STATE_DATABASE_FILENAME
-from money_pit.pipeline.chain import Stage
-from money_pit.runs.paths import RepositoryPaths
 from money_pit.schemas.claims import CanonicalClaim
 from money_pit.schemas.claims import ClaimObservation
 from money_pit.schemas.claims import VerificationResult
@@ -95,20 +91,3 @@ def refresh(canonical_claim_key: str | None = None) -> None:
         raise typer.Exit(code=1) from error
     for projection in projections:
         typer.echo(projection.model_dump_json())
-
-
-@claims_app.command()
-def verify(as_of: datetime | None = None) -> None:
-    """Run bounded research and adversarial verification through A4."""
-    database = Database(DATA_ROOT / STATE_DATABASE_FILENAME)
-    database.initialize()
-    result = execute_harness_run(
-        database=database,
-        config=load_application_config(scope=ConfigurationScope.INTELLIGENCE),
-        paths=RepositoryPaths.from_data_root(DATA_ROOT),
-        source_id=None,
-        requested_as_of=as_of,
-        through=Stage.A4,
-        implementation_version=APP_VERSION,
-    )
-    typer.echo(str(result))

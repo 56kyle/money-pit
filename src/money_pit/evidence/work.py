@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import TypeAdapter
 
+from money_pit.schemas.claims import ClaimObservation
 from money_pit.schemas.evidence import EvidenceAsset
 from money_pit.schemas.evidence import EvidenceDocument
 from money_pit.schemas.evidence import EvidenceFragment
@@ -40,6 +41,19 @@ class EvidenceInterpretationWork(BaseModel):
 
     document: EvidenceDocument
     content_version: str
+
+
+class ReusableInterpretation(BaseModel):
+    """One exact completed interpretation reconstructed without model execution."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    attempt_id: str
+    document_id: str
+    fragment_ids: tuple[str, ...]
+    observations: tuple[ClaimObservation, ...]
+    known_at: datetime
+    completed_at: datetime
 
 
 class EvidenceWorkStore:
@@ -103,6 +117,12 @@ class EvidenceWorkStore:
                             AND processing.status = 'succeeded'
                       )
                       AND COALESCE(retry.blocked, 0) = 0
+                      AND NOT EXISTS (
+                          SELECT 1 FROM legacy_interpretation_reuse AS legacy
+                          WHERE legacy.source_item_id = acquisition.source_item_id
+                            AND legacy.content_version = acquisition.content_version
+                            AND legacy.asset_id = acquisition.asset_id
+                      )
                       AND (retry.retry_after IS NULL OR retry.retry_after <= ?)
                     ORDER BY COALESCE(retry.retry_after, acquisition.retrieved_at), acquisition.source_item_id,
                              acquisition.content_version, acquisition.asset_id
@@ -151,6 +171,12 @@ class EvidenceWorkStore:
                             AND processing.status = 'succeeded'
                       )
                       AND COALESCE(retry.blocked, 0) = 0
+                      AND NOT EXISTS (
+                          SELECT 1 FROM legacy_interpretation_reuse AS legacy
+                          WHERE legacy.source_item_id = acquisition.source_item_id
+                            AND legacy.content_version = acquisition.content_version
+                            AND legacy.asset_id = acquisition.asset_id
+                      )
                       AND (retry.retry_after IS NULL OR retry.retry_after <= ?)
                       AND item.source_id = ?
                     ORDER BY COALESCE(retry.retry_after, acquisition.retrieved_at), acquisition.source_item_id,
@@ -181,6 +207,205 @@ class EvidenceWorkStore:
                     ),
                 )
         return tuple(work_items)
+
+    def documents_for_bundle(
+        self,
+        *,
+        source_item_id: str,
+        content_version: str,
+        processor_name: str | None = None,
+        processor_version: str | None = None,
+    ) -> tuple[EvidenceInterpretationWork, ...]:
+        """Return every processed document for one exact source-item version."""
+        if (processor_name is None) != (processor_version is None):
+            raise ValueError("Processor name and version must be supplied together")
+        with self._database.transaction() as connection:
+            rows: list[sqlite3.Row] = cast(
+                "list[sqlite3.Row]",
+                connection.execute(
+                    """
+                    SELECT acquisition.asset_id, acquisition.source_item_id,
+                           acquisition.content_version, acquisition.retrieved_at,
+                           acquisition.media_type, asset.content_hash, asset.local_path
+                    FROM evidence_asset_acquisitions AS acquisition
+                    JOIN evidence_assets AS asset ON asset.asset_id = acquisition.asset_id
+                    WHERE acquisition.source_item_id = ? AND acquisition.content_version = ?
+                      AND EXISTS (
+                          SELECT 1 FROM evidence_processing_attempts AS processing
+                          WHERE processing.source_item_id = acquisition.source_item_id
+                            AND processing.content_version = acquisition.content_version
+                            AND processing.asset_id = acquisition.asset_id
+                            AND processing.status = 'succeeded'
+                            AND (? IS NULL OR (
+                                processing.processor_name = ?
+                                AND processing.processor_version = ?
+                            ))
+                      )
+                    ORDER BY acquisition.asset_id
+                    """,
+                    (
+                        source_item_id,
+                        content_version,
+                        processor_name,
+                        processor_name,
+                        processor_version,
+                    ),
+                ).fetchall(),
+            )
+            work_items: list[EvidenceInterpretationWork] = []
+            for acquisition in rows:
+                asset_id = str(_column(acquisition, "asset_id"))
+                fragment_rows: list[sqlite3.Row] = cast(
+                    "list[sqlite3.Row]",
+                    connection.execute(
+                        """SELECT fragment_id, fragment_kind, locator_json, extracted_text,
+                                  cited_source_text, extraction_method, extraction_model, confidence
+                           FROM evidence_fragments WHERE asset_id = ? ORDER BY fragment_id""",
+                        (asset_id,),
+                    ).fetchall(),
+                )
+                work_items.append(
+                    EvidenceInterpretationWork(
+                        document=_document_from_rows(acquisition, fragment_rows),
+                        content_version=content_version,
+                    )
+                )
+        return tuple(work_items)
+
+    def document_for_asset(
+        self,
+        *,
+        source_item_id: str,
+        asset_id: str,
+    ) -> EvidenceInterpretationWork:
+        """Return the exact processed acquisition for a durable research fetch."""
+        with self._database.transaction() as connection:
+            rows = cast(
+                "list[sqlite3.Row]",
+                connection.execute(
+                    """SELECT acquisition.asset_id, acquisition.source_item_id,
+                acquisition.content_version, acquisition.retrieved_at, acquisition.media_type,
+                asset.content_hash, asset.local_path
+                FROM evidence_asset_acquisitions AS acquisition
+                JOIN evidence_assets AS asset USING (asset_id)
+                WHERE acquisition.source_item_id = ? AND acquisition.asset_id = ?
+                  AND EXISTS (SELECT 1 FROM evidence_processing_attempts AS processing
+                    WHERE processing.source_item_id = acquisition.source_item_id
+                      AND processing.content_version = acquisition.content_version
+                      AND processing.asset_id = acquisition.asset_id
+                      AND processing.status = 'succeeded')
+                ORDER BY acquisition.retrieved_at DESC, acquisition.content_version DESC""",
+                    (source_item_id, asset_id),
+                ).fetchall(),
+            )
+            if not rows:
+                raise KeyError((source_item_id, asset_id))
+            acquisition = rows[0]
+            fragments = cast(
+                "list[sqlite3.Row]",
+                connection.execute(
+                    """SELECT fragment_id, fragment_kind, locator_json, extracted_text,
+                cited_source_text, extraction_method, extraction_model, confidence
+                FROM evidence_fragments WHERE asset_id = ? ORDER BY fragment_id""",
+                    (asset_id,),
+                ).fetchall(),
+            )
+        return EvidenceInterpretationWork(
+            document=_document_from_rows(acquisition, fragments),
+            content_version=str(_column(acquisition, "content_version")),
+        )
+
+    def reusable_interpretation(
+        self,
+        work: EvidenceInterpretationWork,
+        *,
+        interpreter_version: str,
+    ) -> ReusableInterpretation | None:
+        """Return the exact successful interpretation for one work and interpreter identity."""
+        document = work.document
+        with self._database.transaction() as connection:
+            row: sqlite3.Row | None = cast(
+                "sqlite3.Row | None",
+                connection.execute(
+                    """
+                    SELECT attempt_id, observation_ids_json, known_at, completed_at
+                    FROM claim_interpretation_attempts
+                    WHERE source_item_id = ? AND content_version = ? AND asset_id = ?
+                      AND interpreter_version = ? AND outcome = 'succeeded'
+                    ORDER BY completed_at DESC, attempt_id DESC LIMIT 1
+                    """,
+                    (
+                        document.asset.source_item_id,
+                        work.content_version,
+                        document.asset.asset_id,
+                        interpreter_version,
+                    ),
+                ).fetchone(),
+            )
+            if row is None:
+                return None
+            observation_ids_raw: object = cast(
+                "object",
+                json.loads(str(_column(row, "observation_ids_json"))),
+            )
+            if not isinstance(observation_ids_raw, list):
+                raise ValueError("Stored interpretation observation identities are malformed")
+            validated_ids = cast("list[object]", observation_ids_raw)
+            if not all(isinstance(value, str) for value in validated_ids):
+                raise ValueError("Stored interpretation observation identities are malformed")
+            observation_ids: tuple[str, ...] = tuple(value for value in validated_ids if isinstance(value, str))
+            observations: list[ClaimObservation] = []
+            for observation_id in observation_ids:
+                observation_row: sqlite3.Row | None = cast(
+                    "sqlite3.Row | None",
+                    connection.execute(
+                        "SELECT observation_json FROM claim_observations WHERE observation_id = ?",
+                        (observation_id,),
+                    ).fetchone(),
+                )
+                if observation_row is None:
+                    raise ValueError("Stored interpretation references a missing observation")
+                observations.append(
+                    ClaimObservation.model_validate_json(
+                        str(_column(observation_row, "observation_json")),
+                    ),
+                )
+        known_at_raw: object = _column(row, "known_at")
+        completed_at_raw: object = _column(row, "completed_at")
+        if known_at_raw is None or completed_at_raw is None:
+            raise ValueError("Successful interpretation timestamps are incomplete")
+        return ReusableInterpretation(
+            attempt_id=str(_column(row, "attempt_id")),
+            document_id=document.asset.asset_id,
+            fragment_ids=tuple(fragment.fragment_id for fragment in document.fragments),
+            observations=tuple(observations),
+            known_at=datetime.fromisoformat(str(known_at_raw)),
+            completed_at=datetime.fromisoformat(str(completed_at_raw)),
+        )
+
+    def preserved_legacy_interpretation(
+        self,
+        work: EvidenceInterpretationWork,
+    ) -> ReusableInterpretation | None:
+        """Return migrated predecessor work without claiming current-policy equivalence."""
+        with self._database.transaction() as connection:
+            row: sqlite3.Row | None = cast(
+                "sqlite3.Row | None",
+                connection.execute(
+                    """SELECT attempt.interpreter_version
+                    FROM legacy_interpretation_reuse AS legacy
+                    JOIN claim_interpretation_attempts AS attempt ON attempt.attempt_id = legacy.attempt_id
+                    WHERE legacy.source_item_id = ? AND legacy.content_version = ? AND legacy.asset_id = ?""",
+                    (
+                        work.document.asset.source_item_id,
+                        work.content_version,
+                        work.document.asset.asset_id,
+                    ),
+                ).fetchone(),
+            )
+        if row is None:
+            return None
+        return self.reusable_interpretation(work, interpreter_version=str(_column(row, "interpreter_version")))
 
     def begin_interpretation(
         self,

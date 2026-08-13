@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable  # noqa: TC003 - used by the runtime default clock
-from dataclasses import dataclass
+from contextlib import nullcontext
 from datetime import datetime
+from datetime import timedelta
 from datetime import timezone
 from typing import TYPE_CHECKING
 from typing import ClassVar
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import JsonValue
+from pydantic import TypeAdapter
 
 from money_pit.agents.budget import request_character_allowance
 from money_pit.agents.budget import serialized_inference_request_size
@@ -19,6 +24,7 @@ from money_pit.contracts import ClaimMemory
 from money_pit.contracts import DiscoveryAgent
 from money_pit.contracts import DiscoveryDraft
 from money_pit.contracts import DiscoveryRequest
+from money_pit.contracts import DiscoverySignal
 from money_pit.contracts import ResearchTaskDraft
 from money_pit.contracts import ResearchTaskMemory
 from money_pit.contracts import ThesisMemory
@@ -38,17 +44,19 @@ from money_pit.pipeline.chain import Stage
 from money_pit.pipeline.identity import stable_identifier
 from money_pit.pipeline.temporal import require_model_temporal_authority
 from money_pit.portfolio.universe import LayeredUniverse
-from money_pit.portfolio.universe import ObservationOnlyCandidate
-from money_pit.portfolio.universe import UniverseCandidate
 from money_pit.schemas.runs import ArtifactRecordKind
 from money_pit.schemas.runs import bind_artifact_record
 from money_pit.schemas.theses import CandidateThesis
+from money_pit.storage.intelligence_work import CandidateDiscoveryOriginRecord
+from money_pit.storage.intelligence_work import DiscoveryUnitKind
 
 
 if TYPE_CHECKING:
-    from money_pit.schemas.claims import CanonicalClaim
+    from money_pit.agents.inference import InferenceTracking
     from money_pit.schemas.claims import ClaimObservation
     from money_pit.schemas.universe import UniverseLayer
+    from money_pit.storage.intelligence_work import DiscoveryBatchRecord
+    from money_pit.storage.intelligence_work import IntelligenceWorkRepository
 
 
 class UnknownDiscoveryClaimError(Exception):
@@ -83,13 +91,98 @@ class DiscoveryArtifactPayload(BaseModel):
     responses: tuple[DiscoveryDraft, ...]
 
 
-@dataclass(frozen=True)
-class _DiscoveryProjectionUnit:
-    identifier: str
-    candidates: tuple[UniverseCandidate, ...] = ()
-    observation_only: tuple[ObservationOnlyCandidate, ...] = ()
-    claims: tuple[CanonicalClaim, ...] = ()
-    observations: tuple[ClaimObservation, ...] = ()
+_DISCOVERY_DRAFTS_ADAPTER: TypeAdapter[tuple[DiscoveryDraft, ...]] = TypeAdapter(tuple[DiscoveryDraft, ...])
+
+
+def _claim_discovery_input(
+    *,
+    work_repository: IntelligenceWorkRepository | None,
+    run_id: str,
+    source_id: str | None,
+    fallback_observation_ids: tuple[str, ...],
+    clock: Callable[[], datetime],
+) -> tuple[DiscoveryBatchRecord | None, tuple[str, ...], frozenset[str] | None]:
+    if work_repository is None:
+        return None, fallback_observation_ids, None
+    created_at = clock()
+    batch = work_repository.claim_discovery_batch(
+        batch_id=stable_identifier("discovery-batch", {"run_id": run_id}),
+        run_id=run_id,
+        created_at=created_at,
+        reclaim_before=created_at - timedelta(minutes=30),
+        maximum_units=1,
+        source_id=source_id,
+    )
+    if batch is None:
+        return None, (), None
+    units = work_repository.discovery_units_by_ids(batch.unit_ids)
+    observation_ids = tuple(
+        dict.fromkeys(
+            identifier for unit in units for identifier in _payload_string_list(unit.payload, "observation_ids")
+        )
+    )
+    universe_subjects = frozenset(unit.subject_id for unit in units if unit.kind is DiscoveryUnitKind.UNIVERSE_ENTRY)
+    return batch, observation_ids, universe_subjects or None
+
+
+def _resolve_discovery_drafts(
+    *,
+    requests: tuple[DiscoveryRequest, ...],
+    discovery_batch: DiscoveryBatchRecord | None,
+    agent: DiscoveryAgent,
+    tracking: InferenceTracking | None,
+    run_id: str,
+) -> tuple[DiscoveryDraft, ...]:
+    if discovery_batch is not None and discovery_batch.validated_output is not None:
+        return _DISCOVERY_DRAFTS_ADAPTER.validate_python(discovery_batch.validated_output)
+    drafts: list[DiscoveryDraft] = []
+    for index, request in enumerate(requests):
+        work_unit_id = f"discovery:{run_id}:{index}" if discovery_batch is None else discovery_batch.batch_id
+        scope = nullcontext() if tracking is None else tracking.scope(run_id=run_id, work_unit_id=work_unit_id)
+        with scope:
+            drafts.append(agent(request).output)
+    return tuple(drafts)
+
+
+def _checkpoint_discovery_drafts(
+    *,
+    work_repository: IntelligenceWorkRepository | None,
+    discovery_batch: DiscoveryBatchRecord | None,
+    run_id: str,
+    drafts: tuple[DiscoveryDraft, ...],
+    candidates: tuple[CandidateThesis, ...],
+    result_fingerprint: str,
+) -> None:
+    if work_repository is None or discovery_batch is None:
+        return
+    candidate_ids = tuple(item.candidate_thesis_id for item in candidates)
+    if discovery_batch.validated_output is None:
+        work_repository.checkpoint_discovery_output(
+            batch_id=discovery_batch.batch_id,
+            run_id=run_id,
+            result_fingerprint=result_fingerprint,
+            output_candidate_ids=candidate_ids,
+            validated_output=[draft.model_dump(mode="json") for draft in drafts],
+        )
+        return
+    if discovery_batch.output_candidate_ids != candidate_ids:
+        raise DiscoveryPromptProjectionError(
+            "Checkpointed discovery output does not reproduce its candidate identities"
+        )
+
+
+def _scope_discovery_universe(
+    universe: LayeredUniverse,
+    universe_subjects: frozenset[str] | None,
+) -> LayeredUniverse:
+    if universe_subjects is None:
+        return universe
+    return LayeredUniverse(
+        candidates=tuple(candidate for candidate in universe.candidates if candidate.instrument in universe_subjects),
+        observation_only=tuple(
+            candidate for candidate in universe.observation_only if candidate.reference in universe_subjects
+        ),
+    )
 
 
 def materialize_candidate(
@@ -255,6 +348,8 @@ def make_discovery_node(
     clock: Callable[[], datetime] = lambda: datetime.now(tz=timezone.utc),
     model_point_in_time_certified: bool = False,
     prompt_character_budget: int = 120_000,
+    tracking: InferenceTracking | None = None,
+    work_repository: IntelligenceWorkRepository | None = None,
 ) -> PipelineNode:
     """Return A2 with claim-read, universe-read, and append-only candidate authority."""
     request_budget = min(
@@ -274,7 +369,21 @@ def make_discovery_node(
             requested_as_of_explicit=state.get("requested_as_of_explicit", False),
             point_in_time_certified=model_point_in_time_certified,
         )
-        same_run_ids = state.get("observation_ids", ())
+        discovery_batch, same_run_ids, universe_subjects = _claim_discovery_input(
+            work_repository=work_repository,
+            run_id=run_id,
+            source_id=state.get("source_id"),
+            fallback_observation_ids=state.get("observation_ids", ()),
+            clock=clock,
+        )
+        if work_repository is not None and discovery_batch is None:
+            return {
+                "completed_stages": completed_with(state, Stage.A2.value),
+                "artifact_ids": state.get("artifact_ids", ()),
+                "candidate_thesis_ids": (),
+                "discovery_unit_ids": (),
+                "decision_at": clock(),
+            }
         projections = claims.projections_with_deltas(
             requested_as_of=requested_as_of,
             observation_ids=same_run_ids,
@@ -283,20 +392,80 @@ def make_discovery_node(
         )
         baseline_observations = claims.observations_as_of(as_of=requested_as_of)
         same_run_observations = claims.observations_by_ids(same_run_ids)
-        observations = tuple(
-            {item.observation_id: item for item in (*baseline_observations, *same_run_observations)}.values()
+        if universe_subjects is not None:
+            projections = ()
+            observations = ()
+        elif work_repository is None and state.get("source_id") is None:
+            observations = tuple(
+                {item.observation_id: item for item in (*baseline_observations, *same_run_observations)}.values()
+            )
+        else:
+            same_run_set = frozenset(same_run_ids)
+            projections = tuple(
+                projection for projection in projections if same_run_set.intersection(projection.active_observation_ids)
+            )
+            visible_ids = (
+                frozenset(
+                    observation_id for projection in projections for observation_id in projection.active_observation_ids
+                )
+                | same_run_set
+            )
+            observations = tuple(
+                item for item in (*baseline_observations, *same_run_observations) if item.observation_id in visible_ids
+            )
+        universe_subjects = _incremental_universe_subjects(
+            work_repository=work_repository,
+            universe_subjects=universe_subjects,
+            observations=observations,
         )
-        universe = load_universe(requested_as_of)
+        universe = _scope_discovery_universe(load_universe(requested_as_of), universe_subjects)
         request = DiscoveryRequest(
             universe=universe,
-            claims=projections,
-            observations=observations,
+            claims=(),
+            observations=(),
+            signals=tuple(
+                DiscoverySignal(
+                    signal_id=projection.canonical_claim_key,
+                    claim_key=projection.canonical_claim_key,
+                    status=projection.current_status.value,
+                    instruments=tuple(
+                        dict.fromkeys(
+                            instrument
+                            for observation in observations
+                            if observation.observation_id in projection.active_observation_ids
+                            for instrument in observation.instruments
+                        )
+                    ),
+                    themes=tuple(
+                        dict.fromkeys(
+                            theme
+                            for observation in observations
+                            if observation.observation_id in projection.active_observation_ids
+                            for theme in observation.themes
+                        )
+                    ),
+                    claim_texts=tuple(
+                        observation.claim_text
+                        for observation in observations
+                        if observation.observation_id in projection.active_observation_ids
+                    ),
+                )
+                for projection in projections
+            ),
             requested_as_of=requested_as_of,
             context_known_at=model_context_at,
             allowed_provider_names=allowed_provider_names,
         )
-        requests = _discovery_request_chunks(request, request_budget)
-        drafts = tuple(agent(item) for item in requests)
+        requests = _compact_discovery_request_chunks(request, request_budget)
+        if len(requests) != 1:
+            raise DiscoveryPromptProjectionError("One discovery update may issue only one model request")
+        drafts = _resolve_discovery_drafts(
+            requests=requests,
+            discovery_batch=discovery_batch,
+            agent=agent,
+            tracking=tracking,
+            run_id=run_id,
+        )
         unknown_providers = {
             task.provider
             for draft in drafts
@@ -312,13 +481,14 @@ def make_discovery_node(
         materialized: list[CandidateThesis] = []
         tasks_by_chunk: list[tuple[tuple[ResearchTaskDraft, ...], tuple[CandidateThesis, ...]]] = []
         for bounded_request, draft in zip(requests, drafts, strict=True):
+            authority_request = bounded_request.model_copy(update={"claims": projections, "observations": observations})
             chunk_candidates = tuple(
                 materialize_candidate(
                     candidate,
-                    visible_claim_keys=frozenset(claim.canonical_claim_key for claim in bounded_request.claims),
+                    visible_claim_keys=frozenset(signal.claim_key for signal in bounded_request.signals),
                     universe=bounded_request.universe,
                     universe_origins=_universe_origins(bounded_request.universe),
-                    source_grounded_references=_source_grounded_references(candidate, bounded_request),
+                    source_grounded_references=_source_grounded_references(candidate, authority_request),
                     known_at=clock(),
                 )
                 for candidate in draft.candidates
@@ -333,11 +503,48 @@ def make_discovery_node(
                 for task in bind_research_tasks(task_drafts, chunk_candidates)
             }.values()
         )
+        result_fingerprint = hashlib.sha256(
+            json.dumps(
+                [draft.model_dump(mode="json") for draft in drafts],
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        _checkpoint_discovery_drafts(
+            work_repository=work_repository,
+            discovery_batch=discovery_batch,
+            run_id=run_id,
+            drafts=drafts,
+            candidates=candidates,
+            result_fingerprint=result_fingerprint,
+        )
         for candidate in candidates:
             theses.append_candidate(candidate)
         planned_research_task_ids = tuple(
-            research_tasks.append_task(task, run_id=run_id, known_at=clock()) for task in bound_tasks
+            research_tasks.append_task(
+                task,
+                run_id=run_id,
+                known_at=clock(),
+                origin_unit_ids=(() if discovery_batch is None else discovery_batch.unit_ids),
+            )
+            for task in bound_tasks
         )
+        if work_repository is not None and discovery_batch is not None:
+            work_repository.complete_discovery_batch(
+                batch_id=discovery_batch.batch_id,
+                run_id=run_id,
+                completed_at=clock(),
+                result_fingerprint=result_fingerprint,
+                output_candidate_ids=tuple(item.candidate_thesis_id for item in candidates),
+                candidate_origins=tuple(
+                    CandidateDiscoveryOriginRecord(
+                        candidate_thesis_id=candidate.candidate_thesis_id,
+                        unit_id=unit_id,
+                    )
+                    for candidate in candidates
+                    for unit_id in discovery_batch.unit_ids
+                ),
+            )
 
         payload = DiscoveryArtifactPayload(
             candidate_thesis_ids=tuple(candidate.candidate_thesis_id for candidate in candidates),
@@ -377,122 +584,45 @@ def make_discovery_node(
             "completed_stages": completed_with(state, Stage.A2.value),
             "artifact_ids": (*state.get("artifact_ids", ()), artifact.artifact_id),
             "candidate_thesis_ids": payload.candidate_thesis_ids,
+            "discovery_unit_ids": () if discovery_batch is None else discovery_batch.unit_ids,
             "decision_at": decision_at,
         }
 
     return node
 
 
-def _discovery_request_chunks(
+def _incremental_universe_subjects(
+    *,
+    work_repository: IntelligenceWorkRepository | None,
+    universe_subjects: frozenset[str] | None,
+    observations: tuple[ClaimObservation, ...],
+) -> frozenset[str] | None:
+    """Restrict incremental discovery to instruments named by claimed work."""
+    if work_repository is None or universe_subjects is not None:
+        return universe_subjects
+    return frozenset(instrument for observation in observations for instrument in observation.instruments)
+
+
+def _compact_discovery_request_chunks(
     request: DiscoveryRequest,
     character_budget: int,
 ) -> tuple[DiscoveryRequest, ...]:
-    """Greedily cover the complete universe and claim context in atomic units."""
-    observations_by_id = {item.observation_id: item for item in request.observations}
-    universe_by_instrument = {item.instrument: item for item in request.universe.candidates}
-    claimed_observation_ids = {
-        observation_id for claim in request.claims for observation_id in claim.active_observation_ids
-    }
-    units = (
-        *(
-            _DiscoveryProjectionUnit(
-                identifier=f"universe:{item.instrument}",
-                candidates=(item,),
-            )
-            for item in request.universe.candidates
-        ),
-        *(
-            _DiscoveryProjectionUnit(
-                identifier=f"universe-observation:{item.layer.value}:{item.reference}",
-                observation_only=(item,),
-            )
-            for item in request.universe.observation_only
-        ),
-        *(
-            _DiscoveryProjectionUnit(
-                identifier=f"claim:{item.canonical_claim_key}",
-                candidates=tuple(
-                    universe_by_instrument[instrument]
-                    for instrument in dict.fromkeys(
-                        instrument
-                        for observation_id in item.active_observation_ids
-                        if observation_id in observations_by_id
-                        for instrument in observations_by_id[observation_id].instruments
-                    )
-                    if instrument in universe_by_instrument
-                ),
-                claims=(item,),
-                observations=tuple(
-                    observations_by_id[observation_id]
-                    for observation_id in item.active_observation_ids
-                    if observation_id in observations_by_id
-                ),
-            )
-            for item in request.claims
-        ),
-        *(
-            _DiscoveryProjectionUnit(
-                identifier=f"observation:{item.observation_id}",
-                observations=(item,),
-            )
-            for item in request.observations
-            if item.observation_id not in claimed_observation_ids
-        ),
-    )
-    all_ids = tuple(unit.identifier for unit in units)
-    empty = request.model_copy(
-        update={
-            "universe": LayeredUniverse(candidates=(), observation_only=()),
-            "claims": (),
-            "observations": (),
-            "omitted_input_ids": all_ids,
-        },
-    )
-    if not units:
-        if serialized_inference_request_size(empty) > character_budget:
-            raise DiscoveryPromptProjectionError(
-                "Discovery fixed context exceeds the inference request allowance",
-            )
-        return (empty,)
-
-    chunks: list[DiscoveryRequest] = []
-    current_units: list[_DiscoveryProjectionUnit] = []
-    for unit in units:
-        trial = _discovery_chunk(request, (*current_units, unit), all_ids)
-        if serialized_inference_request_size(trial) <= character_budget:
-            current_units.append(unit)
-            continue
-        atomic = _discovery_chunk(request, (unit,), all_ids)
-        if serialized_inference_request_size(atomic) > character_budget:
-            raise DiscoveryPromptProjectionError(
-                f"Atomic discovery context exceeds inference allowance: {unit.identifier}",
-            )
-        if current_units:
-            chunks.append(_discovery_chunk(request, tuple(current_units), all_ids))
-        current_units = [unit]
-    if current_units:
-        chunks.append(_discovery_chunk(request, tuple(current_units), all_ids))
-    return tuple(chunks)
+    """Pack compact discovery signals without replaying the historical claim store."""
+    if serialized_inference_request_size(request) > character_budget:
+        raise DiscoveryPromptProjectionError("Oldest discovery work unit exceeds the inference request allowance")
+    return (request,)
 
 
-def _discovery_chunk(
-    request: DiscoveryRequest,
-    units: tuple[_DiscoveryProjectionUnit, ...],
-    all_ids: tuple[str, ...],
-) -> DiscoveryRequest:
-    included = {unit.identifier for unit in units}
-    observations = {item.observation_id: item for unit in units for item in unit.observations}
-    return request.model_copy(
-        update={
-            "universe": LayeredUniverse(
-                candidates=tuple(item for unit in units for item in unit.candidates),
-                observation_only=tuple(item for unit in units for item in unit.observation_only),
-            ),
-            "claims": tuple(item for unit in units for item in unit.claims),
-            "observations": tuple(observations.values()),
-            "omitted_input_ids": tuple(identifier for identifier in all_ids if identifier not in included),
-        },
-    )
+def _payload_string_list(payload: JsonValue, key: str) -> tuple[str, ...]:
+    """Validate one compact list from a durable discovery payload."""
+    if not isinstance(payload, dict):
+        raise DiscoveryPromptProjectionError("Discovery work payload must be an object")
+    value: JsonValue | None = payload.get(key)
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise DiscoveryPromptProjectionError(f"Discovery work payload has invalid {key}")
+    return tuple(item for item in value if isinstance(item, str))
 
 
 def _universe_origins(universe: LayeredUniverse) -> frozenset[tuple[UniverseLayer, str]]:

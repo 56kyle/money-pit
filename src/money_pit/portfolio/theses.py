@@ -152,7 +152,7 @@ class ThesisRepository:
         as_of: datetime,
         exact_candidate_ids: tuple[str, ...] = (),
     ) -> tuple[CandidateThesis, ...]:
-        """Return every eligible candidate in deterministic least-recently-researched order."""
+        """Return due candidates, restricted to exact identities when supplied."""
         if len(exact_candidate_ids) != len(set(exact_candidate_ids)):
             raise ThesisRepositoryError("candidate identities must be unique")
         if exact_candidate_ids:
@@ -177,8 +177,9 @@ class ThesisRepository:
                            ) AS last_researched_at
                     FROM candidate_theses AS candidate
                     WHERE candidate.status IN ('open', 'researching', 'unresolved')
+                      AND candidate.known_at <= ?
                       AND (
-                          candidate.known_at <= ?
+                          json_array_length(?) = 0
                           OR candidate.candidate_thesis_id IN (
                               SELECT value FROM json_each(?)
                           )
@@ -195,7 +196,11 @@ class ThesisRepository:
                         candidate.known_at,
                         candidate.candidate_thesis_id
                     """,
-                    (as_of.isoformat(), json.dumps(exact_candidate_ids)),
+                    (
+                        as_of.isoformat(),
+                        json.dumps(exact_candidate_ids),
+                        json.dumps(exact_candidate_ids),
+                    ),
                 ).fetchall(),
             )
         return tuple(_candidate_from_row(row) for row in rows)

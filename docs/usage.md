@@ -15,12 +15,15 @@ The `development` profile stores values in the operating-system keyring and is s
 
 Credential scopes match runtime capabilities. A credential marked `required` is required only when money-pit requests a scope that contains it. Disabled or uninvoked providers and adapters do not request their scopes. Source listing and replay resolve no credentials. Paper and live Alpaca scopes use different names, so one account cannot satisfy the other account's workflow.
 
-Synchronize sources before running the harness:
+Synchronize or ingest sources before updating intelligence:
 
 ```bash
 money-pit source sync SOURCE_ID
 money-pit source ingest SOURCE_ID https://youtu.be/VIDEO_ID
-money-pit run --source SOURCE_ID --through A5
+money-pit intelligence status --source SOURCE_ID
+money-pit intelligence update --source SOURCE_ID
+money-pit intelligence show RUN_ID
+money-pit intelligence promote-claim CANONICAL_KEY --reason "operator rationale"
 money-pit portfolio review
 money-pit plan show PLAN_ID
 money-pit plan approve PLAN_ID --actor OPERATOR
@@ -29,8 +32,16 @@ money-pit plan execute PLAN_ID
 
 YouTube sync and backfill use the `youtube_discovery` credential scope. Direct ingestion accepts one canonical `https://www.youtube.com/watch?v=VIDEO_ID` or `https://youtu.be/VIDEO_ID` URL and does not require a YouTube Data API key. It retains the configured source's provenance and trust policy and does not read or update sync or backfill cursors.
 
+An update processes a bounded batch and can finish with queued work remaining. Run another update to continue. Use `--through interpretation`, `--through discovery`, `--through research`, or `--through synthesis` to select the last intelligence stage. Synthesis is the default.
+
+A source-specific update processes work caused by that source. An update without `--source` advances the global queue fairly. Research evidence verifies its assigned candidate and does not automatically become new discovery input.
+
+`money-pit intelligence status` and `money-pit intelligence show` only read durable state. They do not resolve credentials or construct inference and research providers. `money-pit portfolio review` starts A5 from the latest durable intelligence and current portfolio state. It does not rerun interpretation, discovery, research, or synthesis.
+
+`intelligence promote-claim` is the explicit, provider-free boundary for sending a materially changed canonical claim back through discovery. The reason is recorded as operator provenance. A3 verification evidence never recursively creates discovery work.
+
 Use `money-pit execution disable --actor OPERATOR --reason REASON` as the kill switch. Re-enabling requires the actor, reason, exact policy version, and `--confirmed`.
 
 Use `money-pit replay RUN_ID` for historical reconstruction. Replay is read-only and cannot run A6.
 
-Schedulers should perform source synchronization followed by `money-pit run`. There is no channel-specific ledger or latest-episode command.
+Schedulers should synchronize each source and then invoke one bounded intelligence update. A scheduler can repeat updates while status reports queued work, but one invocation must not drain the complete global backlog.

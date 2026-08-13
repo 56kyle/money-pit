@@ -1,17 +1,23 @@
 """Module implementing A4 resolution, verification, and temporal thesis synthesis."""
 
+import hashlib
+import json
 from collections.abc import Callable
 from collections.abc import Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
+from datetime import timedelta
 from datetime import timezone
 from typing import ClassVar
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import JsonValue
 
 from money_pit.agents.budget import request_character_allowance
 from money_pit.agents.budget import serialized_inference_request_size
+from money_pit.agents.inference import InferenceTracking
 from money_pit.contracts import ClaimMemory
 from money_pit.contracts import ContributionDraft
 from money_pit.contracts import ResolutionCandidateSet
@@ -62,6 +68,9 @@ from money_pit.schemas.theses import CandidateThesis
 from money_pit.schemas.theses import ThesisRevision
 from money_pit.schemas.theses import ThesisStatus
 from money_pit.storage.admission import IntelligenceAdmissionRepository
+from money_pit.storage.intelligence_work import ClaimedSynthesisUnitRecord
+from money_pit.storage.intelligence_work import IntelligenceWorkRepository
+from money_pit.storage.intelligence_work import SynthesisOutputRecord
 
 
 class UnknownSynthesisReferenceError(Exception):
@@ -523,7 +532,7 @@ def materialize_contribution(
     )
 
 
-def make_synthesis_node(
+def make_synthesis_node(  # noqa: C901 - factory closes explicit typed A4 capabilities
     *,
     claims: ClaimMemory,
     theses: ThesisMemory,
@@ -537,6 +546,8 @@ def make_synthesis_node(
     clock: Callable[[], datetime] = lambda: datetime.now(tz=timezone.utc),
     model_point_in_time_certified: bool = False,
     prompt_character_budget: int = 120_000,
+    tracking: InferenceTracking | None = None,
+    work_repository: IntelligenceWorkRepository | None = None,
 ) -> PipelineNode:
     """Return A4 with append-only intelligence authority and deterministic gates."""
     resolved_prompt_character_budget = min(
@@ -556,7 +567,35 @@ def make_synthesis_node(
             requested_as_of_explicit=state.get("requested_as_of_explicit", False),
             point_in_time_certified=model_point_in_time_certified,
         )
-        all_same_run_observation_ids = state.get("observation_ids", ())
+        claimed_unit = _claim_incremental_synthesis_unit(
+            work_repository,
+            run_id=run_id,
+            source_id=state.get("source_id"),
+            claimed_at=clock(),
+        )
+        if work_repository is not None and claimed_unit is None:
+            return {
+                "completed_stages": completed_with(state, Stage.A4.value),
+                "artifact_ids": state.get("artifact_ids", ()),
+                "thesis_revision_ids": (),
+                "claim_resolution_decision_ids": (),
+                "verification_result_ids": (),
+                "signal_contribution_ids": (),
+                "decision_at": clock(),
+            }
+        durable_context = None if claimed_unit is None else _synthesis_research_context(claimed_unit.payload)
+        all_same_run_observation_ids = (
+            state.get("observation_ids", ())
+            if durable_context is None
+            else tuple(
+                dict.fromkeys(
+                    (
+                        *_synthesis_origin_observation_ids({} if claimed_unit is None else claimed_unit.payload),
+                        *(item.observation_id for item in durable_context.new_observations),
+                    )
+                )
+            )
+        )
         selected_same_run_ids = all_same_run_observation_ids[:_MAX_A4_UNRESOLVED_SUBJECTS]
         same_run_observations = claims.observations_by_ids(selected_same_run_ids)
         baseline_limit = _MAX_A4_UNRESOLVED_SUBJECTS - len(same_run_observations)
@@ -565,7 +604,7 @@ def make_synthesis_node(
                 requested_as_of=requested_as_of,
                 limit=baseline_limit,
             )
-            if baseline_limit > 0
+            if baseline_limit > 0 and claimed_unit is None
             else None
         )
         baseline_observations = () if unresolved_page is None else unresolved_page.items
@@ -601,14 +640,31 @@ def make_synthesis_node(
             resolution_ids=state.get("claim_resolution_decision_ids", ()),
             verification_ids=state.get("verification_result_ids", ()),
         )
-        baseline_candidates = theses.candidates_as_of(as_of=requested_as_of)
-        same_run_candidates = theses.candidates_by_ids(state.get("candidate_thesis_ids", ()))
+        selected_candidate_ids = (
+            state.get("candidate_thesis_ids", ())
+            if claimed_unit is None
+            else (_synthesis_candidate_id(claimed_unit.payload),)
+        )
+        baseline_candidates = theses.candidates_as_of(as_of=requested_as_of) if claimed_unit is None else ()
+        same_run_candidates = theses.candidates_by_ids(selected_candidate_ids)
         candidates = tuple(
             {item.candidate_thesis_id: item for item in (*baseline_candidates, *same_run_candidates)}.values()
         )
-        prior_revisions = theses.revisions_as_of(as_of=requested_as_of)
+        all_prior_revisions = theses.revisions_as_of(as_of=requested_as_of)
+        candidate_subjects = {item.subject.strip().casefold() for item in candidates}
+        candidate_instruments = {item.instrument for item in candidates if item.instrument is not None}
+        prior_revisions = (
+            all_prior_revisions
+            if claimed_unit is None
+            else tuple(
+                revision
+                for revision in all_prior_revisions
+                if revision.subject.strip().casefold() in candidate_subjects
+                or revision.instrument in candidate_instruments
+            )
+        )
         contexts = tuple(ResearchCumulativeContext.model_validate(item) for item in state.get("research_contexts", ()))
-        research_context = _merge_contexts(contexts)
+        research_context = durable_context or _merge_contexts(contexts)
         request = SynthesisRequest(
             candidates=candidates,
             claims=projections,
@@ -618,10 +674,28 @@ def make_synthesis_node(
             requested_as_of=requested_as_of,
             context_known_at=model_context_at,
             research_context=research_context,
-            omitted_input_ids=all_same_run_observation_ids[len(selected_same_run_ids) :],
         )
         request = _bound_synthesis_request(request, resolved_prompt_character_budget)
-        draft = agent(request)
+        if claimed_unit is not None:
+            _require_bounded_unit_context(request, claimed_unit.payload, research_context)
+        work_unit_id = "synthesis:" + ":".join(candidate.candidate_thesis_id for candidate in request.candidates)
+        scope = nullcontext() if tracking is None else tracking.scope(run_id=run_id, work_unit_id=work_unit_id)
+        if claimed_unit is not None and claimed_unit.validated_output is not None:
+            draft = SynthesisDraft.model_validate(claimed_unit.validated_output)
+        else:
+            with scope:
+                draft = agent(request).output
+            if work_repository is not None and claimed_unit is not None:
+                validated_output = draft.model_dump(mode="json")
+                checkpoint_fingerprint = hashlib.sha256(
+                    json.dumps(validated_output, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest()
+                work_repository.checkpoint_synthesis_output(
+                    unit_id=claimed_unit.unit_id,
+                    run_id=run_id,
+                    output_fingerprint=checkpoint_fingerprint,
+                    validated_output=validated_output,
+                )
         decision_at = clock()
         known_at = clock()
         observations_by_id = {item.observation_id: item for item in observations}
@@ -766,13 +840,37 @@ def make_synthesis_node(
             implementation_version=synthesis_version,
             payload=payload,
         )
-        admission.admit_synthesis(
-            resolutions=resolutions,
-            verifications=verifications,
-            revisions=revisions,
-            contributions=contributions,
-            artifact=artifact,
-        )
+        if work_repository is not None and claimed_unit is not None:
+            output_payload = payload.model_dump(mode="json")
+            output_fingerprint = hashlib.sha256(
+                json.dumps(output_payload, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            admission.admit_synthesis_unit(
+                resolutions=resolutions,
+                verifications=verifications,
+                revisions=revisions,
+                contributions=contributions,
+                artifact=artifact,
+                unit_id=claimed_unit.unit_id,
+                output=SynthesisOutputRecord(
+                    output_id=stable_identifier(
+                        "synthesis-output",
+                        {"unit_id": claimed_unit.unit_id, "output_fingerprint": output_fingerprint},
+                    ),
+                    output_fingerprint=output_fingerprint,
+                    created_at=artifact_known_at,
+                    output_record_ids=artifact.output_ids,
+                    payload=output_payload,
+                ),
+            )
+        else:
+            admission.admit_synthesis(
+                resolutions=resolutions,
+                verifications=verifications,
+                revisions=revisions,
+                contributions=contributions,
+                artifact=artifact,
+            )
         _ = try_install_stage_artifact_file(require_run_dir(state), artifact)
         return {
             "completed_stages": completed_with(state, Stage.A4.value),
@@ -785,6 +883,72 @@ def make_synthesis_node(
         }
 
     return node
+
+
+def _claim_incremental_synthesis_unit(
+    work: IntelligenceWorkRepository | None,
+    *,
+    run_id: str,
+    source_id: str | None,
+    claimed_at: datetime,
+) -> ClaimedSynthesisUnitRecord | None:
+    if work is None:
+        return None
+    return work.claim_synthesis_unit(
+        run_id=run_id,
+        claimed_at=claimed_at,
+        reclaim_before=claimed_at - timedelta(minutes=30),
+        source_id=source_id,
+    )
+
+
+def _synthesis_candidate_id(payload: JsonValue) -> str:
+    """Read the exact candidate identity from a durable synthesis unit."""
+    if not isinstance(payload, dict):
+        raise UnknownSynthesisReferenceError("Synthesis work payload must be an object")
+    value: JsonValue | None = payload.get("candidate_id")
+    if not isinstance(value, str) or not value:
+        raise UnknownSynthesisReferenceError("Synthesis work payload has no candidate identity")
+    return value
+
+
+def _require_bounded_unit_context(
+    request: SynthesisRequest,
+    payload: JsonValue,
+    research_context: ResearchCumulativeContext,
+) -> None:
+    expected_candidate_id = _synthesis_candidate_id(payload)
+    if tuple(item.candidate_thesis_id for item in request.candidates) != (expected_candidate_id,):
+        raise PromptProjectionError("Bounded synthesis request dropped its required candidate")
+    expected_material_keys = set(research_context.material_anchor_assessment.material_claim_keys)
+    bounded_material_keys = {
+        item.canonical_claim_key for item in request.claims if item.canonical_claim_key in expected_material_keys
+    }
+    if bounded_material_keys != expected_material_keys:
+        raise PromptProjectionError("Bounded synthesis request dropped required material claim context")
+
+
+def _synthesis_research_context(payload: JsonValue) -> ResearchCumulativeContext:
+    """Rehydrate exact terminal job context without relying on enclosing run state."""
+    if not isinstance(payload, dict):
+        raise UnknownSynthesisReferenceError("Synthesis work payload must be an object")
+    checkpoint = payload.get("context")
+    if not isinstance(checkpoint, dict):
+        raise UnknownSynthesisReferenceError("Synthesis work payload has no research checkpoint")
+    context_values = checkpoint.get("contexts")
+    if not isinstance(context_values, list):
+        raise UnknownSynthesisReferenceError("Synthesis work checkpoint has no research contexts")
+    contexts = tuple(ResearchCumulativeContext.model_validate(value) for value in context_values)
+    return _merge_contexts(contexts)
+
+
+def _synthesis_origin_observation_ids(payload: JsonValue) -> tuple[str, ...]:
+    if not isinstance(payload, dict):
+        return ()
+    values = payload.get("origin_observation_ids")
+    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+        return ()
+    return tuple(value for value in values if isinstance(value, str))
 
 
 def _merge_contexts(contexts: tuple[ResearchCumulativeContext, ...]) -> ResearchCumulativeContext:
@@ -870,24 +1034,11 @@ def _bound_synthesis_request(  # noqa: C901 - explicit record kinds preserve typ
         *(("revision", item.revision_id, item) for item in request.prior_revisions),
         *(("evidence", item.alias, item) for item in request.research_context.evidence),
     )
-    resolution_set_ids = tuple(
-        f"resolution-set:{item.subject_observation_id}" for item in request.resolution_candidate_sets
-    )
-    all_ids = tuple(
-        dict.fromkeys(
-            (
-                *request.omitted_input_ids,
-                *resolution_set_ids,
-                *(identifier for _, identifier, _ in records),
-            )
-        )
-    )
     candidates: list[CandidateThesis] = []
     claims: list[CanonicalClaim] = []
     observations: list[ClaimObservation] = []
     revisions: list[ThesisRevision] = []
     evidence: list[ResearchEvidenceRecord] = []
-    selected_ids: set[str] = set()
 
     def projected() -> SynthesisRequest:
         aliases = {item.alias for item in evidence}
@@ -906,11 +1057,17 @@ def _bound_synthesis_request(  # noqa: C901 - explicit record kinds preserve typ
                         ),
                     },
                 ),
-                "omitted_input_ids": tuple(identifier for identifier in all_ids if identifier not in selected_ids),
             },
         )
 
-    for candidate_set, set_id in zip(request.resolution_candidate_sets, resolution_set_ids, strict=True):
+    candidates.extend(request.candidates)
+    required_claim_keys = set(request.research_context.material_anchor_assessment.material_claim_keys)
+    claims.extend(item for item in request.claims if item.canonical_claim_key in required_claim_keys)
+    evidence.extend(request.research_context.evidence)
+    if serialized_inference_request_size(projected()) > character_budget:
+        raise PromptProjectionError("Required synthesis candidate and evidence context exceeds the character budget")
+
+    for candidate_set in request.resolution_candidate_sets:
         unit_ids = (
             candidate_set.subject_observation_id,
             *candidate_set.candidate_observation_ids,
@@ -925,31 +1082,17 @@ def _bound_synthesis_request(  # noqa: C901 - explicit record kinds preserve typ
         resolution_sets.append(candidate_set)
         resolution_observations.update(unit)
         candidate = projected()
-        if serialized_inference_request_size(candidate) <= character_budget:
-            selected_ids.update((set_id, *unit_ids))
-            continue
-        _ = resolution_sets.pop()
-        resolution_observations.clear()
-        resolution_observations.update(previous)
-        atomic = request.model_copy(
-            update={
-                "candidates": (),
-                "claims": (),
-                "observations": tuple(unit.values()),
-                "resolution_candidate_sets": (candidate_set,),
-                "prior_revisions": (),
-                "research_context": context,
-                "omitted_input_ids": tuple(
-                    identifier for identifier in all_ids if identifier not in {set_id, *unit_ids}
-                ),
-            },
-        )
-        if serialized_inference_request_size(atomic) > character_budget:
+        if serialized_inference_request_size(candidate) > character_budget:
+            _ = resolution_sets.pop()
+            resolution_observations.clear()
+            resolution_observations.update(previous)
             raise PromptProjectionError(
-                f"Atomic resolution candidate set exceeds budget: {candidate_set.subject_observation_id}",
+                f"Required resolution candidate set exceeds budget: {candidate_set.subject_observation_id}",
             )
 
     for kind, identifier, record in records:
+        if kind in {"candidate", "evidence"} or (kind == "claim" and identifier in required_claim_keys):
+            continue
         if kind == "observation" and identifier in resolution_observations:
             continue
         target: (
@@ -970,11 +1113,9 @@ def _bound_synthesis_request(  # noqa: C901 - explicit record kinds preserve typ
         else:
             target = evidence
         target.append(record)  # pyright: ignore[reportArgumentType]
-        selected_ids.add(identifier)
         candidate = projected()
         if serialized_inference_request_size(candidate) > character_budget:
             _ = target.pop()
-            selected_ids.remove(identifier)
             empty = projected()
             atomic_evidence = (record,) if kind == "evidence" else ()
             atomic = request.model_copy(
@@ -985,7 +1126,6 @@ def _bound_synthesis_request(  # noqa: C901 - explicit record kinds preserve typ
                     "resolution_candidate_sets": (),
                     "prior_revisions": (record,) if kind == "revision" else (),
                     "research_context": context.model_copy(update={"evidence": atomic_evidence}),
-                    "omitted_input_ids": tuple(item for item in all_ids if item != identifier),
                 },
             )
             if serialized_inference_request_size(atomic) > character_budget:

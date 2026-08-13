@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime
+from datetime import timedelta
 from datetime import timezone
 from typing import TYPE_CHECKING
 from typing import cast
 
+from money_pit.contracts import ResearchPlanningRequest
 from money_pit.contracts import ResearchRoundExecution
+from money_pit.contracts import ResearchRoundPlan
 from money_pit.contracts import ResearchTaskDraft
 from money_pit.evidence.aliases import project_evidence
 from money_pit.research.errors import ResearchBudgetExceededError
+from money_pit.research.service import ResearchRoundResult
 from money_pit.schemas.research import CandidateThesisResearchScope
 from money_pit.schemas.research import EvidenceAliasBinding
 from money_pit.schemas.research import MaterialAnchorAssessment
@@ -28,10 +33,13 @@ from money_pit.schemas.sources import TrustCategory
 from money_pit.schemas.sources import TrustLevel
 from money_pit.storage.database import Database
 from money_pit.storage.database import TransactionMode
+from money_pit.storage.intelligence_work import IntelligenceWorkRepository
+from money_pit.storage.intelligence_work import ProviderResearchWaveRecord
 
 
 if TYPE_CHECKING:
     import sqlite3
+    from collections.abc import Callable
 
     from pydantic import JsonValue
 
@@ -39,7 +47,6 @@ if TYPE_CHECKING:
     from money_pit.pipeline.interpretation import InterpretationService
     from money_pit.research.assessment import ClaimVerificationMaterialAssessor
     from money_pit.research.repository import ResearchRepository
-    from money_pit.research.service import ResearchRoundResult
     from money_pit.research.service import ResearchService
     from money_pit.schemas.theses import CandidateThesis
 
@@ -57,13 +64,14 @@ class PlannedResearchTaskStore:
         *,
         run_id: str,
         known_at: datetime,
+        origin_unit_ids: tuple[str, ...] = (),
     ) -> str:
-        """Append one immutable run-scoped planned task idempotently."""
+        """Append one immutable candidate plan with durable discovery origins."""
         candidate_id: str | None = task.candidate_thesis_id
         if candidate_id is None:
             raise ValueError("Planned research task must identify a candidate")
         task_json: str = task.model_dump_json()
-        task_id: str = _planned_task_id(run_id, candidate_id, task_json)
+        task_id: str = _planned_task_id(candidate_id, task_json)
         with self._database.transaction(TransactionMode.WRITE) as connection:
             cursor = connection.execute(
                 """
@@ -90,9 +98,93 @@ class PlannedResearchTaskStore:
                         (task_id,),
                     ).fetchone(),
                 )
-                if row is None or str(_column(row, "task_json")) != task_json or str(_column(row, "run_id")) != run_id:
+                if row is None or str(_column(row, "task_json")) != task_json:
                     raise ValueError("Planned research task identity collision")
+            for unit_id in origin_unit_ids:
+                _ = connection.execute(
+                    """INSERT INTO planned_research_task_origins (task_id, unit_id)
+                    VALUES (?, ?) ON CONFLICT DO NOTHING""",
+                    (task_id, unit_id),
+                )
         return task_id
+
+    def checkpoint_planner_tasks(
+        self,
+        tasks: tuple[ResearchTaskDraft, ...],
+        *,
+        run_id: str,
+        known_at: datetime,
+    ) -> tuple[str, ...]:
+        """Atomically persist one paid planner result before execution."""
+        prepared: list[tuple[str, str, str]] = []
+        for task in tasks:
+            candidate_id = task.candidate_thesis_id
+            if candidate_id is None:
+                raise ValueError("Planned research task must identify a candidate")
+            task_json = task.model_dump_json()
+            prepared.append((_planned_task_id(candidate_id, task_json), candidate_id, task_json))
+        with self._database.transaction(TransactionMode.WRITE) as connection:
+            for task_id, candidate_id, task_json in prepared:
+                _ = connection.execute(
+                    """INSERT INTO planned_research_tasks (
+                    task_id, candidate_thesis_id, status, created_at, known_at, run_id, task_json
+                    ) VALUES (?, ?, 'pending', ?, ?, ?, ?) ON CONFLICT DO NOTHING""",
+                    (task_id, candidate_id, _utc_text(known_at), _utc_text(known_at), run_id, task_json),
+                )
+                row: sqlite3.Row | None = cast(
+                    "sqlite3.Row | None",
+                    connection.execute(
+                        "SELECT task_json FROM planned_research_tasks WHERE task_id = ?",
+                        (task_id,),
+                    ).fetchone(),
+                )
+                if row is None or str(_column(row, "task_json")) != task_json:
+                    raise ValueError("Planned research task identity collision")
+        return tuple(item[0] for item in prepared)
+
+    def planner_result(self, *, job_id: str, wave_number: int) -> ResearchRoundPlan | None:
+        """Return a complete durable planner result, including an empty result."""
+        with self._database.transaction() as connection:
+            row = cast(
+                "sqlite3.Row | None",
+                connection.execute(
+                    "SELECT result_json FROM research_planner_results WHERE job_id = ? AND wave_number = ?",
+                    (job_id, wave_number),
+                ).fetchone(),
+            )
+        return None if row is None else ResearchRoundPlan.model_validate_json(str(_column(row, "result_json")))
+
+    def checkpoint_planner_result(
+        self,
+        *,
+        job_id: str,
+        wave_number: int,
+        run_id: str,
+        known_at: datetime,
+        request: ResearchPlanningRequest,
+        result: ResearchRoundPlan,
+    ) -> None:
+        """Persist a validated paid planner response before task materialization."""
+        request_json = request.model_dump_json()
+        result_json = result.model_dump_json()
+        request_hash = hashlib.sha256(request_json.encode()).hexdigest()
+        with self._database.transaction(TransactionMode.WRITE) as connection:
+            _ = connection.execute(
+                """INSERT INTO research_planner_results
+                (job_id, wave_number, run_id, request_hash, recorded_at, request_json, result_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING""",
+                (job_id, wave_number, run_id, request_hash, _utc_text(known_at), request_json, result_json),
+            )
+            row = cast(
+                "sqlite3.Row | None",
+                connection.execute(
+                    """SELECT request_hash, request_json, result_json FROM research_planner_results
+                    WHERE job_id = ? AND wave_number = ?""",
+                    (job_id, wave_number),
+                ).fetchone(),
+            )
+            if row is None or tuple(row) != (request_hash, request_json, result_json):
+                raise ValueError("Research planner result identity collision")
 
     def pending_for_candidate(
         self,
@@ -100,21 +192,35 @@ class PlannedResearchTaskStore:
         *,
         run_id: str,
         as_of: datetime,
+        origin_unit_ids: tuple[str, ...] = (),
     ) -> tuple[ResearchTaskDraft, ...]:
-        """Return point-in-time pending plans for one candidate and run."""
+        """Return point-in-time pending plans for one candidate across producing runs."""
+        del run_id
         with self._database.transaction() as connection:
-            rows: list[sqlite3.Row] = cast(
-                "list[sqlite3.Row]",
-                connection.execute(
-                    """
-                    SELECT task_json FROM planned_research_tasks
-                    WHERE candidate_thesis_id = ? AND run_id = ?
-                      AND status = 'pending' AND known_at <= ?
-                    ORDER BY known_at, created_at, task_id
-                    """,
-                    (candidate_thesis_id, run_id, _utc_text(as_of)),
-                ).fetchall(),
-            )
+            if origin_unit_ids:
+                rows: list[sqlite3.Row] = cast(
+                    "list[sqlite3.Row]",
+                    connection.execute(
+                        """SELECT DISTINCT task.task_json, task.known_at, task.created_at, task.task_id
+                    FROM planned_research_tasks AS task
+                    JOIN planned_research_task_origins AS origin ON origin.task_id = task.task_id
+                    WHERE task.candidate_thesis_id = ? AND task.status = 'pending'
+                      AND task.known_at <= ?
+                      AND origin.unit_id IN (SELECT value FROM json_each(?))
+                    ORDER BY task.known_at, task.created_at, task.task_id""",
+                        (candidate_thesis_id, _utc_text(as_of), json.dumps(origin_unit_ids)),
+                    ).fetchall(),
+                )
+            else:
+                rows = cast(
+                    "list[sqlite3.Row]",
+                    connection.execute(
+                        """SELECT task_json FROM planned_research_tasks
+                    WHERE candidate_thesis_id = ? AND status = 'pending' AND known_at <= ?
+                    ORDER BY known_at, created_at, task_id""",
+                        (candidate_thesis_id, _utc_text(as_of)),
+                    ).fetchall(),
+                )
         return tuple(ResearchTaskDraft.model_validate_json(str(_column(row, "task_json"))) for row in rows)
 
     def materialize(
@@ -128,13 +234,14 @@ class PlannedResearchTaskStore:
         as_of: datetime,
     ) -> tuple[str, ResearchTask]:
         """Bind one plan to a real session and return its execution contract."""
+        del run_id
         candidate_id: str | None = task.candidate_thesis_id
         if candidate_id is None:
             raise ValueError("Research task must identify a candidate")
         if allocated_maximum_results < 1 or allocated_maximum_results > task.maximum_results:
             raise ValueError("Allocated result limit must be within the planned task limit")
         task_json: str = task.model_dump_json()
-        planned_id: str = _planned_task_id(run_id, candidate_id, task_json)
+        planned_id: str = _planned_task_id(candidate_id, task_json)
         execution_task = ResearchTask(
             task_id=f"execution:{planned_id}:{round_number}",
             session_id=session_id,
@@ -151,6 +258,19 @@ class PlannedResearchTaskStore:
             created_at=as_of,
         )
         with self._database.transaction(TransactionMode.WRITE) as connection:
+            planned_row = cast(
+                "sqlite3.Row | None",
+                connection.execute(
+                    """SELECT task_id FROM planned_research_tasks
+                WHERE candidate_thesis_id = ? AND task_json = ? AND status = 'pending'
+                ORDER BY known_at, created_at, task_id LIMIT 1""",
+                    (candidate_id, task_json),
+                ).fetchone(),
+            )
+            if planned_row is None:
+                raise KeyError(_planned_task_id(candidate_id, task_json))
+            planned_id = str(_column(planned_row, "task_id"))
+            execution_task = execution_task.model_copy(update={"task_id": f"execution:{planned_id}:{round_number}"})
             cursor = connection.execute(
                 """
                 UPDATE planned_research_tasks
@@ -192,6 +312,145 @@ class PlannedResearchTaskStore:
                 )
                 if cursor.rowcount != 1:
                     raise KeyError(planned_id)
+
+    def append_wave_result(
+        self,
+        *,
+        job_id: str,
+        session_id: str,
+        run_id: str,
+        wave_number: int,
+        recorded_at: datetime,
+        execution: ResearchRoundExecution,
+    ) -> None:
+        """Append the validated wave outbox before work-ledger reconciliation."""
+        wave_result_id = hashlib.sha256(f"{job_id}\0{wave_number}".encode("utf-8")).hexdigest()
+        context_payload = None
+        if execution.context is not None:
+            context_payload = execution.context.model_dump(mode="json")
+            context_payload["alias_bindings"] = [
+                binding.model_dump(mode="json") for binding in execution.context.alias_bindings
+            ]
+        accepted_fetch_count = self._accepted_fetch_delta(job_id)
+        encoded = json.dumps(
+            {
+                "execution": execution.model_dump(mode="json"),
+                "context": context_payload,
+                "search_count_delta": execution.query_count,
+                "accepted_fetch_count_delta": accepted_fetch_count,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with self._database.transaction(TransactionMode.WRITE) as connection:
+            row = cast(
+                "sqlite3.Row | None",
+                connection.execute(
+                    "SELECT phase FROM research_wave_results WHERE wave_result_id = ?",
+                    (wave_result_id,),
+                ).fetchone(),
+            )
+            if row is None:
+                _ = connection.execute(
+                    """INSERT INTO research_wave_results
+                    (wave_result_id, job_id, session_id, run_id, wave_number, phase, recorded_at,
+                     provider_result_json, execution_json)
+                    VALUES (?, ?, ?, ?, ?, 'execution_completed', ?, 'null', ?)""",
+                    (wave_result_id, job_id, session_id, run_id, wave_number, _utc_text(recorded_at), encoded),
+                )
+            elif str(_column(row, "phase")) == "provider_completed":
+                _ = connection.execute(
+                    """UPDATE research_wave_results SET phase = 'execution_completed', execution_json = ?
+                    WHERE wave_result_id = ? AND phase = 'provider_completed'""",
+                    (encoded, wave_result_id),
+                )
+            stored = cast(
+                "sqlite3.Row | None",
+                connection.execute(
+                    """SELECT job_id, session_id, run_id, wave_number, execution_json
+                FROM research_wave_results WHERE wave_result_id = ?""",
+                    (wave_result_id,),
+                ).fetchone(),
+            )
+            if stored is None or tuple(stored) != (job_id, session_id, run_id, wave_number, encoded):
+                raise ValueError("Research wave result identity collision")
+
+    def append_provider_wave_result(
+        self,
+        *,
+        job_id: str,
+        session_id: str,
+        run_id: str,
+        wave_number: int,
+        recorded_at: datetime,
+        result: ResearchRoundResult,
+    ) -> None:
+        """Append provider-complete semantics before fallible interpretations."""
+        wave_result_id = hashlib.sha256(f"{job_id}\0{wave_number}".encode("utf-8")).hexdigest()
+        encoded_result = result.model_dump_json()
+        search_count = self._search_count_delta(job_id, session_id)
+        accepted_fetch_count = self._accepted_fetch_delta(job_id)
+        with self._database.transaction(TransactionMode.WRITE) as connection:
+            _ = connection.execute(
+                """INSERT OR IGNORE INTO research_wave_results
+                (wave_result_id, job_id, session_id, run_id, wave_number, phase, recorded_at,
+                 provider_result_json, execution_json)
+                VALUES (?, ?, ?, ?, ?, 'provider_completed', ?, ?, ?)""",
+                (
+                    wave_result_id,
+                    job_id,
+                    session_id,
+                    run_id,
+                    wave_number,
+                    _utc_text(recorded_at),
+                    encoded_result,
+                    json.dumps(
+                        {
+                            "search_count_delta": search_count,
+                            "accepted_fetch_count_delta": accepted_fetch_count,
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                ),
+            )
+
+    def _search_count_delta(self, job_id: str, session_id: str) -> int:
+        """Return exact durable query reservations for this one-wave session."""
+        del job_id
+        with self._database.transaction() as connection:
+            row = cast(
+                "sqlite3.Row",
+                connection.execute(
+                    "SELECT query_count AS reserved FROM research_sessions WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone(),
+            )
+        return int(str(_column(row, "reserved")))
+
+    def _accepted_fetch_delta(self, job_id: str) -> int:
+        """Count newly accepted URI admissions beyond the last durable checkpoint."""
+        with self._database.transaction() as connection:
+            row = cast(
+                "sqlite3.Row",
+                connection.execute(
+                    """SELECT
+                    (SELECT count(*) FROM research_uri_admissions
+                     WHERE job_id = ? AND consumes_fetch_capacity = 1) AS admitted,
+                    COALESCE((SELECT accepted_fetch_count FROM research_job_checkpoints
+                              WHERE job_id = ? ORDER BY wave_number DESC LIMIT 1), 0) AS checkpointed""",
+                    (job_id, job_id),
+                ).fetchone(),
+            )
+        admitted = int(str(_column(row, "admitted")))
+        checkpointed = int(str(_column(row, "checkpointed")))
+        if admitted < checkpointed:
+            raise ValueError("Accepted URI admission count precedes its durable checkpoint")
+        return admitted - checkpointed
+
+    def pending_provider_wave_result(self, job_id: str) -> ProviderResearchWaveRecord | None:
+        """Return provider-complete work that still needs semantic interpretation."""
+        return IntelligenceWorkRepository(self._database).pending_provider_wave(job_id)
 
 
 def _allocate_result_limits(
@@ -253,6 +512,55 @@ class DurableResearchRoundRunner:
             maximum_fetches=maximum_fetches,
         )
 
+    def resume_or_start_session(
+        self,
+        *,
+        run_id: str,
+        candidate: CandidateThesis,
+        started_at: datetime,
+        deadline: datetime,
+        maximum_rounds: int,
+        maximum_queries: int,
+        maximum_fetches: int,
+    ) -> str:
+        """Resume the candidate's interrupted session without repaying completed provider work."""
+        scope = CandidateThesisResearchScope(candidate_thesis_id=candidate.candidate_thesis_id)
+        active = self._repository.active_session_for_scope(scope)
+        if active is not None:
+            if active.run_id != run_id:
+                active = self._repository.adopt_interrupted_session(
+                    active,
+                    run_id=run_id,
+                    reclaim_before=started_at - timedelta(minutes=30),
+                    deadline=deadline,
+                )
+            return active.session_id
+        return self.start_session(
+            run_id=run_id,
+            candidate=candidate,
+            started_at=started_at,
+            deadline=deadline,
+            maximum_rounds=maximum_rounds,
+            maximum_queries=maximum_queries,
+            maximum_fetches=maximum_fetches,
+        )
+
+    def pending_tasks_for_session(self, session_id: str) -> tuple[ResearchTaskDraft, ...]:
+        """Project unfinished durable execution tasks back to their typed plan shape."""
+        latest_round = self._repository.latest_research_round_state(session_id)
+        durable_tasks = () if latest_round is None else latest_round.tasks
+        return tuple(
+            ResearchTaskDraft(
+                candidate_thesis_id=task.query.candidate_thesis_id,
+                provider=task.query.provider,
+                query=task.query.query_text,
+                purpose=task.query.purpose,
+                material_claim_keys=task.query.material_claim_keys,
+                maximum_results=task.query.max_results,
+            )
+            for task in (durable_tasks or self._repository.pending_tasks(session_id))
+        )
+
     def start_scoped_session(
         self,
         *,
@@ -283,10 +591,11 @@ class DurableResearchRoundRunner:
         )
         return session_id
 
-    def run_round(
+    def run_round(  # noqa: C901 - explicit durable phase recovery branches
         self,
         *,
         session_id: str,
+        job_id: str,
         run_id: str,
         candidate: CandidateThesis,
         round_number: int,
@@ -296,6 +605,7 @@ class DurableResearchRoundRunner:
         historical_explicit: bool,
         query_budget: int,
         fetch_budget: int,
+        on_completed: Callable[[ResearchRoundExecution], None] | None = None,
     ) -> ResearchRoundExecution:
         """Materialize plans, execute providers, and complete durable queue rows."""
         del candidate
@@ -303,32 +613,68 @@ class DurableResearchRoundRunner:
             raise ResearchBudgetExceededError("Research tasks exceed the assigned query budget")
         if len(tasks) > fetch_budget:
             raise ResearchBudgetExceededError("Research tasks exceed the assigned fetch budget")
+        pending_provider = (
+            None if job_id.startswith("legacy:") else self._planned_tasks.pending_provider_wave_result(job_id)
+        )
+        durable_round = self._repository.research_round_state(session_id, round_number)
+        resumed_execution_tasks = durable_round.tasks
         allocated_result_limits: tuple[int, ...] = _allocate_result_limits(tasks, fetch_budget=fetch_budget)
         for task in tasks:
             _ = self._planned_tasks.append_task(task, run_id=run_id, known_at=decision_at)
-        materialized = tuple(
-            self._planned_tasks.materialize(
-                task,
-                allocated_maximum_results=allocated_result_limit,
-                run_id=run_id,
-                session_id=session_id,
-                round_number=round_number,
-                as_of=decision_at,
+        materialized = (
+            ()
+            if pending_provider is not None or resumed_execution_tasks
+            else tuple(
+                self._planned_tasks.materialize(
+                    task,
+                    allocated_maximum_results=allocated_result_limit,
+                    run_id=run_id,
+                    session_id=session_id,
+                    round_number=round_number,
+                    as_of=decision_at,
+                )
+                for task, allocated_result_limit in zip(tasks, allocated_result_limits, strict=True)
             )
-            for task, allocated_result_limit in zip(tasks, allocated_result_limits, strict=True)
         )
+        provider_phase_durable = pending_provider is not None
         try:
             before = self._repository.budget_state(session_id)
-            result = self._service.run_round(
-                self._repository.budget_state(session_id).session,
-                tuple(item[1] for item in materialized),
-                requested_as_of=requested_as_of,
-                decision_at=decision_at,
-                historical_explicit=historical_explicit,
+            result = (
+                ResearchRoundResult.model_validate(pending_provider.provider_result)
+                if pending_provider is not None
+                else self._service.run_round(
+                    before.session,
+                    resumed_execution_tasks or tuple(item[1] for item in materialized),
+                    requested_as_of=requested_as_of,
+                    decision_at=decision_at,
+                    historical_explicit=historical_explicit,
+                    job_id=job_id,
+                )
             )
+            if pending_provider is None and not job_id.startswith("legacy:"):
+                self._planned_tasks.append_provider_wave_result(
+                    job_id=job_id,
+                    session_id=session_id,
+                    run_id=run_id,
+                    wave_number=round_number,
+                    recorded_at=decision_at,
+                    result=result,
+                )
+                provider_phase_durable = True
+                pending_provider = self._planned_tasks.pending_provider_wave_result(job_id)
+                if pending_provider is None:
+                    raise ValueError("Durable provider wave could not be reloaded")
             after = self._repository.budget_state(session_id)
-            query_count: int = after.query_count - before.query_count
-            fetch_count: int = after.fetch_count - before.fetch_count
+            query_count = (
+                pending_provider.search_count_delta
+                if pending_provider is not None
+                else after.query_count - before.query_count
+            )
+            fetch_count = (
+                pending_provider.accepted_fetch_count_delta
+                if pending_provider is not None
+                else after.fetch_count - before.fetch_count
+            )
             if query_count > query_budget or fetch_count > fetch_budget:
                 raise ValueError("Research service exceeded the assigned round budget")
             interpreter: InterpretationService | None = self._interpreter
@@ -349,12 +695,14 @@ class DurableResearchRoundRunner:
                 else ()
             )
         except Exception:
-            self._planned_tasks.release(tuple(item[0] for item in materialized))
+            if not provider_phase_durable:
+                self._planned_tasks.release(tuple(item[0] for item in materialized))
             raise
-        self._planned_tasks.complete(
-            tuple(item[0] for item in materialized),
-            completed_at=decision_at,
-        )
+        if materialized:
+            self._planned_tasks.complete(
+                tuple(item[0] for item in materialized),
+                completed_at=decision_at,
+            )
         context = _build_round_context(
             round_number,
             tasks,
@@ -363,7 +711,7 @@ class DurableResearchRoundRunner:
             decision_at,
             self._material_assessor,
         )
-        return ResearchRoundExecution(
+        execution = ResearchRoundExecution(
             task_count=result.task_count,
             query_count=query_count,
             fetch_count=fetch_count,
@@ -380,6 +728,18 @@ class DurableResearchRoundRunner:
             failure_kinds=result.failure_kinds,
             context=context,
         )
+        if not job_id.startswith("legacy:"):
+            self._planned_tasks.append_wave_result(
+                job_id=job_id,
+                session_id=session_id,
+                run_id=run_id,
+                wave_number=round_number,
+                recorded_at=decision_at,
+                execution=execution,
+            )
+        if on_completed is not None:
+            on_completed(execution)
+        return execution
 
     def finalize_session(
         self,
@@ -493,9 +853,9 @@ def _build_round_context(
     )
 
 
-def _planned_task_id(run_id: str, candidate_id: str, task_json: str) -> str:
+def _planned_task_id(candidate_id: str, task_json: str) -> str:
     digest: str = hashlib.sha256(
-        f"{run_id}\0{candidate_id}\0{task_json}".encode("utf-8"),
+        f"{candidate_id}\0{task_json}".encode("utf-8"),
     ).hexdigest()
     return f"planned:{digest}"
 

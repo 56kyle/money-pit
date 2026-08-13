@@ -32,6 +32,7 @@ from money_pit.schemas.theses import ThesisRevision
 from money_pit.storage.database import Database
 from money_pit.storage.database import TransactionMode
 from money_pit.storage.errors import StorageError
+from money_pit.storage.intelligence_work import SynthesisOutputRecord
 from money_pit.storage.research_semantics import ResearchSemanticPayloadError
 from money_pit.storage.research_semantics import canonical_research_context
 from money_pit.storage.research_semantics import canonical_research_payload
@@ -57,6 +58,15 @@ class IntelligenceAdmissionRepository:
         """Bind admission to the shared SQLite transaction authority."""
         self._database: Database = database
 
+    def admit_incremental_research_artifact(self, artifact: StageArtifactRecord) -> None:
+        """Append an A3 summary without rewriting prior-run descendants."""
+        if artifact.stage != "A3" or artifact.output_ids:
+            raise IntelligenceAdmissionError(
+                "Incremental research artifacts must be A3 summaries without new domain outputs."
+            )
+        with self._database.transaction(TransactionMode.WRITE) as connection:
+            append_stage_artifact_record(connection, artifact)
+
     def admit_interpretation(
         self,
         admissions: tuple[InterpretationAdmission, ...],
@@ -64,6 +74,7 @@ class IntelligenceAdmissionRepository:
         completed_at: datetime,
         known_at: datetime,
         artifact: StageArtifactRecord,
+        bundle_id: str | None = None,
     ) -> None:
         """Commit pending attempts, observations, and the A1 artifact together."""
         if artifact.stage != "A1":
@@ -96,6 +107,20 @@ class IntelligenceAdmissionRepository:
                     known_text=known_text,
                 )
             append_stage_artifact_record(connection, artifact)
+            if bundle_id is not None:
+                remaining = connection.execute(
+                    "SELECT count(*) FROM interpretation_bundle_chunks WHERE bundle_id = ? AND status != 'completed'",
+                    (bundle_id,),
+                ).fetchone()
+                if remaining is None or int(remaining[0]) != 0:
+                    raise IntelligenceAdmissionError("Interpretation bundle has unfinished chunks.")
+                cursor = connection.execute(
+                    """UPDATE interpretation_bundles SET status = 'completed', completed_at = ?
+                    WHERE bundle_id = ? AND status != 'completed'""",
+                    (known_text, bundle_id),
+                )
+                if cursor.rowcount != 1:
+                    raise IntelligenceAdmissionError("Interpretation bundle cannot be completed.")
 
     def admit_research_interpretation(
         self,
@@ -152,6 +177,76 @@ class IntelligenceAdmissionRepository:
             for contribution in contributions:
                 append_contribution_record(connection, contribution)
             append_stage_artifact_record(connection, artifact)
+
+    def admit_synthesis_unit(
+        self,
+        *,
+        resolutions: tuple[ClaimResolutionDecision, ...],
+        verifications: tuple[VerificationResult, ...],
+        revisions: tuple[ThesisRevision, ...],
+        contributions: tuple[SignalContribution, ...],
+        artifact: StageArtifactRecord,
+        unit_id: str,
+        output: SynthesisOutputRecord,
+    ) -> None:
+        """Atomically admit A4 domain records, artifact, and completed work unit."""
+        _require_synthesis_outputs(
+            resolutions=resolutions,
+            verifications=verifications,
+            revisions=revisions,
+            contributions=contributions,
+            artifact=artifact,
+        )
+        with self._database.transaction(TransactionMode.WRITE) as connection:
+            unit = connection.execute(
+                """SELECT status, claimed_run_id, unit_payload_hash, unit_json
+                FROM synthesis_units WHERE unit_id = ?""",
+                (unit_id,),
+            ).fetchone()
+            if unit is None or str(unit[0]) not in {"active", "checkpointed"} or str(unit[1]) != artifact.run_id:
+                raise IntelligenceAdmissionError("Synthesis unit is not claimed by the artifact run.")
+            if hashlib.sha256(str(unit[3]).encode()).hexdigest() != str(unit[2]):
+                raise IntelligenceAdmissionError("Synthesis unit semantic context changed after admission.")
+            for decision in resolutions:
+                append_resolution_record(connection, decision)
+            for verification in verifications:
+                append_verification_record(connection, verification)
+            for revision in revisions:
+                append_revision_record(connection, revision)
+            for contribution in contributions:
+                append_contribution_record(connection, contribution)
+            append_stage_artifact_record(connection, artifact)
+            encoded_ids = _json_ids(output.output_record_ids)
+            encoded_output = _canonical_json(output.payload)
+            _ = connection.execute(
+                """INSERT OR IGNORE INTO synthesis_outputs
+                (output_id, unit_id, output_fingerprint, created_at,
+                 output_record_ids_json, output_json) VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    output.output_id,
+                    unit_id,
+                    output.output_fingerprint,
+                    _utc_text(output.created_at),
+                    encoded_ids,
+                    encoded_output,
+                ),
+            )
+            stored = connection.execute(
+                """SELECT unit_id, output_fingerprint, created_at,
+                          output_record_ids_json, output_json
+                   FROM synthesis_outputs WHERE output_id = ?""",
+                (output.output_id,),
+            ).fetchone()
+            expected = (unit_id, output.output_fingerprint, _utc_text(output.created_at), encoded_ids, encoded_output)
+            if stored is None or tuple(stored) != expected:
+                raise IntelligenceAdmissionError("Synthesis output identity collides with different content.")
+            cursor = connection.execute(
+                """UPDATE synthesis_units SET status = 'completed', completed_at = ?
+                WHERE unit_id = ? AND claimed_run_id = ? AND status IN ('active', 'checkpointed')""",
+                (_utc_text(artifact.known_at), unit_id, artifact.run_id),
+            )
+            if cursor.rowcount != 1:
+                raise IntelligenceAdmissionError("Synthesis unit changed during atomic admission.")
 
     def admit_research_stage(
         self,
@@ -487,6 +582,29 @@ def _canonical_json(value: object) -> str:
         allow_nan=False,
         ensure_ascii=False,
     )
+
+
+def _require_synthesis_outputs(
+    *,
+    resolutions: tuple[ClaimResolutionDecision, ...],
+    verifications: tuple[VerificationResult, ...],
+    revisions: tuple[ThesisRevision, ...],
+    contributions: tuple[SignalContribution, ...],
+    artifact: StageArtifactRecord,
+) -> None:
+    """Require exact A4 artifact bindings before a transaction begins."""
+    if artifact.stage != "A4":
+        raise IntelligenceAdmissionError("Synthesis admission requires an A4 artifact.")
+    output_ids = (
+        *(bind_artifact_record(ArtifactRecordKind.CLAIM_RESOLUTION, item.decision_id) for item in resolutions),
+        *(bind_artifact_record(ArtifactRecordKind.VERIFICATION, item.verification_id) for item in verifications),
+        *(bind_artifact_record(ArtifactRecordKind.THESIS_REVISION, item.revision_id) for item in revisions),
+        *(bind_artifact_record(ArtifactRecordKind.SIGNAL_CONTRIBUTION, item.contribution_id) for item in contributions),
+    )
+    if len(set(output_ids)) != len(output_ids):
+        raise IntelligenceAdmissionError("A4 output record IDs must be unique.")
+    if artifact.output_ids != output_ids:
+        raise IntelligenceAdmissionError("A4 artifact outputs must equal admitted intelligence records.")
 
 
 def _utc_text(value: datetime) -> str:

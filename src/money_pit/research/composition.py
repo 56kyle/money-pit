@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from money_pit.claims.repository import ClaimRepository
+from money_pit.constants import APP_VERSION
 from money_pit.evidence.processors import builtin_evidence_processors
 from money_pit.evidence.repository import EvidenceProcessingAttemptRepository
 from money_pit.evidence.work import EvidenceWorkStore
@@ -20,6 +21,7 @@ from money_pit.sources._shared import utc_now
 from money_pit.sources.service import EvidenceRepository
 from money_pit.storage.assets import AssetStore
 from money_pit.storage.database import Database
+from money_pit.storage.intelligence_work import IntelligenceWorkRepository
 from money_pit.storage.sources import SourceRepository
 
 
@@ -43,6 +45,7 @@ def build_research_runtime(
     interpreter: InterpretationService,
     credentials: InferenceCredentialResolver,
     model: str,
+    interpretation_prompt_version: str = APP_VERSION,
     clock: Callable[[], datetime] = utc_now,
 ) -> ResearchRuntime:
     """Compose persistent evidence work and bounded research adapters."""
@@ -56,6 +59,10 @@ def build_research_runtime(
         builtin_evidence_processors(credentials, model=model),
         EvidenceProcessingAttemptRepository(database),
         asset_store,
+        IntelligenceWorkRepository(database),
+        evidence_work=EvidenceWorkStore(database),
+        interpretation_model=model,
+        interpretation_prompt_version=interpretation_prompt_version,
         clock=clock,
     )
     return ResearchRuntime(

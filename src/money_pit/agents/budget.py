@@ -1,8 +1,10 @@
 """Deterministic complete-envelope budgets for model inference."""
 
 import json
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import ClassVar
 from typing import Generic
 from typing import Protocol
@@ -12,6 +14,18 @@ from typing import runtime_checkable
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+
+from money_pit.agents.inference import InferenceCallRecord
+from money_pit.agents.inference import InferenceCallStatus
+from money_pit.agents.inference import InferenceInvocationError
+from money_pit.agents.inference import InferenceResult
+from money_pit.agents.inference import InferenceStage
+from money_pit.agents.inference import InferenceTracking
+from money_pit.agents.inference import InferenceUsage
+from money_pit.agents.inference import ProviderInferenceError
+from money_pit.agents.inference import deterministic_request_hash
+from money_pit.agents.inference import monotonic_milliseconds_since
+from money_pit.agents.inference import utc_now
 
 
 RequestT = TypeVar("RequestT", bound=BaseModel)
@@ -77,21 +91,28 @@ class InferenceRequestBudget(Protocol):
 class BoundedInferenceAgent(Generic[RequestT, ResponseT]):
     """Serialize, account for, and invoke one typed model boundary."""
 
-    _invoke: Callable[[str], ResponseT]
+    _invoke: Callable[[str], tuple[ResponseT, InferenceUsage]]
     _system_prompt: str
     _output_schema: str
     _metadata: str
     _limits: InferenceBudgetLimits
+    _stage: InferenceStage
+    _purpose: str
+    _model_name: str
+    _tracking: InferenceTracking
 
     @classmethod
     def create(
         cls,
         *,
-        invoke: Callable[[str], ResponseT],
+        invoke: Callable[[str], tuple[ResponseT, InferenceUsage]],
         system_prompt: str,
         output_type: type[BaseModel],
         model_name: str,
         limits: InferenceBudgetLimits | None = None,
+        stage: InferenceStage,
+        purpose: str,
+        tracking: InferenceTracking | None = None,
     ) -> "BoundedInferenceAgent[RequestT, ResponseT]":
         """Build one boundary from the exact fixed provider-visible components."""
         return cls(
@@ -109,6 +130,10 @@ class BoundedInferenceAgent(Generic[RequestT, ResponseT]):
                 separators=(",", ":"),
             ),
             _limits=limits or InferenceBudgetLimits(),
+            _stage=stage,
+            _purpose=purpose,
+            _model_name=model_name,
+            _tracking=tracking or InferenceTracking(),
         )
 
     @property
@@ -120,7 +145,7 @@ class BoundedInferenceAgent(Generic[RequestT, ResponseT]):
             raise InferenceBudgetExceededError(self._breakdown(user_message_characters=0))
         return allowance
 
-    def __call__(self, request: RequestT) -> ResponseT:
+    def __call__(self, request: RequestT) -> InferenceResult[ResponseT]:
         """Reject an oversized rendered envelope before invoking the provider."""
         user_message = serialize_inference_request(request)
         message = self._render(user_message)
@@ -130,7 +155,70 @@ class BoundedInferenceAgent(Generic[RequestT, ResponseT]):
         )
         if breakdown.rendered_total > breakdown.maximum_characters:
             raise InferenceBudgetExceededError(breakdown)
-        return self._invoke(message)
+        request_hash = deterministic_request_hash(message)
+        started_at = utc_now()
+        monotonic_started = time.monotonic()
+        try:
+            output, usage = self._invoke(message)
+        except ProviderInferenceError as error:
+            usage = error.usage
+            self._record(
+                request_hash=request_hash,
+                status="failed",
+                usage=usage,
+                started_at=started_at,
+                monotonic_started=monotonic_started,
+                failure_kind=error.failure_kind,
+            )
+            raise InferenceInvocationError(stage=self._stage, failure_kind=error.failure_kind) from error
+        except Exception as error:
+            failure_kind = type(error).__name__
+            self._record(
+                request_hash=request_hash,
+                status="failed",
+                usage=None,
+                started_at=started_at,
+                monotonic_started=monotonic_started,
+                failure_kind=failure_kind,
+            )
+            raise InferenceInvocationError(stage=self._stage, failure_kind=failure_kind) from error
+        self._record(
+            request_hash=request_hash,
+            status="succeeded",
+            usage=usage,
+            started_at=started_at,
+            monotonic_started=monotonic_started,
+            failure_kind=None,
+        )
+        return InferenceResult(output=output, usage=usage, request_hash=request_hash)
+
+    def _record(
+        self,
+        *,
+        request_hash: str,
+        status: InferenceCallStatus,
+        usage: InferenceUsage | None,
+        started_at: datetime,
+        monotonic_started: float,
+        failure_kind: str | None,
+    ) -> None:
+        """Record content-free usage at the provider boundary."""
+        completed_at = utc_now()
+        self._tracking.record(
+            InferenceCallRecord(
+                stage=self._stage,
+                purpose=self._purpose,
+                model=self._model_name,
+                request_hash=request_hash,
+                correlation=self._tracking.correlation,
+                status=status,
+                usage=usage,
+                started_at=started_at,
+                completed_at=completed_at,
+                elapsed_milliseconds=monotonic_milliseconds_since(monotonic_started),
+                failure_kind=failure_kind,
+            )
+        )
 
     def fits_request(self, request: BaseModel) -> bool:
         """Test the exact rendered message and response reserve against the limit."""

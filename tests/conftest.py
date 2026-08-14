@@ -9,6 +9,7 @@ param-default idiom used elsewhere in this test suite.
 from pathlib import Path
 
 import pytest
+from pytest import Config
 from pytest import FixtureRequest
 
 
@@ -21,6 +22,12 @@ _UNIT_TESTS_FOLDER_NAME: str = "unit_tests"
 _INTEGRATION_TESTS_FOLDER_NAME: str = "integration_tests"
 _ACCEPTANCE_TESTS_FOLDER_NAME: str = "acceptance_tests"
 _DATA_FOLDER_NAME: str = "data"
+_PYTEST_TEMP_PARENT: Path = Path(".nox") / "pytest-tmp"
+
+
+def pytest_configure(config: Config) -> None:
+    """Create the ignored parent used by configured pytest temporary roots."""
+    (config.rootpath / _PYTEST_TEMP_PARENT).mkdir(parents=True, exist_ok=True)
 
 
 @pytest.fixture(scope="session")

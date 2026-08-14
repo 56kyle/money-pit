@@ -126,7 +126,7 @@ def tests_python(session: Session) -> None:
     test_results_dir = TESTS_FOLDER / "results"
     test_results_dir.mkdir(parents=True, exist_ok=True)
     junitxml_file = test_results_dir / f"test-results-py{session.python.replace('.', '')}.xml"
-    pytest_temp_root = REPO_ROOT / ".test-tmp" / f"nox-py{session.python.replace('.', '')}"
+    pytest_temp_root = REPO_ROOT / ".nox" / "pytest-tmp" / f"nox-py{session.python.replace('.', '')}"
 
     session.run(
         "pytest",
@@ -137,8 +137,6 @@ def tests_python(session: Session) -> None:
         f"--junitxml={junitxml_file}",
         "--basetemp",
         str(pytest_temp_root),
-        "-p",
-        "no:cacheprovider",
         "tests/",
     )
 

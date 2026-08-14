@@ -90,6 +90,7 @@ Homepage = "https://github.com/56kyle/money-pit"
 Repository = "https://github.com/56kyle/money-pit"
 
 [tool.uv]
+cache-dir = ".nox/uv-cache"
 conflicts = [
   [
     { extra = "cpu" },
@@ -128,7 +129,8 @@ build-backend = "setuptools.build_meta"
 
 "money_pit.storage.sql" = ["*.sql"]
 [tool.pytest.ini_options]
-addopts = "-m 'not live and not live_video'"
+addopts = "-m 'not live and not live_video' --basetemp=.nox/pytest-tmp/direct"
+cache_dir = ".nox/pytest-cache"
 markers = [
     "live: connects to real Alpaca paper / SMTP; deselected by default (run with -m live and MONEY_PIT_LIVE=1)",
     "live_video: runs real video ingestion (yt-dlp + faster-whisper + scenedetect + VLM) against a pinned public URL; deselected by default (run with -m live_video and MONEY_PIT_LIVE_VIDEO=1 — a separate gate from MONEY_PIT_LIVE, since this tier needs the 'video' extra + a GPU and makes paid VLM calls)",

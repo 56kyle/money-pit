@@ -1,24 +1,36 @@
 """Module containing source registry CLI workflows."""
 
+# Typer's Option overloads expose partially typed Click internals.
+# pyright: reportUnknownMemberType=false
+
 from __future__ import annotations
 
+from datetime import UTC
+from datetime import datetime
 from pathlib import Path  # noqa: TC003 - Typer resolves command annotations at runtime.
 from typing import TYPE_CHECKING
 from typing import Annotated
+from typing import cast
 
 import typer
 
-from money_pit.config import ConfigurationError
+from money_pit.cli_reports import SourceStatusReport
+from money_pit.cli_support import emit_progress
+from money_pit.cli_support import run_operator_command
 from money_pit.config import ConfigurationScope
 from money_pit.config import load_application_config
+from money_pit.constants import APP_VERSION
 from money_pit.constants import ASSETS_DIRNAME
 from money_pit.constants import DATA_ROOT
 from money_pit.constants import STATE_DATABASE_FILENAME
 from money_pit.evidence.processors import builtin_evidence_processors
 from money_pit.evidence.repository import EvidenceProcessingAttemptRepository
+from money_pit.evidence.work import EvidenceWorkStore
+from money_pit.pipeline.identity import interpretation_policy_version
+from money_pit.schemas.sources import SourceCursorPurpose
+from money_pit.schemas.sources import SourceDefinition
 from money_pit.secrets import SecretSpecInferenceResolver
 from money_pit.secrets import SecretSpecSourceResolver
-from money_pit.sources._shared import utc_now
 from money_pit.sources.builtin import builtin_adapter_registry
 from money_pit.sources.errors import SourceError
 from money_pit.sources.registry import AdapterRegistry
@@ -30,16 +42,15 @@ from money_pit.sources.service import SourceSyncService
 from money_pit.sources.service import default_sources_path
 from money_pit.storage.assets import AssetStore
 from money_pit.storage.database import Database
-from money_pit.storage.errors import StorageError
+from money_pit.storage.intelligence_work import IntelligenceWorkRepository
 from money_pit.storage.sources import SourceRepository
 
 
 if TYPE_CHECKING:
-    from datetime import datetime
+    import sqlite3
 
     from money_pit.progress import IngestionProgressCallback
     from money_pit.progress import IngestionProgressEvent
-    from money_pit.schemas.sources import SourceDefinition
     from money_pit.schemas.sources import SourceRegistryDocument
 
 
@@ -47,25 +58,15 @@ source_app = typer.Typer(help="Manage configured intelligence sources.")
 _DEFAULT_SOURCES_PATH = default_sources_path()
 
 
-def _source_repository_for_listing(sources_path: Path) -> SourceRepository:
-    """Validate and register source metadata without constructing a credential resolver."""
+def _configured_sources(sources_path: Path) -> tuple[SourceDefinition, ...]:
+    """Parse and validate source definitions without credentials or storage."""
     configuration = load_application_config(
         sources_path=sources_path,
         scope=ConfigurationScope.INTELLIGENCE,
     )
     adapters = builtin_adapter_registry(None, configuration.intelligence)
     document = load_source_registry(sources_path, adapters)
-    database = Database(DATA_ROOT / STATE_DATABASE_FILENAME)
-    database.initialize()
-    repository = SourceRepository(database)
-    registered_at: datetime = utc_now()
-    for definition in document.sources:
-        _ = repository.register_definition(
-            definition,
-            registry_version=document.version,
-            registered_at=registered_at,
-        )
-    return repository
+    return document.sources
 
 
 def _source_runtime(
@@ -111,16 +112,111 @@ def _source_runtime(
 def list_sources(
     sources_path: Path = _DEFAULT_SOURCES_PATH,
 ) -> None:
-    """List durable definitions after validating and registering the TOML registry."""
-    try:
-        repository = _source_repository_for_listing(sources_path)
-        definitions: tuple[SourceDefinition, ...] = repository.list_definitions()
-    except (ConfigurationError, SourceError, StorageError, OSError) as error:
-        typer.echo(f"Cannot list sources: {error}", err=True)
-        raise typer.Exit(code=1) from error
-    for definition in definitions:
-        state: str = "enabled" if definition.enabled else "disabled"
-        typer.echo(f"{definition.source_id}\t{definition.adapter_name}\t{state}\t{definition.locator}")
+    """List validated configured definitions without changing durable state."""
+    _ = run_operator_command(
+        lambda: _configured_sources(sources_path),
+        heading="Configured sources",
+    )
+
+
+@source_app.command(name="check")
+def check_sources(sources_path: Path = _DEFAULT_SOURCES_PATH) -> None:
+    """Validate the source registry without credentials, providers, or storage."""
+    _ = run_operator_command(
+        lambda: {
+            "valid": True,
+            "source_count": len(_configured_sources(sources_path)),
+            "path": str(sources_path),
+        },
+        heading="Source configuration check",
+    )
+
+
+@source_app.command(name="status")
+def source_status(source_id: str, sources_path: Path = _DEFAULT_SOURCES_PATH) -> None:
+    """Show configured state and durable cursors without changing storage."""
+    _ = run_operator_command(
+        lambda: _source_status(source_id, sources_path),
+        heading="Source status",
+    )
+
+
+def _source_status(source_id: str, sources_path: Path) -> SourceStatusReport:
+    configuration = load_application_config(sources_path=sources_path, scope=ConfigurationScope.INTELLIGENCE)
+    definitions: tuple[SourceDefinition, ...] = _configured_sources(sources_path)
+    definition: SourceDefinition | None = next(
+        (item for item in definitions if item.source_id == source_id),
+        None,
+    )
+    if definition is None:
+        raise SourceError(f"Source {source_id!r} is not configured.")
+    database_path: Path = DATA_ROOT / STATE_DATABASE_FILENAME
+    if not database_path.is_file():
+        return SourceStatusReport(
+            source_id=source_id,
+            configured=True,
+            enabled=definition.enabled,
+            sync_cursor_present=False,
+            backfill_cursor_present=False,
+        )
+    repository = SourceRepository(Database(database_path))
+    cursors = repository.cursor_statuses(source_id)
+    sync_status = next((item for item in cursors if item.purpose is SourceCursorPurpose.SYNC), None)
+    backfill_status = next((item for item in cursors if item.purpose is SourceCursorPurpose.BACKFILL), None)
+    database = Database(database_path)
+    with database.read_only_transaction() as connection:
+        row = cast(
+            "sqlite3.Row | None",
+            connection.execute(
+                """SELECT max(acquisition.retrieved_at) FROM evidence_asset_acquisitions AS acquisition
+                JOIN source_items AS item ON item.source_item_id = acquisition.source_item_id
+                WHERE item.source_id = ?""",
+                (source_id,),
+            ).fetchone(),
+        )
+    stored_activity: object | None = None if row is None else cast("object | None", row[0])
+    last_activity = None if stored_activity is None else datetime.fromisoformat(str(stored_activity))
+    work_status = IntelligenceWorkRepository(database).status(source_id)
+    pending_work = sum(
+        (
+            work_status.pending_interpretation_bundles,
+            work_status.pending_interpretation_chunks,
+            work_status.pending_discovery_units,
+            work_status.pending_research_jobs,
+            work_status.pending_synthesis_units,
+            work_status.due_research_reviews,
+        )
+    )
+    interpreter_version = interpretation_policy_version(
+        prompt_version=APP_VERSION,
+        model=configuration.intelligence.llm_model,
+    )
+    pending_documents = EvidenceWorkStore(database).list_pending_documents(
+        as_of=datetime.now(tz=UTC),
+        source_id=source_id,
+        limit=2_147_483_647,
+        interpreter_version=interpreter_version,
+    )
+    unmaterialized = {
+        (item.document.asset.source_item_id, item.content_version)
+        for item in pending_documents
+        if not IntelligenceWorkRepository(database).has_interpretation_bundle(
+            source_item_id=item.document.asset.source_item_id,
+            content_version=item.content_version,
+            interpreter_version=interpreter_version,
+        )
+    }
+    return SourceStatusReport(
+        source_id=source_id,
+        configured=True,
+        enabled=definition.enabled,
+        sync_cursor_present=sync_status is not None,
+        backfill_cursor_present=backfill_status is not None,
+        sync_cursor_updated_at=None if sync_status is None else sync_status.updated_at,
+        backfill_cursor_updated_at=None if backfill_status is None else backfill_status.updated_at,
+        last_activity_at=last_activity,
+        pending_work_count=pending_work + len(unmaterialized),
+    )
 
 
 @source_app.command()
@@ -129,13 +225,15 @@ def sync(
     sources_path: Path = _DEFAULT_SOURCES_PATH,
 ) -> None:
     """Discover, extract, and durably persist one source batch."""
-    try:
-        service, _ = _source_runtime(sources_path)
+
+    def run() -> SourceSyncResult:
+        service, _ = _source_runtime(sources_path, progress=_render_ingestion_progress)
+        emit_progress(f"sync: starting {source_id}")
         result: SourceSyncResult = service.sync(source_id)
-    except (ConfigurationError, SourceError, StorageError, OSError) as error:
-        typer.echo(f"Cannot sync source {source_id}: {error}", err=True)
-        raise typer.Exit(code=1) from error
-    typer.echo(result.model_dump_json(indent=2))
+        emit_progress(f"sync: committed {source_id}")
+        return result
+
+    _ = run_operator_command(run, heading="Source sync")
 
 
 @source_app.command()
@@ -145,17 +243,18 @@ def backfill(
     sources_path: Path = _DEFAULT_SOURCES_PATH,
 ) -> None:
     """Run a bounded historical sync from an empty cursor."""
-    try:
-        service, _ = _source_runtime(sources_path)
+
+    def run() -> tuple[SourceSyncResult, ...]:
+        service, _ = _source_runtime(sources_path, progress=_render_ingestion_progress)
+        emit_progress(f"backfill: starting {source_id}")
         results: tuple[SourceSyncResult, ...] = service.backfill(
             source_id,
             maximum_batches=maximum_batches,
         )
-    except (ConfigurationError, SourceError, StorageError, OSError) as error:
-        typer.echo(f"Cannot backfill source {source_id}: {error}", err=True)
-        raise typer.Exit(code=1) from error
-    for result in results:
-        typer.echo(result.model_dump_json())
+        emit_progress(f"backfill: committed {len(results)} batches")
+        return results
+
+    _ = run_operator_command(run, heading="Source backfill")
 
 
 @source_app.command()
@@ -172,13 +271,12 @@ def ingest(
     ] = False,
 ) -> None:
     """Ingest one caller-selected URL through its configured source policy."""
-    try:
+
+    def run() -> SourceIngestResult:
         service, _ = _source_runtime(sources_path, progress=_render_ingestion_progress)
-        result: SourceIngestResult = service.ingest(source_id, url, refresh=refresh)
-    except (ConfigurationError, SourceError, StorageError, OSError) as error:
-        typer.echo(f"Cannot ingest URL for source {source_id}: {error}", err=True)
-        raise typer.Exit(code=1) from error
-    typer.echo(result.model_dump_json(indent=2))
+        return service.ingest(source_id, url, refresh=refresh)
+
+    _ = run_operator_command(run, heading="Source ingestion")
 
 
 def _render_ingestion_progress(event: IngestionProgressEvent) -> None:
@@ -191,4 +289,4 @@ def _render_ingestion_progress(event: IngestionProgressEvent) -> None:
         parts.append(f"{percentage:.1f}%")
     elif event.current is not None:
         parts.append(f"{event.current:g}")
-    typer.echo(": ".join(parts), err=True)
+    emit_progress(": ".join(parts))

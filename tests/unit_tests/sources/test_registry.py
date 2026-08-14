@@ -14,7 +14,6 @@ from money_pit.schemas.sources import SourceItem
 from money_pit.schemas.sources import SourceTrustSetting
 from money_pit.schemas.sources import TrustCategory
 from money_pit.schemas.sources import TrustLevel
-from money_pit.secrets import SecretSpecResolver
 from money_pit.sources.errors import AdapterAlreadyRegisteredError
 from money_pit.sources.errors import DuplicateSourceIdError
 from money_pit.sources.errors import SourceRegistryReadError
@@ -151,7 +150,7 @@ def test_register_rejects_duplicate_adapter() -> None:
         adapters.register("test", _factory)
 
 
-def test__source_repository_for_listing_does_not_construct_secret_resolver(
+def test__configured_sources_does_not_construct_secret_resolver(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -170,12 +169,9 @@ trust_settings = [{ category = "factual", level = "commentary" }]
         encoding="utf-8",
     )
 
-    def reject_resolution() -> None:
-        raise AssertionError("source list must not construct a credential resolver")
-
     monkeypatch.setattr(source_cli, "DATA_ROOT", tmp_path / "data")
-    monkeypatch.setattr(SecretSpecResolver, "from_environment", reject_resolution)
 
-    repository = source_cli._source_repository_for_listing(registry_path)  # pyright: ignore[reportPrivateUsage]
+    definitions = source_cli._configured_sources(registry_path)  # pyright: ignore[reportPrivateUsage]
 
-    assert tuple(definition.source_id for definition in repository.list_definitions()) == ("local",)
+    assert tuple(definition.source_id for definition in definitions) == ("local",)
+    assert not (tmp_path / "data").exists()

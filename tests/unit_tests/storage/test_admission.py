@@ -330,6 +330,49 @@ def test_admit_interpretation_atomically_succeeds_for_distinct_assets_of_one_sou
     )
 
 
+def test_admit_interpretation_associates_one_observation_with_multiple_asset_attempts(tmp_path: Path) -> None:
+    database = Database(tmp_path / "intelligence.sqlite3")
+    database.initialize()
+    _prepare_a1(database)
+    _prepare_second_asset_attempt(database)
+    observation = _observation("observation-shared", evidence_fragment_ids=("fragment-1", "fragment-2"))
+    admissions = (
+        InterpretationAdmission(attempt_id="attempt-1", observations=(observation,)),
+        InterpretationAdmission(attempt_id="attempt-2", observations=(observation,)),
+    )
+
+    IntelligenceAdmissionRepository(database).admit_interpretation(
+        admissions,
+        completed_at=_NOW,
+        known_at=_NOW,
+        artifact=_artifact(
+            "A1",
+            (
+                bind_artifact_record(ArtifactRecordKind.INTERPRETATION_ATTEMPT, "attempt-1"),
+                bind_artifact_record(ArtifactRecordKind.INTERPRETATION_ATTEMPT, "attempt-2"),
+                bind_artifact_record(ArtifactRecordKind.OBSERVATION, observation.observation_id),
+            ),
+        ),
+    )
+
+    with database.read_only_transaction() as connection:
+        attempt_rows = cast(
+            "list[sqlite3.Row]",
+            connection.execute(
+                "SELECT observation_ids_json FROM claim_interpretation_attempts ORDER BY asset_id"
+            ).fetchall(),
+        )
+        attempt_observations = tuple(
+            str(cast("object", row[0]))
+            for row in attempt_rows
+        )
+        observation_count = int(
+            str(cast("object", connection.execute("SELECT COUNT(*) FROM claim_observations").fetchone()[0]))
+        )
+    assert attempt_observations == ('["observation-shared"]', '["observation-shared"]')
+    assert observation_count == 1
+
+
 def test_admit_synthesis_rolls_back_resolution_when_later_verification_fails(tmp_path: Path) -> None:
     database = Database(tmp_path / "intelligence.sqlite3")
     database.initialize()

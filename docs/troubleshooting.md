@@ -1,5 +1,13 @@
 # Troubleshooting
 
+## Doctor reports missing storage
+
+`./data/intelligence.sqlite3` does not exist. Doctor does not create it. Confirm the current directory and configuration before a state-changing command.
+
+## A command fails without enough detail
+
+Run the command again with global `--debug`, for example `money-pit --debug intelligence status`. Debug mode adds the traceback to stderr.
+
 ## SecretSpec cannot resolve a scope
 
 Run `secretspec check --scope SCOPE --reason "Diagnose money-pit credentials"`. Confirm that local use selects the `development` keyring profile; an unset `SECRETSPEC_PROFILE` selects it automatically. For environment-backed automation, set `SECRETSPEC_PROFILE=ci` explicitly and supply every name declared for the requested scope. You do not need names from unrequested scopes. money-pit does not load `.env` files and does not fall back between providers. A blank profile selector is invalid.

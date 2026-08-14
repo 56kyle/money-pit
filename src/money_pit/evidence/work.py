@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
 _LOCATOR_ADAPTER: TypeAdapter[EvidenceLocator] = TypeAdapter(EvidenceLocator)
 _RETRY_DELAYS: tuple[timedelta, ...] = (timedelta(minutes=5), timedelta(minutes=20))
+_OWNING_RUN_FAILED = "OwningRunFailed"
 
 
 class EvidenceInterpretationWork(BaseModel):
@@ -75,7 +76,7 @@ class EvidenceWorkStore:
         if limit <= 0:
             raise ValueError("Evidence work limit must be positive")
         parameters: list[object] = [interpreter_version, _utc_text(as_of), _utc_text(as_of)]
-        with self._database.transaction() as connection:
+        with self._database.read_only_transaction() as connection:
             if source_id is None:
                 parameters.append(limit)
                 rows = connection.execute(
@@ -419,6 +420,27 @@ class EvidenceWorkStore:
         attempt_id: str = str(uuid4())
         document: EvidenceDocument = work.document
         with self._database.transaction(TransactionMode.WRITE) as connection:
+            _ = connection.execute(
+                """UPDATE claim_interpretation_attempts AS attempt
+                SET completed_at = terminal.completed_at, known_at = terminal.known_at, outcome = 'failed',
+                    failure_kind = ?, retry_after = ?
+                FROM run_terminal_events AS terminal
+                WHERE attempt.source_item_id = ?
+                  AND attempt.content_version = ?
+                  AND attempt.asset_id = ?
+                  AND attempt.interpreter_version = ?
+                  AND attempt.outcome = 'pending'
+                  AND terminal.run_id = attempt.run_id
+                  AND terminal.status = 'failed'""",
+                (
+                    _OWNING_RUN_FAILED,
+                    _utc_text(started_at),
+                    document.asset.source_item_id,
+                    work.content_version,
+                    document.asset.asset_id,
+                    interpreter_version,
+                ),
+            )
             acquisition: sqlite3.Row | None = cast(
                 "sqlite3.Row | None",
                 connection.execute(

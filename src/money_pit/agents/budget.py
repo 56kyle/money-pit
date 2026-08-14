@@ -1,4 +1,4 @@
-"""Deterministic complete-envelope budgets for model inference."""
+"""Deterministic native-output budgets for model inference."""
 
 import json
 import time
@@ -94,7 +94,6 @@ class BoundedInferenceAgent(Generic[RequestT, ResponseT]):
     _invoke: Callable[[str], tuple[ResponseT, InferenceUsage]]
     _system_prompt: str
     _output_schema: str
-    _metadata: str
     _limits: InferenceBudgetLimits
     _stage: InferenceStage
     _purpose: str
@@ -124,11 +123,6 @@ class BoundedInferenceAgent(Generic[RequestT, ResponseT]):
                 separators=(",", ":"),
                 allow_nan=False,
             ),
-            _metadata=json.dumps(
-                {"model": model_name},
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
             _limits=limits or InferenceBudgetLimits(),
             _stage=stage,
             _purpose=purpose,
@@ -148,14 +142,14 @@ class BoundedInferenceAgent(Generic[RequestT, ResponseT]):
     def __call__(self, request: RequestT) -> InferenceResult[ResponseT]:
         """Reject an oversized rendered envelope before invoking the provider."""
         user_message = serialize_inference_request(request)
-        message = self._render(user_message)
+        message = user_message
         breakdown = self._breakdown(
             user_message_characters=len(user_message),
-            serialized_request_characters=len(message),
+            serialized_request_characters=len(self._render(user_message)),
         )
         if breakdown.rendered_total > breakdown.maximum_characters:
             raise InferenceBudgetExceededError(breakdown)
-        request_hash = deterministic_request_hash(message)
+        request_hash = deterministic_request_hash(self._render(user_message))
         started_at = utc_now()
         monotonic_started = time.monotonic()
         try:
@@ -222,26 +216,15 @@ class BoundedInferenceAgent(Generic[RequestT, ResponseT]):
 
     def fits_request(self, request: BaseModel) -> bool:
         """Test the exact rendered message and response reserve against the limit."""
-        user_message = request.model_dump_json(indent=2)
+        user_message = serialize_inference_request(request)
         return (
             len(self._render(user_message)) + self._limits.response_reserve_characters
             <= self._limits.maximum_characters
         )
 
     def _render(self, user_message: str) -> str:
-        """Render the exact single message passed to the provider agent."""
-        return "\n".join(
-            (
-                "SYSTEM",
-                self._system_prompt,
-                "OUTPUT_SCHEMA",
-                self._output_schema,
-                "METADATA",
-                self._metadata,
-                "USER",
-                user_message,
-            )
-        )
+        """Count provider-visible instructions, native schema, and compact user input."""
+        return self._system_prompt + self._output_schema + user_message
 
     def _breakdown(
         self,
@@ -256,7 +239,7 @@ class BoundedInferenceAgent(Generic[RequestT, ResponseT]):
             maximum_characters=self._limits.maximum_characters,
             system_prompt_characters=len(self._system_prompt),
             output_schema_characters=len(self._output_schema),
-            metadata_characters=len(self._metadata),
+            metadata_characters=0,
             user_message_characters=user_message_characters,
             serialized_request_characters=request_characters,
             response_reserve_characters=self._limits.response_reserve_characters,
@@ -279,7 +262,12 @@ def inference_request_fits(agent: object, request: BaseModel, *, fallback: int) 
 
 def serialize_inference_request(request: BaseModel) -> str:
     """Render the exact typed request passed across the provider boundary."""
-    return request.model_dump_json(indent=2)
+    return json.dumps(
+        request.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
 
 
 def serialized_inference_request_size(request: BaseModel) -> int:

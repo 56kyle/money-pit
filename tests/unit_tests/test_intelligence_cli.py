@@ -7,12 +7,18 @@ from typer.testing import CliRunner
 
 from money_pit import intelligence_cli
 from money_pit.__main__ import app
+from money_pit.agents.inference import InferenceUsage
 from money_pit.config import ApplicationConfig
 from money_pit.config import ConfigurationScope
 from money_pit.config import load_application_config
 from money_pit.intelligence_cli import intelligence_app
+from money_pit.pipeline.orchestration import IntelligenceStage
+from money_pit.pipeline.orchestration import IntelligenceUpdateReport
 from money_pit.schemas.runs import RunRecord
 from money_pit.storage.database import Database
+from money_pit.storage.intelligence_work import IntelligenceWorkCompletionCounts
+from money_pit.storage.intelligence_work import IntelligenceWorkStatus
+from money_pit.storage.intelligence_work import RunInferenceUsage
 from money_pit.storage.runs import RunRepository
 
 
@@ -35,6 +41,41 @@ def _reject_configuration_load(
     raise AssertionError((sources_path, strategy_path, execution_path, scope))
 
 
+def _update_report(run_id: str, *, durable_transition_count: int) -> IntelligenceUpdateReport:
+    return IntelligenceUpdateReport(
+        run_id=run_id,
+        through=IntelligenceStage.SYNTHESIS,
+        completed_stages=(),
+        completed=IntelligenceWorkCompletionCounts(
+            interpretation_bundles=0,
+            interpretation_chunks=0,
+            discovery_units=0,
+            research_jobs=0,
+            synthesis_units=0,
+        ),
+        usage=RunInferenceUsage(
+            run_id=run_id,
+            logical_call_count=0,
+            failed_call_count=0,
+            unavailable_usage_call_count=0,
+            usage=InferenceUsage(),
+        ),
+        remaining=IntelligenceWorkStatus(
+            pending_interpretation_bundles=0,
+            active_interpretation_bundles=0,
+            pending_interpretation_chunks=0,
+            active_interpretation_chunks=0,
+            pending_discovery_units=0,
+            active_discovery_units=0,
+            pending_research_jobs=0,
+            active_research_jobs=0,
+            pending_synthesis_units=0,
+            active_synthesis_units=0,
+        ),
+        durable_transition_count=durable_transition_count,
+    )
+
+
 def test_intelligence_status_loads_only_nonsecret_intelligence_configuration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -49,7 +90,7 @@ def test_intelligence_status_loads_only_nonsecret_intelligence_configuration(
         observed_scopes.append(scope)
         return config
 
-    monkeypatch.setattr(intelligence_cli, "_database", lambda: database)
+    monkeypatch.setattr(intelligence_cli, "_read_database", lambda: database)
     monkeypatch.setattr(
         intelligence_cli,
         "load_application_config",
@@ -79,18 +120,18 @@ def test_intelligence_show_reports_durable_usage_without_loading_configuration(
             intelligence_config_hash="b" * 64,
         )
     )
-    monkeypatch.setattr(intelligence_cli, "_database", lambda: database)
+    monkeypatch.setattr(intelligence_cli, "_read_database", lambda: database)
     monkeypatch.setattr(
         intelligence_cli,
         "load_application_config",
         _reject_configuration_load,
     )
 
-    result = CliRunner().invoke(intelligence_app, ["show", run_id])
+    result = CliRunner().invoke(app, ["--json", "intelligence", "show", run_id])
 
     assert result.exit_code == 0
-    assert f'"run_id": "{run_id}"' in result.stdout
-    assert '"logical_call_count": 0' in result.stdout
+    assert f'"run_id":"{run_id}"' in result.stdout
+    assert '"logical_call_count":0' in result.stdout
 
 
 def test_root_cli_has_no_ambiguous_run_command() -> None:
@@ -98,3 +139,87 @@ def test_root_cli_has_no_ambiguous_run_command() -> None:
 
     assert result.exit_code == 0
     assert "\n run " not in result.stdout.lower()
+
+
+def test__run_intelligence_updates_aggregates_separate_runs_and_stops_on_no_transition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = _database(tmp_path / "iterations.sqlite3")
+    reports = iter(
+        (
+            _update_report("run-1", durable_transition_count=2),
+            _update_report("run-2", durable_transition_count=1),
+            _update_report("run-3", durable_transition_count=0),
+        )
+    )
+    calls: list[str] = []
+
+    def execute(**_kwargs: object) -> IntelligenceUpdateReport:
+        report = next(reports)
+        calls.append(report.run_id)
+        return report
+
+    monkeypatch.setattr(intelligence_cli, "_database", lambda: database)
+    monkeypatch.setattr(intelligence_cli, "execute_intelligence_update", execute)
+
+    result = intelligence_cli._run_intelligence_updates(  # pyright: ignore[reportPrivateUsage]
+        source="news",
+        through=IntelligenceStage.SYNTHESIS,
+        iterations=5,
+    )
+
+    assert (result.requested_iterations, result.performed_iterations) == (5, 3)
+    assert result.stopped_because_no_transition is True
+    assert tuple(report.run_id for report in result.runs) == ("run-1", "run-2", "run-3")
+    assert result.run_ids == ("run-1", "run-2", "run-3")
+    assert result.durable_transition_count == 3
+    assert result.completed == IntelligenceWorkCompletionCounts(
+        interpretation_bundles=0,
+        interpretation_chunks=0,
+        discovery_units=0,
+        research_jobs=0,
+        synthesis_units=0,
+    )
+    assert result.usage == InferenceUsage()
+    assert calls == ["run-1", "run-2", "run-3"]
+
+
+def test__run_intelligence_updates_does_not_erase_a_completed_run_when_a_later_iteration_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = _database(tmp_path / "partial.sqlite3")
+    durable_runs = RunRepository(database)
+    calls = 0
+    completed_run_id = "4fa85f64-5717-4562-b3fc-2c963f66afa6"
+
+    def execute(**_kwargs: object) -> IntelligenceUpdateReport:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("second durable run failed")
+        durable_runs.append_run(
+            RunRecord(
+                run_id=completed_run_id,
+                requested_as_of=_NOW,
+                started_at=_NOW,
+                known_at=_NOW,
+                through_stage="A4",
+                source_config_hash="a" * 64,
+                intelligence_config_hash="b" * 64,
+            )
+        )
+        return _update_report(completed_run_id, durable_transition_count=1)
+
+    monkeypatch.setattr(intelligence_cli, "_database", lambda: database)
+    monkeypatch.setattr(intelligence_cli, "execute_intelligence_update", execute)
+
+    with pytest.raises(RuntimeError):
+        _ = intelligence_cli._run_intelligence_updates(  # pyright: ignore[reportPrivateUsage]
+            source=None,
+            through=IntelligenceStage.SYNTHESIS,
+            iterations=2,
+        )
+
+    assert durable_runs.get_run(completed_run_id).run_id == completed_run_id

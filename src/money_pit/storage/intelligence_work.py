@@ -338,6 +338,37 @@ class InferenceUsageBreakdown(BaseModel):
     usage: InferenceUsage
 
 
+class FilteredInferenceUsageBreakdown(BaseModel):
+    """Usage grouped by exact stage, purpose, and model identity."""
+
+    model_config: ClassVar[ConfigDict] = _FROZEN_CONFIG
+    run_id: str = Field(min_length=1)
+    stage: str = Field(pattern=r"^A[1-4]$")
+    purpose: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    logical_call_count: int = Field(ge=0)
+    failed_call_count: int = Field(ge=0)
+    unavailable_usage_call_count: int = Field(ge=0)
+    usage: InferenceUsage
+
+
+class FilteredInferenceUsage(BaseModel):
+    """Provider-free usage diagnostics for an explicit durable query."""
+
+    model_config: ClassVar[ConfigDict] = _FROZEN_CONFIG
+    run_id: str | None = None
+    since: AwareDatetime | None = None
+    stage: str | None = Field(default=None, pattern=r"^A[1-4]$")
+    logical_call_count: int = Field(ge=0)
+    failed_call_count: int = Field(ge=0)
+    unavailable_usage_call_count: int = Field(ge=0)
+    completed_unit_count: int = Field(ge=0)
+    input_tokens_per_completed_unit: float | None = Field(default=None, ge=0)
+    cache_read_fraction: float | None = Field(default=None, ge=0, le=1)
+    usage: InferenceUsage
+    breakdown: tuple[FilteredInferenceUsageBreakdown, ...]
+
+
 class IntelligenceWorkStatus(BaseModel):
     """Provider-free queue counts for incremental intelligence."""
 
@@ -367,6 +398,21 @@ class IntelligenceWorkCompletionCounts(BaseModel):
     discovery_units: int = Field(ge=0)
     research_jobs: int = Field(ge=0)
     synthesis_units: int = Field(ge=0)
+
+
+class DurableAdvanceMetric(BaseModel):
+    """Committed work transitions attributable to one bounded update run."""
+
+    model_config: ClassVar[ConfigDict] = _FROZEN_CONFIG
+    run_id: str
+    interpretation_chunks: int = Field(ge=0)
+    discovery_batches: int = Field(ge=0)
+    research_jobs_created: int = Field(ge=0)
+    research_wave_results: int = Field(ge=0)
+    research_checkpoints: int = Field(ge=0)
+    research_tasks_materialized: int = Field(ge=0)
+    synthesis_units: int = Field(ge=0)
+    total: int = Field(ge=0)
 
 
 class IntelligenceWorkRepository:
@@ -483,7 +529,7 @@ class IntelligenceWorkRepository:
 
     def interpretation_chunks_for_bundle(self, bundle_id: str) -> tuple[InterpretationChunkRecord, ...]:
         """Return every ordered checkpoint for one bundle."""
-        with self._database.transaction() as connection:
+        with self._database.read_only_transaction() as connection:
             rows = connection.execute(
                 "SELECT chunk_id FROM interpretation_bundle_chunks WHERE bundle_id = ? ORDER BY chunk_number",
                 (bundle_id,),
@@ -494,7 +540,7 @@ class IntelligenceWorkRepository:
         """Return the oldest fully checkpointed but unadmitted bundle."""
         params: tuple[object, ...] = () if source_id is None else (source_id,)
         source_clause = "" if source_id is None else "AND item.source_id = ?"
-        with self._database.transaction() as connection:
+        with self._database.read_only_transaction() as connection:
             row = connection.execute(
                 f"""SELECT bundle.bundle_id FROM interpretation_bundles AS bundle
                 JOIN source_items AS item ON item.source_item_id = bundle.source_item_id
@@ -510,23 +556,37 @@ class IntelligenceWorkRepository:
     def append_discovery_unit(self, unit: DiscoveryUnitRecord, origins: tuple[DiscoveryOriginRecord, ...]) -> None:
         """Create a compact discovery unit and its durable origins idempotently."""
         with self._database.transaction(TransactionMode.WRITE) as connection:
-            _insert_or_require(
-                connection,
-                "discovery_units",
-                "unit_id",
-                unit.unit_id,
-                {
-                    "unit_id": unit.unit_id,
-                    "unit_kind": unit.kind,
-                    "subject_id": unit.subject_id,
-                    "input_fingerprint": unit.input_fingerprint,
-                    "source_id": unit.source_id,
-                    "status": WorkStatus.PENDING,
-                    "created_at": _time(unit.created_at),
-                    "completed_at": None,
-                    "unit_json": _json(unit.payload),
-                },
+            immutable_values: dict[str, object] = {
+                "unit_id": unit.unit_id,
+                "unit_kind": unit.kind,
+                "subject_id": unit.subject_id,
+                "input_fingerprint": unit.input_fingerprint,
+                "source_id": unit.source_id,
+                "unit_json": _json(unit.payload),
+            }
+            _ = connection.execute(
+                """INSERT OR IGNORE INTO discovery_units
+                (unit_id, unit_kind, subject_id, input_fingerprint, source_id, status, created_at, completed_at,
+                    unit_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)""",
+                (
+                    unit.unit_id,
+                    unit.kind,
+                    unit.subject_id,
+                    unit.input_fingerprint,
+                    unit.source_id,
+                    WorkStatus.PENDING,
+                    _time(unit.created_at),
+                    _json(unit.payload),
+                ),
             )
+            row = connection.execute(
+                """SELECT unit_id, unit_kind, subject_id, input_fingerprint, source_id, unit_json
+                FROM discovery_units WHERE unit_id = ?""",
+                (unit.unit_id,),
+            ).fetchone()
+            if row is None or tuple(row) != tuple(immutable_values.values()):
+                raise ImmutableWorkCollisionError("discovery_units identity is already bound to different content.")
             for origin in origins:
                 _ = connection.execute(
                     """INSERT OR IGNORE INTO discovery_unit_origins (unit_id, origin_kind, origin_id)
@@ -577,7 +637,7 @@ class IntelligenceWorkRepository:
         """Return exact compact discovery inputs in caller order."""
         if not unit_ids:
             return ()
-        with self._database.transaction() as connection:
+        with self._database.read_only_transaction() as connection:
             rows = connection.execute(
                 """SELECT * FROM discovery_units
                 WHERE unit_id IN (SELECT value FROM json_each(?))""",
@@ -606,7 +666,7 @@ class IntelligenceWorkRepository:
 
     def discovery_unit(self, unit_id: str) -> DiscoveryUnitRecord | None:
         """Return one discovery unit when materialized."""
-        with self._database.transaction() as connection:
+        with self._database.read_only_transaction() as connection:
             exists = connection.execute(
                 "SELECT 1 FROM discovery_units WHERE unit_id = ?",
                 (unit_id,),
@@ -1554,7 +1614,7 @@ class IntelligenceWorkRepository:
                     "cache_read_tokens": None if usage is None else usage.cache_read_tokens,
                     "cache_write_tokens": None if usage is None else usage.cache_write_tokens,
                     "output_tokens": None if usage is None else usage.output_tokens,
-                    "request_count": None if usage is None else max(1, usage.request_count),
+                    "request_count": None if usage is None else usage.request_count,
                     "elapsed_milliseconds": record.elapsed_milliseconds,
                     "failure_kind": failure_kind,
                 },
@@ -1562,7 +1622,7 @@ class IntelligenceWorkRepository:
 
     def usage_for_run(self, run_id: str) -> RunInferenceUsage:
         """Return provider-reported token totals without reading prompts or providers."""
-        with self._database.transaction() as connection:
+        with self._database.read_only_transaction() as connection:
             row = connection.execute(
                 """SELECT count(*), sum(status = 'failed'), sum(usage_available = 0),
                 coalesce(sum(input_tokens), 0),
@@ -1609,6 +1669,101 @@ class IntelligenceWorkRepository:
             ),
         )
 
+    def filtered_usage(
+        self,
+        *,
+        run_id: str | None = None,
+        since: datetime | None = None,
+        stage: str | None = None,
+    ) -> FilteredInferenceUsage:
+        """Aggregate sanitized inference usage for explicit optional filters."""
+        if since is not None and since.tzinfo is None:
+            raise ValueError("usage boundary must be timezone-aware")
+        if stage is not None and stage not in {"A1", "A2", "A3", "A4"}:
+            raise ValueError("usage stage must be A1 through A4")
+        clauses: list[str] = []
+        params: list[object] = []
+        if run_id is not None:
+            clauses.append("run_id = ?")
+            params.append(run_id)
+        if since is not None:
+            clauses.append("started_at >= ?")
+            params.append(_time(since))
+        if stage is not None:
+            clauses.append("stage = ?")
+            params.append(stage)
+        where = "" if not clauses else "WHERE " + " AND ".join(clauses)
+        with self._database.read_only_transaction() as connection:
+            row = connection.execute(
+                f"""SELECT count(*), sum(status = 'failed'), sum(usage_available = 0),
+                coalesce(sum(input_tokens), 0), coalesce(sum(cache_write_tokens), 0),
+                coalesce(sum(cache_read_tokens), 0), coalesce(sum(output_tokens), 0),
+                coalesce(sum(request_count), 0) FROM inference_calls {where}""",  # noqa: S608 # nosec B608
+                tuple(params),
+            ).fetchone()
+            breakdown_rows = connection.execute(
+                f"""SELECT run_id, stage, purpose, model, count(*), sum(status = 'failed'),
+                sum(usage_available = 0), coalesce(sum(input_tokens), 0),
+                coalesce(sum(cache_write_tokens), 0), coalesce(sum(cache_read_tokens), 0),
+                coalesce(sum(output_tokens), 0), coalesce(sum(request_count), 0)
+                FROM inference_calls {where}
+                GROUP BY run_id, stage, purpose, model ORDER BY run_id, stage, purpose, model""",  # noqa: S608 # nosec B608
+                tuple(params),
+            ).fetchall()
+            selected_run_ids = tuple(
+                str(item[0])
+                for item in connection.execute(
+                    f"SELECT DISTINCT run_id FROM inference_calls {where} ORDER BY run_id",  # noqa: S608 # nosec B608
+                    tuple(params),
+                ).fetchall()
+            )
+            completed_units = _completed_units_for_usage(
+                connection,
+                selected_run_ids=selected_run_ids,
+                since=since,
+                stage=stage,
+            )
+        input_tokens = int(row[3])
+        cache_read_tokens = int(row[5])
+        cache_denominator = input_tokens
+        return FilteredInferenceUsage(
+            run_id=run_id,
+            since=since,
+            stage=stage,
+            logical_call_count=int(row[0]),
+            failed_call_count=int(row[1] or 0),
+            unavailable_usage_call_count=int(row[2] or 0),
+            completed_unit_count=completed_units,
+            input_tokens_per_completed_unit=(None if completed_units == 0 else input_tokens / completed_units),
+            cache_read_fraction=(None if cache_denominator == 0 else cache_read_tokens / cache_denominator),
+            usage=InferenceUsage(
+                input_tokens=input_tokens,
+                cache_write_tokens=int(row[4]),
+                cache_read_tokens=cache_read_tokens,
+                output_tokens=int(row[6]),
+                request_count=int(row[7]),
+            ),
+            breakdown=tuple(
+                FilteredInferenceUsageBreakdown(
+                    run_id=str(item[0]),
+                    stage=str(item[1]),
+                    purpose=str(item[2]),
+                    model=str(item[3]),
+                    logical_call_count=int(item[4]),
+                    failed_call_count=int(item[5] or 0),
+                    unavailable_usage_call_count=int(item[6] or 0),
+                    usage=InferenceUsage(
+                        input_tokens=int(item[7]),
+                        cache_write_tokens=int(item[8]),
+                        cache_read_tokens=int(item[9]),
+                        output_tokens=int(item[10]),
+                        request_count=int(item[11]),
+                    ),
+                )
+                for item in breakdown_rows
+            ),
+        )
+
     def status(
         self,
         source_id: str | None = None,
@@ -1617,7 +1772,7 @@ class IntelligenceWorkRepository:
     ) -> IntelligenceWorkStatus:
         """Return provider-free pending and active work counts."""
         boundary = as_of or datetime.now(tz=timezone.utc)
-        with self._database.transaction() as connection:
+        with self._database.read_only_transaction() as connection:
             bundles = _count_interpretation_bundles(connection, source_id)
             interpretation = _count_interpretation(connection, source_id)
             discovery = _count_discovery(connection, source_id)
@@ -1690,6 +1845,36 @@ class IntelligenceWorkRepository:
             synthesis_units=synthesis_units,
         )
 
+    def durable_advance_for_run(self, run_id: str) -> DurableAdvanceMetric:
+        """Count committed transitions, including nonterminal A3 progress."""
+        with self._database.read_only_transaction() as connection:
+            interpretation = _count_scalar(connection, "interpretation_bundle_chunks", "claimed_run_id", run_id)
+            discovery = _count_scalar(connection, "discovery_batches", "run_id", run_id)
+            jobs = _count_scalar(connection, "research_jobs", "claimed_run_id", run_id)
+            waves = _count_scalar(connection, "research_wave_results", "run_id", run_id)
+            checkpoints = _count_scalar(connection, "research_job_checkpoints", "run_id", run_id)
+            tasks = int(
+                connection.execute(
+                    """SELECT count(*) FROM planned_research_tasks AS task
+                JOIN research_sessions AS session ON session.session_id = task.materialized_session_id
+                WHERE session.run_id = ? AND task.status IN ('materialized', 'completed')""",
+                    (run_id,),
+                ).fetchone()[0]
+            )
+            synthesis = _count_scalar(connection, "synthesis_units", "claimed_run_id", run_id)
+        values = (interpretation, discovery, jobs, waves, checkpoints, tasks, synthesis)
+        return DurableAdvanceMetric(
+            run_id=run_id,
+            interpretation_chunks=interpretation,
+            discovery_batches=discovery,
+            research_jobs_created=jobs,
+            research_wave_results=waves,
+            research_checkpoints=checkpoints,
+            research_tasks_materialized=tasks,
+            synthesis_units=synthesis,
+            total=sum(values),
+        )
+
     def has_interpretation_bundle(
         self,
         *,
@@ -1698,7 +1883,7 @@ class IntelligenceWorkRepository:
         interpreter_version: str,
     ) -> bool:
         """Return whether one evidence bundle is already materialized."""
-        with self._database.transaction() as connection:
+        with self._database.read_only_transaction() as connection:
             row = connection.execute(
                 """SELECT 1 FROM interpretation_bundles
                 WHERE source_item_id = ? AND content_version = ? AND interpreter_version = ?
@@ -1711,7 +1896,7 @@ class IntelligenceWorkRepository:
         """Count projected discovery identities absent from the durable ledger."""
         if not unit_ids:
             return 0
-        with self._database.transaction() as connection:
+        with self._database.read_only_transaction() as connection:
             present = sum(
                 int(
                     connection.execute(
@@ -1740,6 +1925,58 @@ def _insert_or_require(
     ).fetchone()
     if row is None or tuple(row) != tuple(values[column] for column in columns):
         raise ImmutableWorkCollisionError(f"{table} identity is already bound to different content.")
+
+
+def _count_scalar(connection: sqlite3.Connection, table: str, run_column: str, run_id: str) -> int:
+    allowed = {
+        ("interpretation_bundle_chunks", "claimed_run_id"),
+        ("discovery_batches", "run_id"),
+        ("research_jobs", "claimed_run_id"),
+        ("research_wave_results", "run_id"),
+        ("research_job_checkpoints", "run_id"),
+        ("synthesis_units", "claimed_run_id"),
+    }
+    if (table, run_column) not in allowed:
+        raise ValueError("unsupported durable advance relation")
+    row = connection.execute(
+        f"SELECT count(*) FROM {table} WHERE {run_column} = ?",  # noqa: S608 # nosec B608
+        (run_id,),
+    ).fetchone()
+    return int(row[0])
+
+
+def _completed_units_for_usage(
+    connection: sqlite3.Connection,
+    *,
+    selected_run_ids: tuple[str, ...],
+    since: datetime | None,
+    stage: str | None,
+) -> int:
+    if not selected_run_ids:
+        return 0
+    stage_queries = {
+        "A1": ("interpretation_bundle_chunks", "claimed_run_id", "completed_at"),
+        "A2": ("discovery_batches", "run_id", "completed_at"),
+        "A3": ("research_job_checkpoints", "run_id", "recorded_at"),
+        "A4": ("synthesis_units", "claimed_run_id", "completed_at"),
+    }
+    selected = stage_queries.items() if stage is None else ((stage, stage_queries[stage]),)
+    total = 0
+    for _, (table, run_column, time_column) in selected:
+        clauses = [
+            f"{time_column} IS NOT NULL",
+            f"{run_column} IN (SELECT value FROM json_each(?))",  # noqa: S608 # nosec B608
+        ]
+        params: list[object] = [_json(selected_run_ids)]
+        if since is not None:
+            clauses.append(f"{time_column} >= ?")
+            params.append(_time(since))
+        row = connection.execute(
+            f"SELECT count(*) FROM {table} WHERE {' AND '.join(clauses)}",  # noqa: S608 # nosec B608
+            tuple(params),
+        ).fetchone()
+        total += int(row[0])
+    return total
 
 
 def _require_exact_ids(

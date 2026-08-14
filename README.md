@@ -22,10 +22,10 @@ Existing caches are not imported or read. In particular, `data/daily_show/` rema
 ## CLI
 
 ```text
-money-pit source list|sync|backfill|ingest
-money-pit intelligence update [--source ID] [--through interpretation|discovery|research|synthesis]
+money-pit source list|check|status|sync|backfill|ingest
+money-pit intelligence update [--source ID] [--through interpretation|discovery|research|synthesis] [--iterations N]
 money-pit intelligence status [--source ID]
-money-pit intelligence show RUN_ID
+money-pit intelligence runs|show|usage
 money-pit intelligence promote-claim CANONICAL_KEY --reason "operator rationale"
 money-pit research list|show
 money-pit claims list|show|refresh
@@ -34,9 +34,12 @@ money-pit portfolio snapshot|review
 money-pit plan show|approve|reject|execute
 money-pit execution status|disable|enable
 money-pit replay RUN_ID
+money-pit doctor
 ```
 
-Each intelligence update advances a bounded batch of durable work. Completed work remains complete if a later stage fails. `intelligence status` and `intelligence show` inspect durable state without constructing model or research providers.
+Run `money-pit` with no command to show help. Put global `--json` or `--debug` before the command. JSON mode writes one value to stdout and sends progress to stderr.
+
+Each intelligence iteration is a separate durable run. `--iterations N` stops early when a run commits no durable lifecycle transition. Read-only intelligence inspection does not construct providers.
 
 Portfolio review runs only portfolio planning. It does not rerun intelligence stages. Execution enablement requires an actor, reason, policy version, and explicit confirmation. Replay never constructs a broker-write client.
 

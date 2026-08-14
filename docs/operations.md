@@ -6,9 +6,13 @@ Database initialization is fail-closed. An unknown non-empty schema is an operat
 
 Synchronize sources before running `money-pit intelligence update`. Each update advances one bounded batch. Use `money-pit intelligence status` to decide whether another update is necessary. Do not schedule concurrent updates against the same data root. Status and run inspection make no provider calls and need no credentials.
 
+Run commands from the project root. Relative configuration paths resolve there, and durable state is under `./data`. `money-pit doctor` inspects schema identity in read-only mode.
+
 Before a credential-dependent operation, run `secretspec check --scope SCOPE --reason "REASON"`. Use `inference`, `youtube_discovery`, `imap`, `brave`, `edgar`, `fred`, `portfolio_paper`, `portfolio_live`, `execution_paper`, or `execution_live`. Supply every credential in the requested scope. Credentials in scopes that the operation does not request are not prerequisites. Direct YouTube URL ingestion does not request `youtube_discovery`; its media processing requests `inference` only when frame interpretation needs it. Do not pass credential values on command lines or store them in configuration files.
 
 Before execution, inspect the exact plan hash, expiry, trades, rejected candidates, evidence gates, and constraint results. Approval covers only that hash. A changed plan requires a new approval.
+
+Human portfolio output masks account IDs and shows the broker environment. JSON output contains the complete typed record.
 
 Disable execution immediately when positions, cash, open orders, fills, evidence freshness, market drift, tax state, or policy cannot be reconciled. Do not re-enable until the cause is understood and the policy version is explicit.
 

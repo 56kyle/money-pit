@@ -3,6 +3,7 @@ from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 from typing import cast
 
 import pytest
@@ -16,6 +17,10 @@ from money_pit.schemas.evidence import EvidenceFragment
 from money_pit.schemas.evidence import EvidenceProcessingAttempt
 from money_pit.schemas.evidence import EvidenceProcessingStatus
 from money_pit.schemas.evidence import TextLocator
+from money_pit.schemas.runs import RunFailureDetail
+from money_pit.schemas.runs import RunRecord
+from money_pit.schemas.runs import RunTerminalEvent
+from money_pit.schemas.runs import RunTerminalStatus
 from money_pit.schemas.sources import AllowedUse
 from money_pit.schemas.sources import SourceDefinition
 from money_pit.schemas.sources import SourceItem
@@ -25,7 +30,12 @@ from money_pit.schemas.sources import TrustLevel
 from money_pit.sources.service import EvidenceRepository
 from money_pit.storage.database import Database
 from money_pit.storage.database import TransactionMode
+from money_pit.storage.runs import RunRepository
 from money_pit.storage.sources import SourceRepository
+
+
+if TYPE_CHECKING:
+    import sqlite3
 
 
 NOW = datetime(2026, 8, 9, 12, tzinfo=UTC)
@@ -194,6 +204,83 @@ def test_begin_interpretation_preserves_the_selected_content_version_for_a_reuse
         )
     assert row is not None
     assert tuple(row) == ("source:item", "version-2", ASSET_ID)
+
+
+def test_begin_interpretation_replaces_pending_attempt_owned_by_failed_run(
+    evidence_work_scenario: _EvidenceWorkScenario,
+) -> None:
+    item = evidence_work_scenario.persist_acquisition("version-recovered")
+    evidence_work_scenario.persist_processing_attempt(item, EvidenceProcessingStatus.SUCCEEDED)
+    work = evidence_work_scenario.work_store.list_pending_documents(
+        as_of=NOW + timedelta(minutes=1),
+        source_id="source",
+        limit=1,
+        interpreter_version="interpreter-recovered",
+    )[0]
+    failed_run_id = "4fa85f64-5717-4562-b3fc-2c963f66afa6"
+    first_attempt_id = evidence_work_scenario.work_store.begin_interpretation(
+        work,
+        run_id=failed_run_id,
+        interpreter_version="interpreter-recovered",
+        started_at=NOW + timedelta(minutes=1),
+    )
+    runs = RunRepository(evidence_work_scenario.database)
+    failed_run = RunRecord(
+        run_id=failed_run_id,
+        requested_as_of=NOW,
+        started_at=NOW,
+        known_at=NOW,
+        through_stage="A1",
+        source_config_hash="a" * 64,
+    )
+    with evidence_work_scenario.database.transaction(TransactionMode.WRITE) as connection:
+        _ = connection.execute(
+            "UPDATE runs SET manifest_json = ? WHERE run_id = ?",
+            (failed_run.model_dump_json(), failed_run_id),
+        )
+    runs.append_terminal_event(
+        RunTerminalEvent(
+            run_id=failed_run_id,
+            status=RunTerminalStatus.FAILED,
+            completed_at=NOW + timedelta(minutes=2),
+            known_at=NOW + timedelta(minutes=2),
+            failure_kind="ArtifactValidationError",
+            failure_detail=RunFailureDetail(retryable=False),
+        )
+    )
+    recovery_run_id = "d9428888-122b-4df8-b24f-f10e8a9bd799"
+    runs.append_run(
+        RunRecord(
+            run_id=recovery_run_id,
+            requested_as_of=NOW + timedelta(minutes=3),
+            started_at=NOW + timedelta(minutes=3),
+            known_at=NOW + timedelta(minutes=3),
+            through_stage="A1",
+            source_config_hash="a" * 64,
+        )
+    )
+
+    replacement_attempt_id = evidence_work_scenario.work_store.begin_interpretation(
+        work,
+        run_id=recovery_run_id,
+        interpreter_version="interpreter-recovered",
+        started_at=NOW + timedelta(minutes=3),
+    )
+
+    with evidence_work_scenario.database.read_only_transaction() as connection:
+        rows = cast(
+            "list[sqlite3.Row]",
+            connection.execute(
+                """SELECT attempt_id, run_id, outcome, failure_kind
+                FROM claim_interpretation_attempts WHERE interpreter_version = 'interpreter-recovered'
+                ORDER BY started_at"""
+            ).fetchall(),
+        )
+    records = tuple(cast("tuple[str, str, str, str | None]", tuple(row)) for row in rows)
+    assert records == (
+        (first_attempt_id, failed_run_id, "failed", "OwningRunFailed"),
+        (replacement_attempt_id, recovery_run_id, "pending", None),
+    )
 
 
 def test_list_pending_documents_requires_succeeded_processing_for_the_exact_acquisition(

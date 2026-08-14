@@ -1,15 +1,14 @@
 """Module building the capability-free adversarial A4 synthesis agent."""
 
-from pydantic import ValidationError
 from pydantic_ai import Agent
-from pydantic_ai import AgentRunResult
+from pydantic_ai import NativeOutput
 
 from money_pit.agents.budget import BoundedInferenceAgent
 from money_pit.agents.budget import InferenceBudgetLimits
 from money_pit.agents.inference import InferenceTracking
-from money_pit.agents.inference import InferenceUsage
-from money_pit.agents.inference import ProviderInferenceError
-from money_pit.agents.models import openai_chat_model
+from money_pit.agents.inference import invoke_native_output
+from money_pit.agents.models import openai_responses_model
+from money_pit.agents.models import openai_responses_settings
 from money_pit.contracts import SynthesisAgent
 from money_pit.contracts import SynthesisDraft
 from money_pit.contracts import SynthesisRequest
@@ -27,9 +26,20 @@ def make_synthesis_agent(
     """Return typed A4 synthesis with no source, search, portfolio-write, or broker tools."""
     model_name = model
     prompt = system_prompt("synthesis")
-    core: Agent[None, str] = Agent(model=openai_chat_model(credentials, model_name=model_name), output_type=str)
+    core: Agent[None, SynthesisDraft] = Agent(
+        model=openai_responses_model(credentials, model_name=model_name),
+        instructions=prompt,
+        output_type=NativeOutput(SynthesisDraft, strict=True),
+        model_settings=openai_responses_settings(
+            stage="A4",
+            model_name=model_name,
+            instructions=prompt,
+            output_type=SynthesisDraft,
+        ),
+        retries=1,
+    )
     return BoundedInferenceAgent[SynthesisRequest, SynthesisDraft].create(
-        invoke=lambda message: _validated_synthesis(core.run_sync(message)),
+        invoke=lambda message: invoke_native_output(core, message),
         system_prompt=prompt,
         output_type=SynthesisDraft,
         model_name=model_name,
@@ -38,12 +48,3 @@ def make_synthesis_agent(
         purpose="synthesize_theses",
         tracking=tracking,
     )
-
-
-def _validated_synthesis(result: AgentRunResult[str]) -> tuple[SynthesisDraft, InferenceUsage]:
-    """Validate a provider result while preserving its reported usage."""
-    usage = InferenceUsage.from_pydantic_ai(result.usage)
-    try:
-        return SynthesisDraft.model_validate_json(result.output), usage
-    except ValidationError as error:
-        raise ProviderInferenceError(usage=usage, failure_kind=type(error).__name__) from None

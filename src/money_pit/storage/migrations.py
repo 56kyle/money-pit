@@ -111,6 +111,11 @@ def _expected_predecessor_schema_fingerprint() -> str:
     return _baseline_fingerprint(_load_predecessor_baseline_sql(), release=_PREDECESSOR_RELEASE)
 
 
+def expected_predecessor_schema_fingerprint() -> str:
+    """Return the catalog digest of the exact migratable predecessor."""
+    return _expected_predecessor_schema_fingerprint()
+
+
 def is_logically_empty(connection: sqlite3.Connection) -> bool:
     """Return whether the database has no application schema objects."""
     return not _catalog_rows(connection)

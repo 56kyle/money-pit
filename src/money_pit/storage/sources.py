@@ -8,7 +8,12 @@ import json
 from datetime import datetime
 from datetime import timezone
 from typing import TYPE_CHECKING
+from typing import ClassVar
 from typing import cast
+
+from pydantic import AwareDatetime
+from pydantic import BaseModel
+from pydantic import ConfigDict
 
 from money_pit.schemas.sources import SourceCursor
 from money_pit.schemas.sources import SourceCursorPurpose
@@ -25,6 +30,16 @@ if TYPE_CHECKING:
 
 class SourceItemCollisionError(StorageError):
     """Raised when a source-item identity is reused for different content."""
+
+
+class SourceCursorStatus(BaseModel):
+    """Durable cursor state without inferred source health."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+    source_id: str
+    purpose: SourceCursorPurpose
+    cursor: SourceCursor
+    updated_at: AwareDatetime
 
 
 class SourceRepository:
@@ -116,6 +131,33 @@ class SourceRepository:
             return SourceCursor.model_validate_json(str(row["cursor_json"]))
         except ValueError as error:
             raise StorageError("Stored source cursor is malformed.") from error
+
+    def cursor_statuses(self, source_id: str | None = None) -> tuple[SourceCursorStatus, ...]:
+        """Return persisted cursor values and timestamps through a strict read-only handle."""
+        with self._database.read_only_transaction() as connection:
+            if source_id is None:
+                rows = connection.execute(
+                    """SELECT source_id, cursor_purpose, cursor_json, updated_at
+                    FROM source_cursors ORDER BY source_id, cursor_purpose"""
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """SELECT source_id, cursor_purpose, cursor_json, updated_at
+                    FROM source_cursors WHERE source_id = ? ORDER BY cursor_purpose""",
+                    (source_id,),
+                ).fetchall()
+        try:
+            return tuple(
+                SourceCursorStatus(
+                    source_id=str(row["source_id"]),
+                    purpose=SourceCursorPurpose(str(row["cursor_purpose"])),
+                    cursor=SourceCursor.model_validate_json(str(row["cursor_json"])),
+                    updated_at=datetime.fromisoformat(str(row["updated_at"])),
+                )
+                for row in rows
+            )
+        except ValueError as error:
+            raise StorageError("Stored source cursor status is malformed.") from error
 
     def persist_discovery(
         self,

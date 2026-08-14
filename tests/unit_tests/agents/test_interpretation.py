@@ -1,11 +1,10 @@
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
-from types import SimpleNamespace
 
 import pytest
 from pydantic import SecretStr
-from pydantic import ValidationError
+from pydantic_ai.usage import RunUsage
 
 from money_pit.agents import interpretation as interpretation_module
 from money_pit.agents.inference import InferenceInvocationError
@@ -68,29 +67,31 @@ def _field_description(field_name: str) -> str:
 
 def _agent_with_outputs(
     monkeypatch: pytest.MonkeyPatch,
-    outputs: list[str | ValidationError],
+    outputs: list[str],
 ) -> tuple[InterpretationAgent, list[str]]:
     rendered_requests: list[str] = []
 
     class CoreAgent:
-        def run_sync(self, message: str) -> SimpleNamespace:
-            rendered_requests.append(message)
-            output = outputs.pop(0)
-            if isinstance(output, ValidationError):
-                raise output
-            return SimpleNamespace(
-                output=output,
-                usage=SimpleNamespace(
-                    input_tokens=10,
-                    cache_write_tokens=2,
-                    cache_read_tokens=3,
-                    output_tokens=4,
-                    requests=1,
-                ),
-            )
+        def run_sync(self, message: str, *, usage: RunUsage) -> object:
+            for attempt in range(2):
+                rendered_requests.append(message)
+                output = outputs.pop(0)
+                usage.requests += 1
+                usage.input_tokens += 10
+                usage.cache_write_tokens += 2
+                usage.cache_read_tokens += 3
+                usage.output_tokens += 4
+                try:
+                    parsed = InterpretationDraft.model_validate_json(output)
+                except ValueError:
+                    if attempt == 0:
+                        continue
+                    raise
+                return type("Result", (), {"output": parsed})()
+            raise AssertionError("unreachable")
 
-    def construct_agent(*, model: object, output_type: object) -> CoreAgent:
-        del model, output_type
+    def construct_agent(**kwargs: object) -> CoreAgent:
+        del kwargs
         return CoreAgent()
 
     def construct_model(
@@ -102,7 +103,7 @@ def _agent_with_outputs(
         return object()
 
     monkeypatch.setattr(interpretation_module, "Agent", construct_agent)
-    monkeypatch.setattr(interpretation_module, "openai_chat_model", construct_model)
+    monkeypatch.setattr(interpretation_module, "openai_responses_model", construct_model)
     agent = interpretation_module.make_interpretation_agent(
         OpenAICredentials(api_key=SecretStr("test-key")),
         model="test-model",
@@ -189,17 +190,3 @@ def test_make_interpretation_agent_propagates_second_validation_error(
         _ = agent(_request())
 
     assert (captured.value.failure_kind, len(rendered_requests)) == ("ValidationError", 2)
-
-
-def test_make_interpretation_agent_does_not_retry_core_validation_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    with pytest.raises(ValidationError) as captured:
-        _ = InterpretationDraft.model_validate_json(_NAIVE_OUTPUT)
-    core_error = captured.value
-    agent, rendered_requests = _agent_with_outputs(monkeypatch, [core_error, _VALID_OUTPUT])
-
-    with pytest.raises(InferenceInvocationError) as propagated:
-        _ = agent(_request())
-
-    assert (propagated.value.failure_kind, len(rendered_requests)) == ("ValidationError", 1)

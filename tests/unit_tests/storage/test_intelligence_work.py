@@ -1,3 +1,4 @@
+import hashlib
 import json
 from dataclasses import replace
 from datetime import UTC
@@ -17,11 +18,13 @@ from money_pit.composition import _reconcile_universe_discovery_units  # pyright
 from money_pit.composition import intelligence_work_status
 from money_pit.config import ConfigurationScope
 from money_pit.config import load_application_config
+from money_pit.contracts import ResearchRoundExecution
 from money_pit.pipeline.research import _recover_wave_checkpoint  # pyright: ignore[reportPrivateUsage]
 from money_pit.portfolio.repository import SnapshotRepository
 from money_pit.portfolio.snapshots import PortfolioStatePayload
 from money_pit.portfolio.snapshots import PortfolioStatePosition
 from money_pit.portfolio.snapshots import PortfolioStateSnapshot
+from money_pit.research.memory import PlannedResearchTaskStore
 from money_pit.storage.database import Database
 from money_pit.storage.database import TransactionMode
 from money_pit.storage.intelligence_work import DiscoveryUnitKind
@@ -30,6 +33,7 @@ from money_pit.storage.intelligence_work import IncrementalResearchAdmissionReco
 from money_pit.storage.intelligence_work import IntelligenceWorkRepository
 from money_pit.storage.intelligence_work import InterpretationBundleRecord
 from money_pit.storage.intelligence_work import InterpretationChunkSpec
+from money_pit.storage.intelligence_work import ProviderResearchWaveRecord
 from money_pit.storage.intelligence_work import ResearchCheckpointRecord
 from money_pit.storage.intelligence_work import ResearchJobRecord
 from money_pit.storage.intelligence_work import ResearchUriAdmissionRecord
@@ -345,6 +349,41 @@ def test__recover_wave_checkpoint_reconciles_durable_outbox_without_replaying_pr
         checkpoint.accepted_fetch_count,
         repository.uncheckpointed_wave("job-1"),
     ) == ("run-1", 1, 2, 3, None)
+
+
+def test_append_wave_result_completes_provider_wave_reclaimed_by_a_later_run(
+    database: Database,
+    repository: IntelligenceWorkRepository,
+) -> None:
+    repository.ensure_research_job(_research_job(1))
+    _seed_research_session(database)
+    wave_result_id = hashlib.sha256(("job-1\0" + "1").encode()).hexdigest()
+    repository.record_provider_wave_result(
+        ProviderResearchWaveRecord(
+            wave_result_id=wave_result_id,
+            job_id="job-1",
+            session_id="session-1",
+            run_id="run-1",
+            wave_number=1,
+            recorded_at=_NOW,
+            provider_result={"task_count": 0},
+            search_count_delta=0,
+            accepted_fetch_count_delta=0,
+        )
+    )
+
+    PlannedResearchTaskStore(database).append_wave_result(
+        job_id="job-1",
+        session_id="session-1",
+        run_id="run-2",
+        wave_number=1,
+        recorded_at=_NOW + timedelta(minutes=1),
+        execution=ResearchRoundExecution(task_count=0, query_count=0, fetch_count=0),
+    )
+
+    completed = repository.uncheckpointed_wave("job-1")
+    assert completed is not None
+    assert (completed.run_id, completed.wave_number) == ("run-1", 1)
 
 
 def test_admit_incremental_research_preserves_prior_run_child_ownership(
@@ -991,7 +1030,7 @@ def test__reconcile_universe_discovery_units_queues_each_instrument_once_per_str
         *config.intelligence.explicit_proxies.values(),
     }
     _reconcile_universe_discovery_units(config, work=repository, created_at=_NOW)
-    _reconcile_universe_discovery_units(config, work=repository, created_at=_NOW)
+    _reconcile_universe_discovery_units(config, work=repository, created_at=_NOW + timedelta(minutes=1))
     revised = replace(
         config,
         intelligence=config.intelligence.model_copy(update={"version": f"{config.intelligence.version}-revised"}),

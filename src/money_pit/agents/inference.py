@@ -15,11 +15,13 @@ from typing import Literal
 from typing import Protocol
 from typing import TypeVar
 
+from pydantic_ai.usage import RunUsage
+
 
 if TYPE_CHECKING:
     from collections.abc import Generator
 
-    from pydantic_ai.usage import RunUsage
+    from pydantic_ai import Agent
 
 
 OutputT = TypeVar("OutputT")
@@ -145,6 +147,36 @@ class ProviderInferenceError(Exception):
         self.usage: InferenceUsage = usage
         self.failure_kind: str = failure_kind
         super().__init__("Inference provider output could not be accepted")
+
+
+def invoke_native_output(
+    agent: Agent[None, OutputT],
+    message: str,
+) -> tuple[OutputT, InferenceUsage]:
+    """Run typed native output while retaining all SDK-reported retry usage."""
+    usage = RunUsage()
+    try:
+        result = agent.run_sync(message, usage=usage)
+    except Exception as error:
+        if _usage_is_available(usage):
+            raise ProviderInferenceError(
+                usage=InferenceUsage.from_pydantic_ai(usage),
+                failure_kind=type(error).__name__,
+            ) from error
+        raise
+    return result.output, InferenceUsage.from_pydantic_ai(usage)
+
+
+def _usage_is_available(usage: RunUsage) -> bool:
+    """Return whether the SDK exposed accounting for at least one provider request."""
+    return usage.requests > 0 or any(
+        (
+            usage.input_tokens,
+            usage.cache_write_tokens,
+            usage.cache_read_tokens,
+            usage.output_tokens,
+        )
+    )
 
 
 class InferenceInvocationError(Exception):

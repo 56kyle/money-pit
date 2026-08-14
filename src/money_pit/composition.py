@@ -169,6 +169,7 @@ def execute_intelligence_update(
         intelligence_config_hash=(None if pipeline_through is Stage.A1 else canonical_config_hash(config.intelligence)),
         portfolio_config_hash=None,
         execution_config_hash=None,
+        manifest={"workflow": "intelligence_update", "source_id": source_id},
     )
     runtime = build_application_runtime(
         database=database,
@@ -426,7 +427,7 @@ def _holding_discovery_units(
 ) -> tuple[tuple[DiscoveryUnitRecord, tuple[DiscoveryOriginRecord, ...]], ...]:
     """Project stable holding-membership work from the latest matching snapshot."""
     strategy = config.require_strategy()
-    with database.transaction() as connection:
+    with database.read_only_transaction() as connection:
         rows = cast(
             "list[sqlite3.Row]",
             connection.execute(
@@ -580,6 +581,7 @@ def build_application_runtime(
         admission=admission,
         agent=interpretation_agent,
         implementation_version=interpretation_version,
+        tracking=dependencies.inference_tracking,
         clock=dependencies.clock,
     )
     providers = dependencies.research_providers

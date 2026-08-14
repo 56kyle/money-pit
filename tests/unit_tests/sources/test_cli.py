@@ -53,7 +53,7 @@ def test_ingest_command_passes_the_source_and_url_to_direct_ingestion(monkeypatc
 
     result = CliRunner().invoke(source_app, ["ingest", "youtube", url])
 
-    assert (result.exit_code, service.calls, '"source_item_id": "youtube:dQw4w9WgXcQ"' in result.stdout) == (
+    assert (result.exit_code, service.calls, "source item id: youtube:dQw4w9WgXcQ" in result.stdout) == (
         0,
         [("youtube", url, False)],
         True,

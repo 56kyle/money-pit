@@ -30,9 +30,13 @@ money-pit plan approve PLAN_ID --actor OPERATOR
 money-pit plan execute PLAN_ID
 ```
 
+Run `money-pit source check` before the first sync. It parses the registry without providers, credentials, or database changes. `source list` is also read-only. Use `source status SOURCE_ID` to inspect cursors.
+
+Global options precede the command. `money-pit --json intelligence status` writes one JSON value to stdout. Progress remains on stderr. Add `--debug` to include a traceback on stderr.
+
 YouTube sync and backfill use the `youtube_discovery` credential scope. Direct ingestion accepts one canonical `https://www.youtube.com/watch?v=VIDEO_ID` or `https://youtu.be/VIDEO_ID` URL and does not require a YouTube Data API key. It retains the configured source's provenance and trust policy and does not read or update sync or backfill cursors.
 
-An update processes a bounded batch and can finish with queued work remaining. Run another update to continue. Use `--through interpretation`, `--through discovery`, `--through research`, or `--through synthesis` to select the last intelligence stage. Synthesis is the default.
+An update processes a bounded batch and can finish with queued work remaining. `--iterations N` requests up to `N` separately durable runs. It stops early only after zero durable lifecycle transitions. Use `--through interpretation`, `--through discovery`, `--through research`, or `--through synthesis` to select the last stage.
 
 A source-specific update processes work caused by that source. An update without `--source` advances the global queue fairly. Research evidence verifies its assigned candidate and does not automatically become new discovery input.
 
@@ -43,5 +47,7 @@ A source-specific update processes work caused by that source. An update without
 Use `money-pit execution disable --actor OPERATOR --reason REASON` as the kill switch. Re-enabling requires the actor, reason, exact policy version, and `--confirmed`.
 
 Use `money-pit replay RUN_ID` for historical reconstruction. Replay is read-only and cannot run A6.
+
+Use `money-pit doctor` to inspect local configuration and database schema identity. Doctor does not resolve secrets, construct providers, create storage, or migrate storage.
 
 Schedulers should synchronize each source and then invoke one bounded intelligence update. A scheduler can repeat updates while status reports queued work, but one invocation must not drain the complete global backlog.

@@ -8,12 +8,16 @@ from typing_extensions import override
 from money_pit.agents.inference import InferenceResult
 from money_pit.agents.inference import InferenceUsage
 from money_pit.contracts import ClaimObservationDraft
+from money_pit.contracts import EvidencePromptRecord
 from money_pit.contracts import InterpretationDraft
 from money_pit.contracts import InterpretationRequest
+from money_pit.evidence.aliases import AliasedEvidence
+from money_pit.evidence.aliases import EvidenceAliasProjection
 from money_pit.evidence.work import EvidenceInterpretationWork
 from money_pit.evidence.work import ReusableInterpretation
 from money_pit.pipeline.interpretation import interpret_document
 from money_pit.pipeline.interpretation import make_interpretation_node
+from money_pit.pipeline.interpretation import materialize_observation
 from money_pit.schemas.claims import ClaimCategory
 from money_pit.schemas.claims import ClaimKind
 from money_pit.schemas.claims import HorizonClass
@@ -31,6 +35,7 @@ from money_pit.storage.intelligence_work import IntelligenceWorkRepository
 from money_pit.storage.intelligence_work import InterpretationBundleRecord
 from money_pit.storage.intelligence_work import InterpretationChunkRecord
 from money_pit.storage.intelligence_work import InterpretationChunkSpec
+from money_pit.storage.intelligence_work import WorkStatus
 
 
 class _EvidenceMemory:
@@ -137,6 +142,20 @@ class _AdmissionMemory(IntelligenceAdmissionRepository):
         self.records.append((admissions, artifact))
 
 
+class _CompletedBundleEvidenceMemory(_EvidenceMemory):
+    @override
+    def list_pending_documents(
+        self,
+        *,
+        as_of: datetime,
+        source_id: str | None,
+        limit: int,
+        interpreter_version: str,
+    ) -> tuple[EvidenceInterpretationWork, ...]:
+        del as_of, source_id, limit, interpreter_version
+        return ()
+
+
 class _BundleWorkMemory:
     def __init__(self) -> None:
         self.bundle: InterpretationBundleRecord | None = None
@@ -155,6 +174,29 @@ class _BundleWorkMemory:
 
     def ready_interpretation_bundle(self, source_id: str | None) -> str | None:
         del source_id
+        return None
+
+
+class _CompletedBundleWorkMemory:
+    def __init__(self, chunk: InterpretationChunkRecord) -> None:
+        self.chunk: InterpretationChunkRecord = chunk
+
+    def claim_interpretation_chunk(self, **_kwargs: object) -> None:
+        return None
+
+    def ready_interpretation_bundle(self, source_id: str | None) -> str:
+        del source_id
+        return self.chunk.bundle_id
+
+    def interpretation_chunks_for_bundle(self, bundle_id: str) -> tuple[InterpretationChunkRecord, ...]:
+        assert bundle_id == self.chunk.bundle_id
+        return (self.chunk,)
+
+    def source_id_for_bundle(self, bundle_id: str) -> str:
+        assert bundle_id == self.chunk.bundle_id
+        return "manual"
+
+    def append_discovery_unit(self, *_args: object) -> None:
         return None
 
 
@@ -396,3 +438,110 @@ def test_make_interpretation_node_bundles_complete_source_version_beyond_documen
         for fragment_id in fragment_ids
     }
     assert fragment_ids == {"fragment-1", "fragment-2", "fragment-3"}
+
+
+def test_make_interpretation_node_binds_cross_asset_observation_once(tmp_path: Path) -> None:
+    as_of = datetime(2026, 8, 1, tzinfo=UTC)
+    asset_ids = ("a" * 64, "b" * 64)
+    fragment_ids = tuple(f"{asset_id}:fragment" for asset_id in asset_ids)
+    works = tuple(
+        EvidenceInterpretationWork(
+            content_version="version-1",
+            document=EvidenceDocument(
+                asset=EvidenceAsset(
+                    asset_id=asset_id,
+                    content_hash=asset_id,
+                    media_type="text/plain",
+                    source_item_id="video:item",
+                    local_path=Path(asset_id[:2]) / asset_id,
+                    retrieved_at=as_of,
+                ),
+                fragments=(
+                    EvidenceFragment(
+                        fragment_id=fragment_id,
+                        asset_id=asset_id,
+                        kind="web_span",
+                        locator=TextLocator(start_offset=0, end_offset=8),
+                        extracted_text="evidence",
+                        extraction_method="test",
+                    ),
+                ),
+            ),
+        )
+        for asset_id, fragment_id in zip(asset_ids, fragment_ids, strict=True)
+    )
+    evidence = _CompletedBundleEvidenceMemory(works)
+    request = InterpretationRequest(
+        source_item_id="video:item",
+        evidence=tuple(
+            EvidencePromptRecord(alias=f"E{index:06d}", kind="web_span", text="evidence", core=True)
+            for index in range(1, 3)
+        ),
+        requested_as_of=as_of,
+        context_known_at=as_of,
+    )
+    draft = ClaimObservationDraft(
+        claim_text="The transcript and frame support the same claim.",
+        claim_kind=ClaimKind.FACTUAL,
+        category=ClaimCategory.MARKET,
+        evidence_aliases=("E000001", "E000002"),
+        asserted_at=as_of,
+        horizon_class=HorizonClass.TACTICAL,
+    )
+    projection = EvidenceAliasProjection(
+        evidence=tuple(
+            AliasedEvidence(
+                alias=f"E{index:06d}",
+                kind="web_span",
+                text="evidence",
+                fragment_ids=(fragment_id,),
+            )
+            for index, fragment_id in enumerate(fragment_ids, start=1)
+        )
+    )
+    observation = materialize_observation(
+        draft,
+        source_item_id="video:item",
+        projection=projection,
+        known_at=as_of,
+        assertion_boundary=as_of,
+    )
+    chunk = InterpretationChunkRecord(
+        chunk_id="chunk-1",
+        chunk_number=0,
+        input_fingerprint="0" * 64,
+        payload={"source_item_id": "video:item", "content_version": "version-1"},
+        bundle_id="bundle-1",
+        status=WorkStatus.COMPLETED,
+        completed_at=as_of,
+        output={
+            "request": request.model_dump(mode="json"),
+            "response": InterpretationDraft(observations=(draft,)).model_dump(mode="json"),
+            "observations": [observation.model_dump(mode="json")],
+            "alias_map": {"E000001": [fragment_ids[0]], "E000002": [fragment_ids[1]]},
+        },
+    )
+    work = _CompletedBundleWorkMemory(chunk)
+    admission = _AdmissionMemory(Database(tmp_path / "unused-admission.sqlite3"))
+    node = make_interpretation_node(
+        evidence=evidence,
+        admission=admission,
+        agent=_zero_claim_agent,
+        implementation_version="interpretation-v2",
+        clock=lambda: as_of,
+        work_repository=cast("IntelligenceWorkRepository", cast("object", work)),
+    )
+
+    _ = node(
+        {
+            "run_id": "run-1",
+            "run_dir": str(tmp_path / "runs" / "run-1"),
+            "requested_as_of": as_of,
+            "run_started_at": as_of,
+        }
+    )
+
+    admissions, artifact = admission.records[0]
+    observation_binding = bind_artifact_record(ArtifactRecordKind.OBSERVATION, observation.observation_id)
+    assert artifact.output_ids.count(observation_binding) == 1
+    assert tuple(item.observations for item in admissions) == ((observation,), (observation,))

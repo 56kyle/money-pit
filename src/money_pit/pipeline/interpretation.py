@@ -1003,7 +1003,7 @@ def _run_incremental_interpretation(
         ),
         output_ids=(
             *(bind_artifact_record(ArtifactRecordKind.INTERPRETATION_ATTEMPT, value) for value in new_attempt_ids),
-            *(
+            *dict.fromkeys(
                 bind_artifact_record(ArtifactRecordKind.OBSERVATION, observation.observation_id)
                 for item in new_work
                 for observation in observations

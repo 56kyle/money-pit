@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import TYPE_CHECKING
+from typing import ClassVar
 from typing import cast
 
+from pydantic import AwareDatetime
+from pydantic import BaseModel
+from pydantic import ConfigDict
+from pydantic import Field
 from pydantic import JsonValue
 from pydantic import TypeAdapter
 from pydantic import ValidationError
@@ -44,6 +50,19 @@ class InvalidRunTerminalEventError(RunRepositoryError):
 
 class InvalidStageArtifactError(RunRepositoryError):
     """Raised when an artifact violates its immutable run lifecycle."""
+
+
+class RecentIntelligenceRun(BaseModel):
+    """One bounded provider-free intelligence run listing row."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+    run_id: str
+    source_id: str | None
+    through_stage: str = Field(pattern=r"^A[1-4]$")
+    started_at: AwareDatetime
+    terminal_status: str | None
+    completed_at: AwareDatetime | None
+    legacy_scope_unknown: bool
 
 
 class RunRepository:
@@ -137,7 +156,7 @@ class RunRepository:
 
     def terminal_event_for_run(self, run_id: str) -> RunTerminalEvent | None:
         """Return the terminal event, or None while the run remains nonterminal."""
-        with self._database.transaction() as connection:
+        with self._database.read_only_transaction() as connection:
             serialized = _selected_json(
                 connection,
                 "run_terminal_events",
@@ -159,7 +178,7 @@ class RunRepository:
 
     def output_ids_for_run(self, run_id: str) -> tuple[str, ...]:
         """Return exact same-run record IDs in authoritative stage order."""
-        with self._database.transaction() as connection:
+        with self._database.read_only_transaction() as connection:
             rows: list[sqlite3.Row] = connection.execute(
                 """
                 SELECT output_ids_json FROM stage_artifacts
@@ -181,7 +200,7 @@ class RunRepository:
 
     def find_run(self, run_id: str) -> RunRecord | None:
         """Return an exact durable run record when registered."""
-        with self._database.transaction() as connection:
+        with self._database.read_only_transaction() as connection:
             row = cast(
                 "sqlite3.Row | None",
                 connection.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone(),
@@ -192,12 +211,68 @@ class RunRepository:
 
     def artifacts_for_run(self, run_id: str) -> tuple[StageArtifactRecord, ...]:
         """Return exact stage artifacts without consulting current providers."""
-        with self._database.transaction() as connection:
+        with self._database.read_only_transaction() as connection:
             rows: list[sqlite3.Row] = connection.execute(
                 "SELECT * FROM stage_artifacts WHERE run_id = ? ORDER BY stage, known_at, artifact_id",
                 (run_id,),
             ).fetchall()
         return tuple(_artifact_from_row(row) for row in rows)
+
+    def recent_intelligence_runs(
+        self,
+        *,
+        limit: int,
+        source_id: str | None = None,
+    ) -> tuple[RecentIntelligenceRun, ...]:
+        """Return recent A1-A4 workflow runs without resolving providers."""
+        if limit <= 0 or limit > 1_000:
+            raise ValueError("run listing limit must be between 1 and 1000")
+        with self._database.read_only_transaction() as connection:
+            source_clause = (
+                "" if source_id is None else "AND json_extract(run.manifest_json, '$.manifest.source_id') = ?"
+            )
+            params: tuple[object, ...] = (limit,) if source_id is None else (source_id, limit)
+            rows = cast(
+                "list[sqlite3.Row]",
+                connection.execute(
+                    f"""SELECT run.run_id, run.through_stage, run.started_at, run.manifest_json,
+                    terminal.status, terminal.completed_at
+                    FROM runs AS run LEFT JOIN run_terminal_events AS terminal USING (run_id)
+                    WHERE run.through_stage IN ('A1', 'A2', 'A3', 'A4')
+                      AND (json_extract(run.manifest_json, '$.manifest.workflow') IS NULL
+                           OR json_extract(run.manifest_json, '$.manifest.workflow') = 'intelligence_update')
+                      {source_clause}
+                    ORDER BY run.started_at DESC, run.run_id DESC LIMIT ?""",  # noqa: S608 # nosec B608
+                    params,
+                ).fetchall(),
+            )
+        listed: list[RecentIntelligenceRun] = []
+        for row in rows:
+            run = _run_from_row(row)
+            manifest = run.manifest
+            workflow = manifest.get("workflow")
+            scoped_source = manifest.get("source_id")
+            legacy = workflow is None
+            if workflow not in {None, "intelligence_update"}:
+                continue
+            listed.append(
+                RecentIntelligenceRun(
+                    run_id=run.run_id,
+                    source_id=scoped_source if isinstance(scoped_source, str) else None,
+                    through_stage=run.through_stage,
+                    started_at=run.started_at,
+                    terminal_status=_optional_text(row, "status"),
+                    completed_at=(
+                        None
+                        if (completed_at := _optional_text(row, "completed_at")) is None
+                        else datetime.fromisoformat(completed_at)
+                    ),
+                    legacy_scope_unknown=legacy,
+                )
+            )
+            if len(listed) == limit:
+                break
+        return tuple(listed)
 
 
 def append_stage_artifact_record(

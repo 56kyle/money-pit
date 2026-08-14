@@ -10,6 +10,7 @@ import pytest
 
 from money_pit import composition as composition_module
 from money_pit.agents.inference import InferenceResult
+from money_pit.agents.inference import InferenceTracking
 from money_pit.agents.inference import InferenceUsage
 from money_pit.claims.repository import ClaimRepository
 from money_pit.composition import ApplicationDependencies
@@ -551,8 +552,16 @@ def test_incremental_intelligence_then_a5_review_and_approved_a6_execution(
         )
 
     work = IntelligenceWorkRepository(database)
+    inference_tracking = InferenceTracking()
+
+    def interpret_with_workflow_correlation(
+        request: InterpretationRequest,
+    ) -> InferenceResult[InterpretationDraft]:
+        assert inference_tracking.correlation is not None
+        return _interpret(request)
+
     dependencies = ApplicationDependencies(
-        interpretation_agent=_interpret,
+        interpretation_agent=interpret_with_workflow_correlation,
         discovery_agent=_discover,
         research_planning_agent=_plan_research,
         synthesis_agent=_synthesize,
@@ -561,6 +570,7 @@ def test_incremental_intelligence_then_a5_review_and_approved_a6_execution(
         clock=lambda: run_time,
         run_id_factory=lambda: _RUN_ID,
         inference_credentials=SecretSpecInferenceResolver(tmp_path / "unused-secretspec.toml"),
+        inference_tracking=inference_tracking,
         intelligence_work=work,
     )
     intelligence_runtime = build_application_runtime(

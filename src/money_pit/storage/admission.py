@@ -51,6 +51,21 @@ class InterpretationAdmission(BaseModel):
     observations: tuple[ClaimObservation, ...] = ()
 
 
+def _unique_interpretation_observation_ids(
+    admissions: tuple[InterpretationAdmission, ...],
+) -> tuple[str, ...]:
+    observations_by_id: dict[str, ClaimObservation] = {}
+    for admission in admissions:
+        for observation in admission.observations:
+            existing = observations_by_id.get(observation.observation_id)
+            if existing is not None and existing != observation:
+                raise IntelligenceAdmissionError(
+                    f"Interpretation observation identity has conflicting content: {observation.observation_id}"
+                )
+            observations_by_id[observation.observation_id] = observation
+    return tuple(observations_by_id)
+
+
 class IntelligenceAdmissionRepository:
     """Commit A1 and A4 intelligence batches atomically with authoritative artifacts."""
 
@@ -81,11 +96,7 @@ class IntelligenceAdmissionRepository:
             raise IntelligenceAdmissionError("Interpretation admission requires an A1 artifact.")
         if len({item.attempt_id for item in admissions}) != len(admissions):
             raise IntelligenceAdmissionError("Interpretation attempt IDs must be unique.")
-        observation_ids = tuple(
-            observation.observation_id for admission in admissions for observation in admission.observations
-        )
-        if len(set(observation_ids)) != len(observation_ids):
-            raise IntelligenceAdmissionError("Interpretation observation IDs must be unique.")
+        observation_ids = _unique_interpretation_observation_ids(admissions)
         expected_outputs = (
             *(bind_artifact_record(ArtifactRecordKind.INTERPRETATION_ATTEMPT, item.attempt_id) for item in admissions),
             *(

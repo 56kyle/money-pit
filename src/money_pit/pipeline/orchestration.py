@@ -51,6 +51,7 @@ class IntelligenceUpdateReport(BaseModel):
     completed: IntelligenceWorkCompletionCounts
     usage: RunInferenceUsage
     remaining: IntelligenceWorkStatus
+    durable_transition_count: int
 
 
 @dataclass(frozen=True)
@@ -109,6 +110,7 @@ def run_intelligence_update(
         completed=work.completion_counts_for_run(run_id),
         usage=work.usage_for_run(run_id),
         remaining=remaining,
+        durable_transition_count=work.durable_advance_for_run(run_id).total,
     )
 
 

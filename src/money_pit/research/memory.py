@@ -367,12 +367,12 @@ class PlannedResearchTaskStore:
             stored = cast(
                 "sqlite3.Row | None",
                 connection.execute(
-                    """SELECT job_id, session_id, run_id, wave_number, execution_json
+                    """SELECT job_id, session_id, wave_number, execution_json
                 FROM research_wave_results WHERE wave_result_id = ?""",
                     (wave_result_id,),
                 ).fetchone(),
             )
-            if stored is None or tuple(stored) != (job_id, session_id, run_id, wave_number, encoded):
+            if stored is None or tuple(stored) != (job_id, session_id, wave_number, encoded):
                 raise ValueError("Research wave result identity collision")
 
     def append_provider_wave_result(

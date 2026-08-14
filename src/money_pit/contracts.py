@@ -18,6 +18,7 @@ from pydantic import Field
 from pydantic import JsonValue
 from pydantic import model_validator
 
+from money_pit.agents.inference import InferenceInvocationContext
 from money_pit.agents.inference import InferenceResult
 from money_pit.evidence.work import EvidenceInterpretationWork
 from money_pit.evidence.work import ReusableInterpretation
@@ -367,10 +368,46 @@ class SynthesisDraft(BaseModel):
     contributions: tuple[ContributionDraft, ...]
 
 
-InterpretationAgent: TypeAlias = Callable[[InterpretationRequest], InferenceResult[InterpretationDraft]]
-DiscoveryAgent: TypeAlias = Callable[[DiscoveryRequest], InferenceResult[DiscoveryDraft]]
-ResearchPlanningAgent: TypeAlias = Callable[[ResearchPlanningRequest], InferenceResult[ResearchRoundPlan]]
-SynthesisAgent: TypeAlias = Callable[[SynthesisRequest], InferenceResult[SynthesisDraft]]
+class InterpretationAgent(Protocol):
+    """A1 inference boundary requiring explicit durable correlation."""
+
+    def __call__(
+        self, request: InterpretationRequest, *, context: InferenceInvocationContext
+    ) -> InferenceResult[InterpretationDraft]:
+        """Interpret evidence within one explicit work invocation."""
+        ...
+
+
+class DiscoveryAgent(Protocol):
+    """A2 inference boundary requiring explicit durable correlation."""
+
+    def __call__(
+        self, request: DiscoveryRequest, *, context: InferenceInvocationContext
+    ) -> InferenceResult[DiscoveryDraft]:
+        """Discover candidates within one explicit work invocation."""
+        ...
+
+
+class ResearchPlanningAgent(Protocol):
+    """A3 inference boundary requiring explicit durable correlation."""
+
+    def __call__(
+        self, request: ResearchPlanningRequest, *, context: InferenceInvocationContext
+    ) -> InferenceResult[ResearchRoundPlan]:
+        """Plan research within one explicit work invocation."""
+        ...
+
+
+class SynthesisAgent(Protocol):
+    """A4 inference boundary requiring explicit durable correlation."""
+
+    def __call__(
+        self, request: SynthesisRequest, *, context: InferenceInvocationContext
+    ) -> InferenceResult[SynthesisDraft]:
+        """Synthesize one candidate within one explicit work invocation."""
+        ...
+
+
 UniverseLoader: TypeAlias = Callable[[datetime], LayeredUniverse]
 
 

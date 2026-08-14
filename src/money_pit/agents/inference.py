@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import time
-from contextlib import contextmanager
-from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
 from datetime import timezone
@@ -19,8 +17,6 @@ from pydantic_ai.usage import RunUsage
 
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
-
     from pydantic_ai import Agent
 
 
@@ -71,7 +67,7 @@ class InferenceResult(Generic[OutputT]):
 
 
 @dataclass(frozen=True)
-class InferenceCorrelation:
+class InferenceInvocationContext:
     """Durable workflow identity active while one model call is made."""
 
     run_id: str
@@ -86,7 +82,7 @@ class InferenceCallRecord:
     purpose: str
     model: str
     request_hash: str
-    correlation: InferenceCorrelation | None
+    correlation: InferenceInvocationContext
     status: InferenceCallStatus
     usage: InferenceUsage | None
     started_at: datetime
@@ -103,40 +99,12 @@ class InferenceUsageSink(Protocol):
         ...
 
 
-class _DiscardInferenceUsage:
+class NullInferenceUsageSink:
+    """Explicitly discard usage for nondurable tests and tools."""
+
     def record_inference_call(self, record: InferenceCallRecord) -> None:
+        """Discard one explicitly nondurable usage record."""
         del record
-
-
-class InferenceTracking:
-    """Bind workflow identity to inference records in the current execution context."""
-
-    def __init__(self, sink: InferenceUsageSink | None = None) -> None:
-        """Use the supplied sink or discard records explicitly."""
-        self._sink: InferenceUsageSink = sink or _DiscardInferenceUsage()
-        self._correlation: ContextVar[InferenceCorrelation | None] = ContextVar(
-            f"money_pit_inference_correlation_{id(self)}",
-            default=None,
-        )
-
-    @contextmanager
-    def scope(self, *, run_id: str, work_unit_id: str) -> Generator[None]:
-        """Associate calls in this context with one durable workflow work unit."""
-        correlation = InferenceCorrelation(run_id=run_id, work_unit_id=work_unit_id)
-        token = self._correlation.set(correlation)
-        try:
-            yield
-        finally:
-            self._correlation.reset(token)
-
-    @property
-    def correlation(self) -> InferenceCorrelation | None:
-        """Return the correlation active in the current execution context."""
-        return self._correlation.get()
-
-    def record(self, record: InferenceCallRecord) -> None:
-        """Send one content-free record to the configured durable sink."""
-        self._sink.record_inference_call(record)
 
 
 class ProviderInferenceError(Exception):

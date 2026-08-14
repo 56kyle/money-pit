@@ -17,7 +17,6 @@ from pydantic import TypeAdapter
 from pydantic import ValidationError
 
 from money_pit.agents.discovery import make_discovery_agent
-from money_pit.agents.inference import InferenceTracking
 from money_pit.agents.interpretation import make_interpretation_agent
 from money_pit.agents.research_planner import make_research_planning_agent
 from money_pit.agents.synthesis import make_synthesis_agent
@@ -116,7 +115,6 @@ class ApplicationDependencies:
     research_planning_agent: ResearchPlanningAgent | None = None
     synthesis_agent: SynthesisAgent | None = None
     portfolio_runtime_factory: Callable[[], PortfolioRuntime] | None = None
-    inference_tracking: InferenceTracking | None = None
     intelligence_work: IntelligenceWorkRepository | None = None
 
 
@@ -581,9 +579,9 @@ def build_application_runtime(
         admission=admission,
         agent=interpretation_agent,
         implementation_version=interpretation_version,
-        tracking=dependencies.inference_tracking,
         clock=dependencies.clock,
     )
+    intelligence_work = dependencies.intelligence_work or IntelligenceWorkRepository(database)
     providers = dependencies.research_providers
     research = build_research_runtime(
         database,
@@ -593,6 +591,7 @@ def build_application_runtime(
         interpreter=interpreter,
         credentials=dependencies.inference_credentials,
         model=config.intelligence.llm_model,
+        work_repository=intelligence_work,
         interpretation_prompt_version=implementation_version,
         clock=dependencies.clock,
     )
@@ -618,7 +617,6 @@ def build_application_runtime(
             implementation_version=interpretation_version,
             interpretation_service=interpreter,
             clock=dependencies.clock,
-            tracking=dependencies.inference_tracking,
             work_repository=dependencies.intelligence_work,
         ),
         a2=None
@@ -633,7 +631,6 @@ def build_application_runtime(
             artifact_store=artifact_store,
             allowed_provider_names=providers.names(),
             clock=dependencies.clock,
-            tracking=dependencies.inference_tracking,
             work_repository=dependencies.intelligence_work,
         ),
         a3=None
@@ -654,7 +651,6 @@ def build_application_runtime(
                 maximum_fetches=config.intelligence.research_budget.maximum_fetches,
                 maximum_elapsed=timedelta(seconds=config.intelligence.research_budget.maximum_elapsed_seconds),
             ),
-            tracking=dependencies.inference_tracking,
             work_repository=dependencies.intelligence_work,
         ),
         a4=None
@@ -671,7 +667,6 @@ def build_application_runtime(
                 key: frozenset({value}) for key, value in config.intelligence.explicit_proxies.items()
             },
             clock=dependencies.clock,
-            tracking=dependencies.inference_tracking,
             work_repository=dependencies.intelligence_work,
         ),
         a5=None
@@ -708,7 +703,7 @@ def build_production_application_dependencies(
 ) -> ApplicationDependencies:
     """Resolve production capabilities at the outer application boundary."""
     clock: Callable[[], datetime] = _utc_now
-    inference_tracking = InferenceTracking(IntelligenceWorkRepository(database))
+    inference_usage_sink = IntelligenceWorkRepository(database)
     openai: OpenAICredentials = inference_credentials.openai(reason="Run the requested staged investment research")
     discovery_agent = (
         None
@@ -716,14 +711,14 @@ def build_production_application_dependencies(
         else make_discovery_agent(
             openai,
             model=config.intelligence.llm_model,
-            tracking=inference_tracking,
+            usage_sink=inference_usage_sink,
         )
     )
     research_planning_agent = (
         make_research_planning_agent(
             openai,
             model=config.intelligence.llm_model,
-            tracking=inference_tracking,
+            usage_sink=inference_usage_sink,
         )
         if through in {Stage.A3, Stage.A4, Stage.A5, Stage.A6}
         else None
@@ -732,7 +727,7 @@ def build_production_application_dependencies(
         make_synthesis_agent(
             openai,
             model=config.intelligence.llm_model,
-            tracking=inference_tracking,
+            usage_sink=inference_usage_sink,
         )
         if through in {Stage.A4, Stage.A5, Stage.A6}
         else None
@@ -778,7 +773,7 @@ def build_production_application_dependencies(
         interpretation_agent=make_interpretation_agent(
             openai,
             model=config.intelligence.llm_model,
-            tracking=inference_tracking,
+            usage_sink=inference_usage_sink,
         ),
         discovery_agent=discovery_agent,
         research_planning_agent=research_planning_agent,
@@ -789,8 +784,7 @@ def build_production_application_dependencies(
         run_id_factory=_uuid4_string,
         inference_credentials=inference_credentials,
         portfolio_runtime_factory=portfolio_factory,
-        inference_tracking=inference_tracking,
-        intelligence_work=IntelligenceWorkRepository(database),
+        intelligence_work=inference_usage_sink,
     )
 
 

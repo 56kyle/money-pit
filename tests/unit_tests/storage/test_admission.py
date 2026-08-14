@@ -362,10 +362,7 @@ def test_admit_interpretation_associates_one_observation_with_multiple_asset_att
                 "SELECT observation_ids_json FROM claim_interpretation_attempts ORDER BY asset_id"
             ).fetchall(),
         )
-        attempt_observations = tuple(
-            str(cast("object", row[0]))
-            for row in attempt_rows
-        )
+        attempt_observations = tuple(str(cast("object", row[0])) for row in attempt_rows)
         observation_count = int(
             str(cast("object", connection.execute("SELECT COUNT(*) FROM claim_observations").fetchone()[0]))
         )

@@ -16,6 +16,7 @@ from money_pit.agents import research_planner
 from money_pit.agents import synthesis
 from money_pit.agents.inference import InferenceStage
 from money_pit.agents.inference import InferenceUsage
+from money_pit.agents.inference import NullInferenceUsageSink
 from money_pit.agents.inference import ProviderInferenceError
 from money_pit.agents.inference import invoke_native_output
 from money_pit.agents.models import _prompt_cache_key  # pyright: ignore[reportPrivateUsage]
@@ -186,7 +187,11 @@ def test_make_agent_uses_responses_instructions_and_strict_native_output(
 
     monkeypatch.setattr(module, "openai_responses_model", provider)
 
-    _ = factory(OpenAICredentials(api_key=SecretStr("test-key")), model="gpt-test")
+    _ = factory(
+        OpenAICredentials(api_key=SecretStr("test-key")),
+        model="gpt-test",
+        usage_sink=NullInferenceUsageSink(),
+    )
 
     native_output = observed["output_type"]
     assert observed["model"] is provider_model

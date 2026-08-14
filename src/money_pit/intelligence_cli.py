@@ -31,6 +31,8 @@ from money_pit.storage.database import DatabaseSchemaState
 from money_pit.storage.database import inspect_database
 from money_pit.storage.intelligence_work import IntelligenceWorkCompletionCounts
 from money_pit.storage.intelligence_work import IntelligenceWorkRepository
+from money_pit.storage.recovery_audit import RecoveryAuditBlockedError
+from money_pit.storage.recovery_audit import RecoveryAuditor
 from money_pit.storage.runs import RunRepository
 
 
@@ -75,6 +77,9 @@ def _run_intelligence_updates(
     iterations: int,
 ) -> IntelligenceUpdateBatchReport:
     database = _database()
+    audit = RecoveryAuditor(database).audit(source_id=source)
+    if audit.blocked:
+        raise RecoveryAuditBlockedError(audit)
     config = load_application_config(scope=ConfigurationScope.INTELLIGENCE)
     paths = RepositoryPaths.from_data_root(DATA_ROOT)
     reports: list[IntelligenceUpdateReport] = []
@@ -125,6 +130,15 @@ def intelligence_status(source: str | None = None) -> None:
     _ = run_operator_command(
         lambda: _intelligence_status_report(source),
         heading="Intelligence status",
+    )
+
+
+@intelligence_app.command(name="audit")
+def intelligence_audit(source: str | None = None) -> None:
+    """Validate durable recovery state without providers, credentials, migration, or repair."""
+    _ = run_operator_command(
+        lambda: RecoveryAuditor(_read_database()).audit(source_id=source),
+        heading="Intelligence recovery audit",
     )
 
 

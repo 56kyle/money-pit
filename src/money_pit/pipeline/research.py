@@ -3,7 +3,6 @@
 import hashlib
 import json
 from collections.abc import Callable
-from contextlib import nullcontext
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -17,7 +16,7 @@ from pydantic import TypeAdapter
 
 from money_pit.agents.budget import request_character_allowance
 from money_pit.agents.budget import serialized_inference_request_size
-from money_pit.agents.inference import InferenceTracking
+from money_pit.agents.inference import InferenceInvocationContext
 from money_pit.contracts import ClaimMemory
 from money_pit.contracts import ResearchPlanningAgent
 from money_pit.contracts import ResearchPlanningRequest
@@ -53,11 +52,13 @@ from money_pit.schemas.runs import ArtifactRecordKind
 from money_pit.schemas.runs import bind_artifact_record
 from money_pit.schemas.theses import CandidateThesis
 from money_pit.storage.admission import IntelligenceAdmissionRepository
+from money_pit.storage.intelligence_work import ClaimedResearchJobRecord
 from money_pit.storage.intelligence_work import IncrementalResearchAdmissionRecord
 from money_pit.storage.intelligence_work import IntelligenceWorkRepository
 from money_pit.storage.intelligence_work import ResearchCheckpointRecord
 from money_pit.storage.intelligence_work import ResearchJobRecord
 from money_pit.storage.intelligence_work import SynthesisUnitRecord
+from money_pit.storage.intelligence_work import WorkClaim
 
 
 class ResearchBudgetViolationError(Exception):
@@ -184,7 +185,6 @@ def research_candidate(  # noqa: C901 - explicit hard-stop branches belong to th
     clock: Callable[[], datetime],
     prompt_character_budget: int,
     allowed_provider_names: tuple[str, ...],
-    tracking: InferenceTracking | None = None,
     prior_checkpoint: ResearchCheckpointRecord | None = None,
     checkpoint_wave: Callable[[ResearchCheckpointRecord], None] | None = None,
 ) -> CandidateResearchSummary:
@@ -327,13 +327,13 @@ def research_candidate(  # noqa: C901 - explicit hard-stop branches belong to th
                 )
             )
             if durable_plan is None:
-                scope = (
-                    nullcontext()
-                    if tracking is None
-                    else tracking.scope(run_id=run_id, work_unit_id=f"research:{candidate.candidate_thesis_id}")
-                )
-                with scope:
-                    plan = planner(planning_request).output
+                plan = planner(
+                    planning_request,
+                    context=InferenceInvocationContext(
+                        run_id=run_id,
+                        work_unit_id=job_id or f"legacy:{candidate.candidate_thesis_id}",
+                    ),
+                ).output
                 if job_id is not None:
                     task_memory.checkpoint_planner_result(
                         job_id=job_id,
@@ -520,14 +520,20 @@ def _install_wave_checkpoint(
     """Atomically bind a validated checkpoint to its durable wave outbox."""
     wave = work.uncheckpointed_wave(checkpoint.job_id)
     if wave is None:
-        work.append_research_checkpoint(checkpoint)
-        return
-    work.checkpoint_research_wave(wave_result_id=wave.wave_result_id, checkpoint=checkpoint)
+        raise PromptProjectionError("Research checkpoint has no execution-completed wave predecessor")
+    if checkpoint.run_id is None:
+        raise PromptProjectionError("Research checkpoint requires an owning run")
+    _ = work.checkpoint_completed_wave(
+        wave_result_id=wave.wave_result_id,
+        checkpoint_run_id=checkpoint.run_id,
+        digest=checkpoint.digest,
+        recorded_at=checkpoint.recorded_at,
+    )
 
 
 def _recover_wave_checkpoint(
     work: IntelligenceWorkRepository,
-    job: ResearchJobRecord,
+    job: ClaimedResearchJobRecord,
 ) -> None:
     """Reconcile a completed wave after a hard kill before its callback."""
     wave = work.uncheckpointed_wave(job.job_id)
@@ -551,30 +557,14 @@ def _recover_wave_checkpoint(
         stop_reason=ResearchStopReason.UNRESOLVED,
         normalized_queries=(),
     )
-    checkpoint = ResearchCheckpointRecord(
-        checkpoint_id=stable_identifier(
-            "research-checkpoint",
-            {"job_id": job.job_id, "wave_number": wave.wave_number},
-        ),
-        job_id=job.job_id,
-        run_id=wave.run_id,
-        wave_number=wave.wave_number,
-        search_count=(0 if prior is None else prior.search_count) + wave.search_count_delta,
-        accepted_fetch_count=(0 if prior is None else prior.accepted_fetch_count)
-        + _json_nonnegative_int(
-            wave.accepted_fetch_count_delta,
-            "accepted fetch count delta",
-        ),
-        recorded_at=wave.recorded_at,
+    if job.claimed_run_id is None or job.claimed_at is None:
+        raise PromptProjectionError("Research recovery requires a current work claim")
+    _ = work.checkpoint_completed_wave(
+        wave_result_id=wave.wave_result_id,
+        checkpoint_run_id=job.claimed_run_id,
         digest=_merge_checkpoint_digest(prior, summary),
+        recorded_at=job.claimed_at,
     )
-    work.checkpoint_research_wave(wave_result_id=wave.wave_result_id, checkpoint=checkpoint)
-
-
-def _json_nonnegative_int(value: JsonValue | None, label: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise PromptProjectionError(f"Research wave outbox has invalid {label}")
-    return value
 
 
 def _checkpoint_writer(
@@ -585,7 +575,7 @@ def _checkpoint_writer(
 
 def _recover_claimed_waves(
     work: IntelligenceWorkRepository,
-    jobs: tuple[ResearchJobRecord, ...],
+    jobs: tuple[ClaimedResearchJobRecord, ...],
 ) -> None:
     for job in jobs:
         _recover_wave_checkpoint(work, job)
@@ -685,7 +675,6 @@ def make_research_node(  # noqa: C901 - explicit incremental recovery branches r
     model_point_in_time_certified: bool = False,
     prompt_character_budget: int = 120_000,
     allowed_provider_names: tuple[str, ...],
-    tracking: InferenceTracking | None = None,
     work_repository: IntelligenceWorkRepository | None = None,
 ) -> PipelineNode:
     """Return A3 with read-only provider execution and durable research bookkeeping."""
@@ -779,9 +768,10 @@ def make_research_node(  # noqa: C901 - explicit incremental recovery branches r
                     origin_unit_ids=origin_unit_ids,
                 )
             claimed_at = clock()
+            claim = WorkClaim(run_id=run_id, claimed_at=claimed_at)
             claimed_jobs = work_repository.claim_research_jobs(
-                run_id=run_id,
-                claimed_at=claimed_at,
+                run_id=claim.run_id,
+                claimed_at=claim.claimed_at,
                 reclaim_before=claimed_at - timedelta(minutes=30),
                 maximum_jobs=_MAXIMUM_CANDIDATES_PER_UPDATE,
                 source_id=state.get("source_id"),
@@ -838,7 +828,6 @@ def make_research_node(  # noqa: C901 - explicit incremental recovery branches r
                 clock=clock,
                 prompt_character_budget=resolved_prompt_character_budget,
                 allowed_provider_names=allowed_provider_names,
-                tracking=tracking,
                 prior_checkpoint=(
                     None
                     if work_repository is None

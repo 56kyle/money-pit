@@ -1,7 +1,6 @@
 """Module implementing A1 evidence interpretation and claim persistence."""
 
 from collections.abc import Callable
-from contextlib import nullcontext
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -13,7 +12,7 @@ from pydantic import JsonValue
 from pydantic import TypeAdapter
 
 from money_pit.agents.budget import inference_request_fits
-from money_pit.agents.inference import InferenceTracking
+from money_pit.agents.inference import InferenceInvocationContext
 from money_pit.contracts import ClaimObservationDraft
 from money_pit.contracts import EvidencePromptRecord
 from money_pit.contracts import EvidenceWorkRepository
@@ -154,6 +153,7 @@ def interpret_document(
     decision_at: datetime,
     known_at: datetime,
     character_budget: int,
+    context: InferenceInvocationContext,
     baseline_only: bool = True,
 ) -> tuple[ClaimObservation, ...]:
     """Interpret every bounded evidence chunk and resolve only shown aliases."""
@@ -182,7 +182,7 @@ def interpret_document(
         lambda value: inference_request_fits(agent, request_for(value), fallback=character_budget)
     ):
         request = request_for(chunk)
-        draft = agent(request).output
+        draft = agent(request, context=context).output
         chunk_projection = EvidenceAliasProjection(evidence=chunk.evidence)
         observations.extend(
             materialize_observation(
@@ -211,7 +211,6 @@ class InterpretationService:
         agent: InterpretationAgent,
         implementation_version: str,
         character_budget: int = _DEFAULT_PROMPT_CHARACTER_BUDGET,
-        tracking: InferenceTracking | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(tz=timezone.utc),
     ) -> None:
         """Bind exact work persistence, atomic admission, and model execution."""
@@ -220,7 +219,6 @@ class InterpretationService:
         self._agent: InterpretationAgent = agent
         self._implementation_version: str = implementation_version
         self._character_budget: int = character_budget
-        self._tracking: InferenceTracking | None = tracking
         self._clock: Callable[[], datetime] = clock
 
     def interpret_pending(
@@ -273,13 +271,10 @@ class InterpretationService:
                 )
             ):
                 request = request_for(chunk)
-                scope = (
-                    nullcontext()
-                    if self._tracking is None
-                    else self._tracking.scope(run_id=run_id, work_unit_id=attempt_id)
-                )
-                with scope:
-                    response = self._agent(request).output
+                response = self._agent(
+                    request,
+                    context=InferenceInvocationContext(run_id=run_id, work_unit_id=attempt_id),
+                ).output
                 chunk_projection = EvidenceAliasProjection(evidence=chunk.evidence)
                 decision_completed_at = self._clock()
                 known_at = decision_completed_at
@@ -428,13 +423,10 @@ class InterpretationService:
             lambda value: inference_request_fits(self._agent, request_for(value), fallback=self._character_budget)
         ):
             request = request_for(chunk)
-            scope = (
-                nullcontext()
-                if self._tracking is None
-                else self._tracking.scope(run_id=run_id, work_unit_id=attempt_id)
-            )
-            with scope:
-                response = self._agent(request).output
+            response = self._agent(
+                request,
+                context=InferenceInvocationContext(run_id=run_id, work_unit_id=attempt_id),
+            ).output
             chunk_projection = EvidenceAliasProjection(evidence=chunk.evidence)
             completed_at = self._clock()
             observations.extend(
@@ -531,7 +523,6 @@ def make_interpretation_node(
     implementation_version: str,
     document_limit: int = _DEFAULT_DOCUMENT_LIMIT,
     prompt_character_budget: int = _DEFAULT_PROMPT_CHARACTER_BUDGET,
-    tracking: InferenceTracking | None = None,
     clock: Callable[[], datetime] = lambda: datetime.now(tz=timezone.utc),
     model_point_in_time_certified: bool = False,
     interpretation_service: InterpretationService | None = None,
@@ -544,7 +535,6 @@ def make_interpretation_node(
         agent=agent,
         implementation_version=implementation_version,
         character_budget=prompt_character_budget,
-        tracking=tracking,
         clock=clock,
     )
 
@@ -578,7 +568,6 @@ def make_interpretation_node(
                 requested_as_of=requested_as_of,
                 started_at=started_at,
                 prompt_character_budget=prompt_character_budget,
-                tracking=tracking,
                 clock=clock,
             )
         if work_items:
@@ -711,7 +700,6 @@ def _run_incremental_interpretation(
     requested_as_of: datetime,
     started_at: datetime,
     prompt_character_budget: int,
-    tracking: InferenceTracking | None,
     clock: Callable[[], datetime],
 ) -> PipelineState:
     """Advance one durable prompt chunk and admit only a complete bundle."""
@@ -846,9 +834,10 @@ def _run_incremental_interpretation(
                 "legacy interpretation chunk input",
             )
         request = InterpretationRequest.model_validate(chunk_payload["request"])
-        scope = nullcontext() if tracking is None else tracking.scope(run_id=run_id, work_unit_id=claimed.chunk_id)
-        with scope:
-            response = agent(request).output
+        response = agent(
+            request,
+            context=InferenceInvocationContext(run_id=run_id, work_unit_id=claimed.chunk_id),
+        ).output
         alias_map = _string_tuple_map(chunk_payload["alias_map"])
         projection = EvidenceAliasProjection(
             evidence=tuple(

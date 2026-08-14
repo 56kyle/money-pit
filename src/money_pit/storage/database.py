@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 
 from money_pit.constants import APP_NAME
+from money_pit.constants import APP_VERSION
 from money_pit.storage.errors import SchemaIdentityError
 from money_pit.storage.errors import StorageCapabilityError
 from money_pit.storage.errors import StorageConnectionError
@@ -86,8 +87,8 @@ def inspect_database(path: Path) -> DatabaseInspection:
         application_id = None if row is None else str(row["application_id"])
         release = None if row is None else str(row["release"])
         stored = None if row is None else str(row["schema_fingerprint"])
-        current = application_id == APP_NAME and release == "0.0.4" and stored == live == expected_current
-        predecessor = application_id == APP_NAME and release == "0.0.3" and stored == live == expected_predecessor
+        current = application_id == APP_NAME and release == APP_VERSION and stored == live == expected_current
+        predecessor = application_id == APP_NAME and release == "0.0.4" and stored == live == expected_predecessor
         state = (
             DatabaseSchemaState.CURRENT
             if current
@@ -139,7 +140,7 @@ class Database:
         return self._path
 
     def initialize(self) -> None:
-        """Create 0.0.4, verify it, or migrate an exact 0.0.3 predecessor."""
+        """Create 0.0.5, verify it, or migrate an exact 0.0.4 predecessor."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self.transaction(TransactionMode.WRITE) as connection:
             if is_logically_empty(connection):

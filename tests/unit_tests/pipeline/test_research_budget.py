@@ -7,6 +7,7 @@ import pytest
 from pydantic import JsonValue
 from typing_extensions import override
 
+from money_pit.agents.inference import InferenceInvocationContext
 from money_pit.agents.inference import InferenceResult
 from money_pit.agents.inference import InferenceUsage
 from money_pit.contracts import ResearchPlanningRequest
@@ -236,7 +237,10 @@ def test_research_candidate_resumes_after_crash_without_repeating_durable_wave()
         maximum_results=1,
     )
 
-    def planner(_request: ResearchPlanningRequest) -> InferenceResult[ResearchRoundPlan]:
+    def planner(
+        request: ResearchPlanningRequest, *, context: InferenceInvocationContext
+    ) -> InferenceResult[ResearchRoundPlan]:
+        del request, context
         nonlocal planner_calls
         planner_calls += 1
         return InferenceResult(
@@ -293,7 +297,10 @@ def test_research_candidate_resumes_empty_planner_result_without_repeating_infer
     memory = _CrashAfterPlannerCheckpointMemory()
     planner_calls = 0
 
-    def planner(_request: ResearchPlanningRequest) -> InferenceResult[ResearchRoundPlan]:
+    def planner(
+        request: ResearchPlanningRequest, *, context: InferenceInvocationContext
+    ) -> InferenceResult[ResearchRoundPlan]:
+        del request, context
         nonlocal planner_calls
         planner_calls += 1
         return InferenceResult(
@@ -375,7 +382,10 @@ def test_research_candidate_stops_from_terminal_checkpoint_before_planner(
         },
     )
 
-    def reject_planner(_request: ResearchPlanningRequest) -> InferenceResult[ResearchRoundPlan]:
+    def reject_planner(
+        request: ResearchPlanningRequest, *, context: InferenceInvocationContext
+    ) -> InferenceResult[ResearchRoundPlan]:
+        del request, context
         raise AssertionError("terminal checkpoint must stop before planning")
 
     result = research_candidate(

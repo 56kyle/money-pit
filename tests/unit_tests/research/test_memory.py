@@ -266,6 +266,7 @@ def test_run_round_rejects_allocations_before_service_or_queue_io(
         cast("ResearchService", cast("object", unused)),
         cast("ResearchRepository", cast("object", unused)),
         cast("PlannedResearchTaskStore", cast("object", unused)),
+        cast("IntelligenceWorkRepository", cast("object", unused)),
     )
 
     with pytest.raises(ResearchBudgetExceededError):
@@ -460,6 +461,7 @@ def _run_with_collaborators(
         cast("ResearchService", cast("object", service)),
         cast("ResearchRepository", cast("object", repository)),
         cast("PlannedResearchTaskStore", cast("object", queue)),
+        cast("IntelligenceWorkRepository", cast("object", _UnusedDependency())),
         cast("InterpretationService | None", cast("object", interpreter)),
     )
     _ = runner.run_round(
@@ -537,6 +539,7 @@ def test_run_round_materializes_allocated_caps_without_leaving_original_plans_pe
         cast("ResearchService", cast("object", service)),
         repository,
         planned,
+        IntelligenceWorkRepository(database),
     ).run_round(
         session_id=session.session_id,
         job_id="legacy:test-memory",

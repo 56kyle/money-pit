@@ -21,6 +21,7 @@ Synchronize or ingest sources before updating intelligence:
 money-pit source sync SOURCE_ID
 money-pit source ingest SOURCE_ID https://youtu.be/VIDEO_ID
 money-pit intelligence status --source SOURCE_ID
+money-pit intelligence audit --source SOURCE_ID
 money-pit intelligence update --source SOURCE_ID
 money-pit intelligence show RUN_ID
 money-pit intelligence promote-claim CANONICAL_KEY --reason "operator rationale"
@@ -40,7 +41,7 @@ An update processes a bounded batch and can finish with queued work remaining. `
 
 A source-specific update processes work caused by that source. An update without `--source` advances the global queue fairly. Research evidence verifies its assigned candidate and does not automatically become new discovery input.
 
-`money-pit intelligence status` and `money-pit intelligence show` only read durable state. They do not resolve credentials or construct inference and research providers. `money-pit portfolio review` starts A5 from the latest durable intelligence and current portfolio state. It does not rerun interpretation, discovery, research, or synthesis.
+`money-pit intelligence status`, `money-pit intelligence audit`, and `money-pit intelligence show` only read durable state. They do not resolve credentials or construct inference and research providers. The audit distinguishes safe resumable work from blocked invariant violations. `money-pit portfolio review` starts A5 from the latest durable intelligence and current portfolio state. It does not rerun interpretation, discovery, research, or synthesis.
 
 `intelligence promote-claim` is the explicit, provider-free boundary for sending a materially changed canonical claim back through discovery. The reason is recorded as operator provenance. A3 verification evidence never recursively creates discovery work.
 

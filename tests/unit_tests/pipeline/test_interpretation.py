@@ -5,6 +5,7 @@ from typing import cast
 
 from typing_extensions import override
 
+from money_pit.agents.inference import InferenceInvocationContext
 from money_pit.agents.inference import InferenceResult
 from money_pit.agents.inference import InferenceUsage
 from money_pit.contracts import ClaimObservationDraft
@@ -204,7 +205,10 @@ def _result(output: InterpretationDraft) -> InferenceResult[InterpretationDraft]
     return InferenceResult(output=output, usage=InferenceUsage(), request_hash="0" * 64)
 
 
-def _zero_claim_agent(request: InterpretationRequest) -> InferenceResult[InterpretationDraft]:
+def _zero_claim_agent(
+    request: InterpretationRequest, *, context: InferenceInvocationContext
+) -> InferenceResult[InterpretationDraft]:
+    del context
     assert request.evidence
     return _result(InterpretationDraft(observations=()))
 
@@ -234,7 +238,10 @@ def test_interpret_document_materializes_fallback_assertion_at_requested_boundar
         ),
     )
 
-    def fallback_agent(request: InterpretationRequest) -> InferenceResult[InterpretationDraft]:
+    def fallback_agent(
+        request: InterpretationRequest, *, context: InferenceInvocationContext
+    ) -> InferenceResult[InterpretationDraft]:
+        del context
         return _result(
             InterpretationDraft(
                 observations=(
@@ -257,6 +264,7 @@ def test_interpret_document_materializes_fallback_assertion_at_requested_boundar
         decision_at=context_known_at,
         known_at=context_known_at,
         character_budget=10_000,
+        context=InferenceInvocationContext(run_id="run-1", work_unit_id="document-1"),
         baseline_only=True,
     )
 

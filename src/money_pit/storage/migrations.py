@@ -1,6 +1,6 @@
 """Module containing release schema baselines, migration, and identity checks."""
 
-# pyright: reportAny=false
+# pyright: reportAny=false, reportUnusedFunction=false
 
 import hashlib
 import importlib.resources
@@ -22,10 +22,11 @@ from money_pit.storage.errors import UnknownDatabaseSchemaError
 
 
 _SCHEMA_PACKAGE: Final[str] = "money_pit.storage.sql"
-_CURRENT_SCHEMA_RELEASE: Final[str] = "0.0.4"
-_PREDECESSOR_RELEASE: Final[str] = "0.0.3"
+_CURRENT_SCHEMA_RELEASE: Final[str] = "0.0.5"
+_PREDECESSOR_RELEASE: Final[str] = "0.0.4"
 _PREDECESSOR_BASELINE_FILENAME: Final[str] = "schema_0_0_3.sql"
-_CURRENT_DELTA_FILENAME: Final[str] = "schema_0_0_4_delta.sql"
+_PREDECESSOR_DELTA_FILENAME: Final[str] = "schema_0_0_4_delta.sql"
+_CURRENT_DELTA_FILENAME: Final[str] = "schema_0_0_5_delta.sql"
 
 
 def _require_current_schema_release() -> None:
@@ -44,12 +45,14 @@ def _read_schema_resource(filename: str, *, release: str) -> str:
 
 
 def _load_predecessor_baseline_sql() -> str:
-    """Return the exact trusted 0.0.3 predecessor baseline."""
-    return _read_schema_resource(_PREDECESSOR_BASELINE_FILENAME, release=_PREDECESSOR_RELEASE)
+    """Return the exact trusted 0.0.4 predecessor baseline."""
+    baseline = _read_schema_resource(_PREDECESSOR_BASELINE_FILENAME, release="0.0.3")
+    delta = _read_schema_resource(_PREDECESSOR_DELTA_FILENAME, release=_PREDECESSOR_RELEASE)
+    return f"{baseline.rstrip()}\n\n{delta.lstrip()}"
 
 
 def load_baseline_sql() -> str:
-    """Return the complete 0.0.4 baseline."""
+    """Return the complete 0.0.5 baseline."""
     _require_current_schema_release()
     delta = _read_schema_resource(_CURRENT_DELTA_FILENAME, release=_CURRENT_SCHEMA_RELEASE)
     return f"{_load_predecessor_baseline_sql().rstrip()}\n\n{delta.lstrip()}"
@@ -102,7 +105,7 @@ def _baseline_fingerprint(script: str, *, release: str) -> str:
 
 
 def expected_schema_fingerprint() -> str:
-    """Return the catalog digest of the packaged 0.0.4 baseline."""
+    """Return the catalog digest of the packaged 0.0.5 baseline."""
     _require_current_schema_release()
     return _baseline_fingerprint(load_baseline_sql(), release=_CURRENT_SCHEMA_RELEASE)
 
@@ -554,19 +557,16 @@ def _migrate_verified_predecessor(connection: sqlite3.Connection, *, target_fing
         delta = _read_schema_resource(_CURRENT_DELTA_FILENAME, release=_CURRENT_SCHEMA_RELEASE)
         for statement in _sql_statements(delta):
             _ = connection.execute(statement)
-        _backfill_interpretation_work(connection)
-        _backfill_discovery_work(connection)
-        _backfill_research_jobs(connection)
     except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError) as error:
-        raise BaselineApplyError("Could not migrate and backfill the verified 0.0.3 schema to 0.0.4.") from error
+        raise BaselineApplyError("Could not migrate the verified 0.0.4 schema to 0.0.5.") from error
     if catalog_fingerprint(connection) != target_fingerprint:
-        raise BaselineApplyError("The migrated 0.0.4 schema does not match the packaged baseline.")
+        raise BaselineApplyError("The migrated 0.0.5 schema does not match the packaged baseline.")
     cursor = connection.execute(
         "UPDATE schema_metadata SET release = ?, schema_fingerprint = ? WHERE singleton = 1",
         (_CURRENT_SCHEMA_RELEASE, target_fingerprint),
     )
     if cursor.rowcount != 1:
-        raise BaselineApplyError("Could not record the verified 0.0.4 schema identity.")
+        raise BaselineApplyError("Could not record the verified 0.0.5 schema identity.")
 
 
 def verify_schema_identity(connection: sqlite3.Connection) -> None:
@@ -583,7 +583,7 @@ def verify_schema_identity(connection: sqlite3.Connection) -> None:
         _migrate_verified_predecessor(connection, target_fingerprint=expected_fingerprint)
         if _schema_identity(connection) == expected_identity:
             return
-        raise BaselineApplyError("The migrated database did not retain the verified 0.0.4 identity.")
+        raise BaselineApplyError("The migrated database did not retain the verified 0.0.5 identity.")
     raise UnknownDatabaseSchemaError(
-        "The database schema does not exactly match money-pit 0.0.4 or its trusted 0.0.3 predecessor."
+        "The database schema does not exactly match money-pit 0.0.5 or its trusted 0.0.4 predecessor."
     )

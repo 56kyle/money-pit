@@ -9,8 +9,8 @@ from typing import cast
 import pytest
 
 from money_pit import composition as composition_module
+from money_pit.agents.inference import InferenceInvocationContext
 from money_pit.agents.inference import InferenceResult
-from money_pit.agents.inference import InferenceTracking
 from money_pit.agents.inference import InferenceUsage
 from money_pit.claims.repository import ClaimRepository
 from money_pit.composition import ApplicationDependencies
@@ -275,7 +275,10 @@ def _inference_result(output: _OutputT) -> InferenceResult[_OutputT]:
     return InferenceResult(output=output, usage=InferenceUsage(), request_hash="0" * 64)
 
 
-def _interpret(request: InterpretationRequest) -> InferenceResult[InterpretationDraft]:
+def _interpret(
+    request: InterpretationRequest, *, context: InferenceInvocationContext
+) -> InferenceResult[InterpretationDraft]:
+    del context
     is_primary = request.source_item_id.startswith("research.primary:")
     return _inference_result(
         InterpretationDraft(
@@ -299,7 +302,8 @@ def _interpret(request: InterpretationRequest) -> InferenceResult[Interpretation
     )
 
 
-def _discover(request: DiscoveryRequest) -> InferenceResult[DiscoveryDraft]:
+def _discover(request: DiscoveryRequest, *, context: InferenceInvocationContext) -> InferenceResult[DiscoveryDraft]:
+    del context
     assert "primary" in request.allowed_provider_names
     return _inference_result(
         DiscoveryDraft(
@@ -330,16 +334,23 @@ def _discover(request: DiscoveryRequest) -> InferenceResult[DiscoveryDraft]:
     )
 
 
-def _reject_recursive_discovery(_request: DiscoveryRequest) -> InferenceResult[DiscoveryDraft]:
+def _reject_recursive_discovery(
+    request: DiscoveryRequest, *, context: InferenceInvocationContext
+) -> InferenceResult[DiscoveryDraft]:
+    del request, context
     raise AssertionError("Candidate verification must not recursively invoke discovery.")
 
 
-def _plan_research(request: ResearchPlanningRequest) -> InferenceResult[ResearchRoundPlan]:
+def _plan_research(
+    request: ResearchPlanningRequest, *, context: InferenceInvocationContext
+) -> InferenceResult[ResearchRoundPlan]:
+    del context
     assert request.progress.completed_wave_count >= 1
     return _inference_result(ResearchRoundPlan(stop_reason=ResearchStopReason.UNRESOLVED))
 
 
-def _synthesize(request: SynthesisRequest) -> InferenceResult[SynthesisDraft]:
+def _synthesize(request: SynthesisRequest, *, context: InferenceInvocationContext) -> InferenceResult[SynthesisDraft]:
+    del context
     initial = next(item for item in request.observations if item.claim_text == _INITIAL_CLAIM)
     primary = next(item for item in request.observations if item.claim_text == _PRIMARY_CLAIM)
     supporting_alias = next(
@@ -552,16 +563,8 @@ def test_incremental_intelligence_then_a5_review_and_approved_a6_execution(
         )
 
     work = IntelligenceWorkRepository(database)
-    inference_tracking = InferenceTracking()
-
-    def interpret_with_workflow_correlation(
-        request: InterpretationRequest,
-    ) -> InferenceResult[InterpretationDraft]:
-        assert inference_tracking.correlation is not None
-        return _interpret(request)
-
     dependencies = ApplicationDependencies(
-        interpretation_agent=interpret_with_workflow_correlation,
+        interpretation_agent=_interpret,
         discovery_agent=_discover,
         research_planning_agent=_plan_research,
         synthesis_agent=_synthesize,
@@ -570,7 +573,6 @@ def test_incremental_intelligence_then_a5_review_and_approved_a6_execution(
         clock=lambda: run_time,
         run_id_factory=lambda: _RUN_ID,
         inference_credentials=SecretSpecInferenceResolver(tmp_path / "unused-secretspec.toml"),
-        inference_tracking=inference_tracking,
         intelligence_work=work,
     )
     intelligence_runtime = build_application_runtime(

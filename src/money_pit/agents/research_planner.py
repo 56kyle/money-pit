@@ -5,7 +5,7 @@ from pydantic_ai import NativeOutput
 
 from money_pit.agents.budget import BoundedInferenceAgent
 from money_pit.agents.budget import InferenceBudgetLimits
-from money_pit.agents.inference import InferenceTracking
+from money_pit.agents.inference import InferenceUsageSink
 from money_pit.agents.inference import invoke_native_output
 from money_pit.agents.models import openai_responses_model
 from money_pit.agents.models import openai_responses_settings
@@ -21,7 +21,7 @@ def make_research_planning_agent(
     *,
     model: str,
     budget: InferenceBudgetLimits | None = None,
-    tracking: InferenceTracking | None = None,
+    usage_sink: InferenceUsageSink,
 ) -> ResearchPlanningAgent:
     """Return A3 planning; the harness validates and executes every provider request."""
     model_name = model
@@ -46,5 +46,5 @@ def make_research_planning_agent(
         limits=budget,
         stage="A3",
         purpose="plan_research_wave",
-        tracking=tracking,
+        usage_sink=usage_sink,
     )

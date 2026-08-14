@@ -22,7 +22,9 @@ Inspect the update with `money-pit intelligence show RUN_ID`. Completed work rem
 
 ## Database fingerprint rejected
 
-The selected database is non-empty and matches neither the 0.0.4 schema nor the exact retained 0.0.3 predecessor. An exact 0.0.3 database migrates automatically in one transaction. Unknown releases, metadata drift, and catalog drift are rejected without mutation. Stop and verify the configured data root; do not rename, manually migrate, or delete an unknown database automatically.
+The selected database is non-empty and matches neither the 0.0.5 schema nor the exact retained 0.0.4 predecessor. An exact 0.0.4 database migrates automatically in one transaction. Unknown releases, metadata drift, and catalog drift are rejected without mutation. Stop and verify the configured data root; do not rename, manually migrate, or delete an unknown database automatically.
+
+Before retrying a failed intelligence update, run `money-pit intelligence audit`. `resumable` means paid work is intact and a later run can continue it. `blocked` means a durable invariant failed; do not run a provider-backed update until the affected IDs are diagnosed.
 
 ## Candidate cannot create exposure
 

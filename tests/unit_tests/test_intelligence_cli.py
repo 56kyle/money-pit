@@ -103,6 +103,21 @@ def test_intelligence_status_loads_only_nonsecret_intelligence_configuration(
     assert observed_scopes == [ConfigurationScope.INTELLIGENCE]
 
 
+def test_intelligence_audit_is_provider_and_configuration_free_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = _database(tmp_path / "audit.sqlite3")
+    monkeypatch.setattr(intelligence_cli, "_read_database", lambda: database)
+    monkeypatch.setattr(intelligence_cli, "load_application_config", _reject_configuration_load)
+
+    result = CliRunner().invoke(app, ["--json", "intelligence", "audit"])
+
+    assert result.exit_code == 0
+    assert '"status":"healthy"' in result.stdout
+    assert result.stderr == ""
+
+
 def test_intelligence_show_reports_durable_usage_without_loading_configuration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

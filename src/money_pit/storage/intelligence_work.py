@@ -11,6 +11,7 @@ from datetime import timezone
 from enum import StrEnum
 from typing import TYPE_CHECKING
 from typing import ClassVar
+from typing import cast
 
 from pydantic import AwareDatetime
 from pydantic import BaseModel
@@ -211,6 +212,27 @@ class ResearchCheckpointRecord(BaseModel):
     digest: JsonValue
 
 
+class ResearchWaveIdentity(BaseModel):
+    """Stable semantic identity of one candidate research wave."""
+
+    model_config: ClassVar[ConfigDict] = _FROZEN_CONFIG
+    job_id: str = Field(min_length=1)
+    wave_number: int = Field(ge=1, le=3)
+
+    @property
+    def wave_result_id(self) -> str:
+        """Return the deterministic durable identifier for this semantic wave."""
+        return hashlib.sha256(f"{self.job_id}\0{self.wave_number}".encode()).hexdigest()
+
+
+class WorkClaim(BaseModel):
+    """Run ownership of one recoverable lifecycle transition."""
+
+    model_config: ClassVar[ConfigDict] = _FROZEN_CONFIG
+    run_id: str = Field(min_length=1)
+    claimed_at: AwareDatetime
+
+
 class ResearchWaveResultRecord(BaseModel):
     """Validated durable A3 wave result awaiting work-ledger reconciliation."""
 
@@ -218,7 +240,10 @@ class ResearchWaveResultRecord(BaseModel):
     wave_result_id: str = Field(min_length=1)
     job_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
-    run_id: str = Field(min_length=1)
+    origin_run_id: str = Field(min_length=1)
+    execution_completed_run_id: str | None = Field(default=None, min_length=1)
+    execution_completed_at: AwareDatetime | None = None
+    checkpointed_run_id: str | None = Field(default=None, min_length=1)
     wave_number: int = Field(ge=1, le=3)
     recorded_at: AwareDatetime
     checkpointed_at: AwareDatetime | None = None
@@ -235,7 +260,7 @@ class ProviderResearchWaveRecord(BaseModel):
     wave_result_id: str = Field(min_length=1)
     job_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
-    run_id: str = Field(min_length=1)
+    origin_run_id: str = Field(min_length=1)
     wave_number: int = Field(ge=1, le=3)
     recorded_at: AwareDatetime
     provider_result: JsonValue
@@ -431,7 +456,7 @@ class IntelligenceWorkRepository:
         if tuple(chunk.chunk_number for chunk in chunks) != tuple(range(len(chunks))):
             raise WorkTransitionError("Interpretation chunk numbers must be contiguous from zero.")
         with self._database.transaction(TransactionMode.WRITE) as connection:
-            _insert_or_require(
+            _insert_initial_lifecycle_record(
                 connection,
                 "interpretation_bundles",
                 "bundle_id",
@@ -447,9 +472,17 @@ class IntelligenceWorkRepository:
                     "completed_at": None,
                     "bundle_json": _json(bundle.payload),
                 },
+                immutable_columns=(
+                    "bundle_id",
+                    "source_item_id",
+                    "content_version",
+                    "interpreter_version",
+                    "input_fingerprint",
+                    "bundle_json",
+                ),
             )
             for chunk in chunks:
-                _insert_or_require(
+                _insert_initial_lifecycle_record(
                     connection,
                     "interpretation_bundle_chunks",
                     "chunk_id",
@@ -467,6 +500,13 @@ class IntelligenceWorkRepository:
                         "output_json": "null",
                         "chunk_json": _json(chunk.payload),
                     },
+                    immutable_columns=(
+                        "chunk_id",
+                        "bundle_id",
+                        "chunk_number",
+                        "input_fingerprint",
+                        "chunk_json",
+                    ),
                 )
 
     def claim_interpretation_chunk(
@@ -980,42 +1020,6 @@ class IntelligenceWorkRepository:
             job_ids = tuple(claimed_job_ids)
             return tuple(_research_job(connection, job_id) for job_id in job_ids)
 
-    def append_research_checkpoint(self, checkpoint: ResearchCheckpointRecord) -> None:
-        """Append one immutable cumulative checkpoint and update job counters."""
-        with self._database.transaction(TransactionMode.WRITE) as connection:
-            _insert_or_require(
-                connection,
-                "research_job_checkpoints",
-                "checkpoint_id",
-                checkpoint.checkpoint_id,
-                {
-                    "checkpoint_id": checkpoint.checkpoint_id,
-                    "job_id": checkpoint.job_id,
-                    "run_id": checkpoint.run_id,
-                    "wave_number": checkpoint.wave_number,
-                    "search_count": checkpoint.search_count,
-                    "accepted_fetch_count": checkpoint.accepted_fetch_count,
-                    "recorded_at": _time(checkpoint.recorded_at),
-                    "digest_json": _json(checkpoint.digest),
-                },
-            )
-            cursor = connection.execute(
-                """UPDATE research_jobs SET wave_count = ?, search_count = ?, accepted_fetch_count = ?
-                WHERE job_id = ? AND status = 'active' AND wave_count <= ?
-                    AND search_count <= ? AND accepted_fetch_count <= ?""",
-                (
-                    checkpoint.wave_number,
-                    checkpoint.search_count,
-                    checkpoint.accepted_fetch_count,
-                    checkpoint.job_id,
-                    checkpoint.wave_number,
-                    checkpoint.search_count,
-                    checkpoint.accepted_fetch_count,
-                ),
-            )
-            if cursor.rowcount != 1:
-                raise WorkTransitionError("Research checkpoint does not advance an active job monotonically.")
-
     def uncheckpointed_wave(self, job_id: str) -> ResearchWaveResultRecord | None:
         """Return the earliest durable A3 wave not reconciled to the work ledger."""
         with self._database.transaction() as connection:
@@ -1035,7 +1039,10 @@ class IntelligenceWorkRepository:
                 "wave_result_id": row["wave_result_id"],
                 "job_id": row["job_id"],
                 "session_id": row["session_id"],
-                "run_id": row["run_id"],
+                "origin_run_id": row["run_id"],
+                "execution_completed_run_id": row["execution_completed_run_id"],
+                "execution_completed_at": row["execution_completed_at"],
+                "checkpointed_run_id": row["checkpointed_run_id"],
                 "wave_number": row["wave_number"],
                 "recorded_at": row["recorded_at"],
                 "checkpointed_at": row["checkpointed_at"],
@@ -1043,31 +1050,69 @@ class IntelligenceWorkRepository:
             }
         )
 
-    def record_provider_wave_result(self, record: ProviderResearchWaveRecord) -> None:
-        """Append provider-complete semantics before fallible interpretation work."""
+    def record_provider_wave(self, record: ProviderResearchWaveRecord) -> None:
+        """Create one immutable provider-completed research wave."""
         envelope = {
             "search_count_delta": record.search_count_delta,
             "accepted_fetch_count_delta": record.accepted_fetch_count_delta,
         }
         with self._database.transaction(TransactionMode.WRITE) as connection:
-            _insert_or_require(
-                connection,
-                "research_wave_results",
-                "wave_result_id",
-                record.wave_result_id,
-                {
-                    "wave_result_id": record.wave_result_id,
-                    "job_id": record.job_id,
-                    "session_id": record.session_id,
-                    "run_id": record.run_id,
-                    "wave_number": record.wave_number,
-                    "phase": "provider_completed",
-                    "recorded_at": _time(record.recorded_at),
-                    "checkpointed_at": None,
-                    "provider_result_json": _json(record.provider_result),
-                    "execution_json": _json(envelope),
-                },
+            existing = connection.execute(
+                "SELECT * FROM research_wave_results WHERE wave_result_id = ?",
+                (record.wave_result_id,),
+            ).fetchone()
+            immutable = (
+                record.job_id,
+                record.session_id,
+                record.origin_run_id,
+                record.wave_number,
+                _time(record.recorded_at),
+                _json(record.provider_result),
             )
+            if existing is None:
+                _ = connection.execute(
+                    """INSERT INTO research_wave_results
+                    (wave_result_id, job_id, session_id, run_id, wave_number, phase, recorded_at,
+                     checkpointed_at, provider_result_json, execution_json)
+                    VALUES (?, ?, ?, ?, ?, 'provider_completed', ?, NULL, ?, ?)""",
+                    (record.wave_result_id, *immutable, _json(envelope)),
+                )
+                return
+            stored = (
+                str(existing["job_id"]),
+                str(existing["session_id"]),
+                str(existing["run_id"]),
+                int(existing["wave_number"]),
+                str(existing["recorded_at"]),
+                str(existing["provider_result_json"]),
+            )
+            if stored != immutable:
+                raise WorkTransitionError("Research provider wave identity conflicts with durable state.")
+
+    def provider_wave_deltas(self, *, job_id: str, session_id: str) -> tuple[int, int]:
+        """Return exact query and accepted-fetch deltas for one provider wave."""
+        with self._database.read_only_transaction() as connection:
+            session = connection.execute(
+                "SELECT query_count FROM research_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            checkpoint = connection.execute(
+                """SELECT accepted_fetch_count FROM research_job_checkpoints
+                WHERE job_id = ? ORDER BY wave_number DESC LIMIT 1""",
+                (job_id,),
+            ).fetchone()
+            admitted = connection.execute(
+                """SELECT count(*) FROM research_uri_admissions
+                WHERE job_id = ? AND consumes_fetch_capacity = 1""",
+                (job_id,),
+            ).fetchone()
+        if session is None or admitted is None:
+            raise WorkTransitionError("Research provider wave lacks durable budget state.")
+        accepted = int(admitted[0])
+        prior = 0 if checkpoint is None else int(checkpoint[0])
+        if accepted < prior:
+            raise WorkTransitionError("Accepted fetch count precedes its durable checkpoint.")
+        return int(session[0]), accepted - prior
 
     def pending_provider_wave(self, job_id: str) -> ProviderResearchWaveRecord | None:
         """Return the earliest provider-complete wave awaiting execution assembly."""
@@ -1088,7 +1133,7 @@ class IntelligenceWorkRepository:
                 "wave_result_id": row["wave_result_id"],
                 "job_id": row["job_id"],
                 "session_id": row["session_id"],
-                "run_id": row["run_id"],
+                "origin_run_id": row["run_id"],
                 "wave_number": row["wave_number"],
                 "recorded_at": row["recorded_at"],
                 "provider_result": json.loads(str(row["provider_result_json"])),
@@ -1096,76 +1141,92 @@ class IntelligenceWorkRepository:
             }
         )
 
-    def complete_wave_result(
+    def complete_provider_wave(
         self,
         *,
         wave_result_id: str,
+        completion_run_id: str,
         execution: JsonValue,
         context: JsonValue,
+        completed_at: datetime,
     ) -> None:
-        """Transition one provider-complete wave to immutable execution-complete state."""
+        """Add semantic interpretation output to an existing provider wave."""
         with self._database.transaction(TransactionMode.WRITE) as connection:
             row = connection.execute(
-                "SELECT phase, execution_json FROM research_wave_results WHERE wave_result_id = ?",
+                """SELECT phase, execution_json, execution_completed_run_id, execution_completed_at
+                FROM research_wave_results WHERE wave_result_id = ?""",
                 (wave_result_id,),
             ).fetchone()
             if row is None:
-                raise WorkTransitionError("Research wave result is unknown.")
-            counters = json.loads(str(row[1]))
+                raise WorkTransitionError("Research execution has no provider-wave predecessor.")
+            counters = json.loads(str(row["execution_json"]))
             completed = _json({**counters, "execution": execution, "context": context})
-            if str(row[0]) == "provider_completed":
+            if str(row["phase"]) == "provider_completed":
                 _ = connection.execute(
-                    """UPDATE research_wave_results SET phase = 'execution_completed', execution_json = ?
+                    """UPDATE research_wave_results SET phase = 'execution_completed', execution_json = ?,
+                    execution_completed_run_id = ?, execution_completed_at = ?
                     WHERE wave_result_id = ? AND phase = 'provider_completed'""",
-                    (completed, wave_result_id),
+                    (completed, completion_run_id, _time(completed_at), wave_result_id),
                 )
-            elif str(row[0]) != "execution_completed" or str(row[1]) != completed:
+            elif (
+                str(row["phase"]) != "execution_completed"
+                or str(row["execution_json"]) != completed
+                or str(row["execution_completed_run_id"]) != completion_run_id
+                or str(row["execution_completed_at"]) != _time(completed_at)
+            ):
                 raise WorkTransitionError("Research wave execution completion conflicts with durable state.")
 
-    def record_research_wave_result(self, record: ResearchWaveResultRecord) -> None:
-        """Append one validated research-wave outbox record idempotently."""
-        with self._database.transaction(TransactionMode.WRITE) as connection:
-            _insert_or_require(
-                connection,
-                "research_wave_results",
-                "wave_result_id",
-                record.wave_result_id,
-                {
-                    "wave_result_id": record.wave_result_id,
-                    "job_id": record.job_id,
-                    "session_id": record.session_id,
-                    "run_id": record.run_id,
-                    "wave_number": record.wave_number,
-                    "phase": "execution_completed",
-                    "recorded_at": _time(record.recorded_at),
-                    "checkpointed_at": _optional_time(record.checkpointed_at),
-                    "provider_result_json": "null",
-                    "execution_json": _json(
-                        {
-                            "execution": record.execution,
-                            "context": record.context,
-                            "search_count_delta": record.search_count_delta,
-                            "accepted_fetch_count_delta": record.accepted_fetch_count_delta,
-                        }
-                    ),
-                },
-            )
-
-    def checkpoint_research_wave(
+    def checkpoint_completed_wave(
         self,
         *,
         wave_result_id: str,
-        checkpoint: ResearchCheckpointRecord,
-    ) -> None:
-        """Atomically install a checkpoint and consume its exact wave outbox record."""
+        checkpoint_run_id: str,
+        digest: JsonValue,
+        recorded_at: datetime,
+    ) -> ResearchCheckpointRecord:
+        """Atomically checkpoint one execution-completed wave from stored deltas."""
         with self._database.transaction(TransactionMode.WRITE) as connection:
             wave = connection.execute(
-                """SELECT job_id, wave_number, checkpointed_at FROM research_wave_results
+                """SELECT job_id, wave_number, phase, checkpointed_at, checkpointed_run_id,
+                execution_json FROM research_wave_results
                 WHERE wave_result_id = ?""",
                 (wave_result_id,),
             ).fetchone()
-            if wave is None or str(wave[0]) != checkpoint.job_id or int(wave[1]) != checkpoint.wave_number:
-                raise WorkTransitionError("Research checkpoint does not belong to its wave result.")
+            if wave is None or str(wave["phase"]) != "execution_completed":
+                raise WorkTransitionError("Research checkpoint requires an execution-completed wave.")
+            job_id = str(wave["job_id"])
+            wave_number = int(wave["wave_number"])
+            envelope_value = json.loads(str(wave["execution_json"]))
+            if not isinstance(envelope_value, dict):
+                raise MalformedWorkRecordError("Stored research wave envelope is malformed.")
+            envelope = cast("dict[str, object]", envelope_value)
+            search_value = envelope.get("search_count_delta")
+            fetch_value = envelope.get("accepted_fetch_count_delta")
+            if not isinstance(search_value, int) or not isinstance(fetch_value, int):
+                raise MalformedWorkRecordError("Stored research wave counters are malformed.")
+            search_delta = search_value
+            fetch_delta = fetch_value
+            prior = connection.execute(
+                """SELECT search_count, accepted_fetch_count FROM research_job_checkpoints
+                WHERE job_id = ? ORDER BY wave_number DESC LIMIT 1""",
+                (job_id,),
+            ).fetchone()
+            search_count = (0 if prior is None else int(prior[0])) + search_delta
+            accepted_fetch_count = (0 if prior is None else int(prior[1])) + fetch_delta
+            checkpoint_id = (
+                "research-checkpoint:"
+                + hashlib.sha256(_json({"job_id": job_id, "wave_number": wave_number}).encode()).hexdigest()
+            )
+            checkpoint = ResearchCheckpointRecord(
+                checkpoint_id=checkpoint_id,
+                job_id=job_id,
+                run_id=checkpoint_run_id,
+                wave_number=wave_number,
+                search_count=search_count,
+                accepted_fetch_count=accepted_fetch_count,
+                recorded_at=recorded_at,
+                digest=digest,
+            )
             _insert_or_require(
                 connection,
                 "research_job_checkpoints",
@@ -1198,14 +1259,19 @@ class IntelligenceWorkRepository:
             )
             if cursor.rowcount != 1:
                 raise WorkTransitionError("Research checkpoint does not advance an active job monotonically.")
-            checkpointed_text = _time(checkpoint.recorded_at)
-            if wave[2] is None:
+            checkpointed_text = _time(recorded_at)
+            if wave["checkpointed_at"] is None:
                 _ = connection.execute(
-                    "UPDATE research_wave_results SET checkpointed_at = ? WHERE wave_result_id = ?",
-                    (checkpointed_text, wave_result_id),
+                    """UPDATE research_wave_results SET checkpointed_at = ?, checkpointed_run_id = ?
+                    WHERE wave_result_id = ?""",
+                    (checkpointed_text, checkpoint_run_id, wave_result_id),
                 )
-            elif str(wave[2]) != checkpointed_text:
+            elif (
+                str(wave["checkpointed_at"]) != checkpointed_text
+                or str(wave["checkpointed_run_id"]) != checkpoint_run_id
+            ):
                 raise WorkTransitionError("Research wave was reconciled at a different boundary.")
+            return checkpoint
 
     def admit_incremental_research(self, admission: IncrementalResearchAdmissionRecord) -> None:
         """Bind an A3 artifact to durable cross-run work without changing child ownership."""
@@ -1236,27 +1302,6 @@ class IntelligenceWorkRepository:
                     "admission_json": _json(admission.payload),
                 },
             )
-
-    def mark_wave_checkpointed(
-        self,
-        *,
-        wave_result_id: str,
-        checkpointed_at: datetime,
-    ) -> None:
-        """Mark a durable A3 wave reconciled after its checkpoint is installed."""
-        with self._database.transaction(TransactionMode.WRITE) as connection:
-            cursor = connection.execute(
-                """UPDATE research_wave_results SET checkpointed_at = ?
-                WHERE wave_result_id = ? AND checkpointed_at IS NULL""",
-                (_time(checkpointed_at), wave_result_id),
-            )
-            if cursor.rowcount != 1:
-                row = connection.execute(
-                    "SELECT checkpointed_at FROM research_wave_results WHERE wave_result_id = ?",
-                    (wave_result_id,),
-                ).fetchone()
-                if row is None or str(row[0]) != _time(checkpointed_at):
-                    raise WorkTransitionError("Research wave reconciliation conflicts with durable state.")
 
     def latest_research_checkpoint(self, job_id: str) -> ResearchCheckpointRecord | None:
         """Return the latest durable cumulative checkpoint for one job."""
@@ -1458,7 +1503,7 @@ class IntelligenceWorkRepository:
     def ensure_synthesis_unit(self, unit: SynthesisUnitRecord) -> None:
         """Create one per-candidate synthesis unit idempotently."""
         with self._database.transaction(TransactionMode.WRITE) as connection:
-            _insert_or_require(
+            _insert_initial_lifecycle_record(
                 connection,
                 "synthesis_units",
                 "unit_id",
@@ -1477,6 +1522,13 @@ class IntelligenceWorkRepository:
                     "unit_payload_hash": hashlib.sha256(_json(unit.payload).encode()).hexdigest(),
                     "unit_json": _json(unit.payload),
                 },
+                immutable_columns=(
+                    "unit_id",
+                    "research_job_id",
+                    "input_fingerprint",
+                    "unit_payload_hash",
+                    "unit_json",
+                ),
             )
 
     def claim_synthesis_unit(
@@ -1576,8 +1628,6 @@ class IntelligenceWorkRepository:
 
     def record_inference_call(self, record: InferenceCallRecord) -> None:
         """Persist one sanitized completed inference record; prompts are never accepted."""
-        if record.correlation is None:
-            raise WorkTransitionError("Durable inference usage requires workflow correlation.")
         call_id = hashlib.sha256(
             "\x1f".join(
                 (
@@ -1851,7 +1901,13 @@ class IntelligenceWorkRepository:
             interpretation = _count_scalar(connection, "interpretation_bundle_chunks", "claimed_run_id", run_id)
             discovery = _count_scalar(connection, "discovery_batches", "run_id", run_id)
             jobs = _count_scalar(connection, "research_jobs", "claimed_run_id", run_id)
-            waves = _count_scalar(connection, "research_wave_results", "run_id", run_id)
+            waves = int(
+                connection.execute(
+                    """SELECT count(*) FROM research_wave_results
+                    WHERE run_id = ? OR execution_completed_run_id = ?""",
+                    (run_id, run_id),
+                ).fetchone()[0]
+            )
             checkpoints = _count_scalar(connection, "research_job_checkpoints", "run_id", run_id)
             tasks = int(
                 connection.execute(
@@ -1925,6 +1981,31 @@ def _insert_or_require(
     ).fetchone()
     if row is None or tuple(row) != tuple(values[column] for column in columns):
         raise ImmutableWorkCollisionError(f"{table} identity is already bound to different content.")
+
+
+def _insert_initial_lifecycle_record(
+    connection: sqlite3.Connection,
+    table: str,
+    id_column: str,
+    identifier: str,
+    initial_values: dict[str, object],
+    *,
+    immutable_columns: tuple[str, ...],
+) -> None:
+    """Create lifecycle state once and compare only its semantic immutable fields."""
+    columns = tuple(initial_values)
+    placeholders = ", ".join("?" for _ in columns)
+    _ = connection.execute(
+        f"INSERT OR IGNORE INTO {table} ({', '.join(columns)}) VALUES ({placeholders})",  # noqa: S608  # nosec B608
+        tuple(initial_values[column] for column in columns),
+    )
+    row = connection.execute(
+        f"SELECT {', '.join(immutable_columns)} FROM {table} WHERE {id_column} = ?",  # noqa: S608  # nosec B608
+        (identifier,),
+    ).fetchone()
+    expected = tuple(initial_values[column] for column in immutable_columns)
+    if row is None or tuple(row) != expected:
+        raise ImmutableWorkCollisionError(f"{table} semantic identity is already bound to different content.")
 
 
 def _count_scalar(connection: sqlite3.Connection, table: str, run_column: str, run_id: str) -> int:

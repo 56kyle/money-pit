@@ -8,11 +8,15 @@ from money_pit.agents.budget import BoundedInferenceAgent
 from money_pit.agents.budget import InferenceBudgetExceededError
 from money_pit.agents.budget import InferenceBudgetLimits
 from money_pit.agents.inference import InferenceCallRecord
+from money_pit.agents.inference import InferenceInvocationContext
 from money_pit.agents.inference import InferenceInvocationError
-from money_pit.agents.inference import InferenceTracking
 from money_pit.agents.inference import InferenceUsage
+from money_pit.agents.inference import NullInferenceUsageSink
 from money_pit.agents.inference import ProviderInferenceError
 from money_pit.agents.inference import deterministic_request_hash
+
+
+_CONTEXT = InferenceInvocationContext(run_id="run-1", work_unit_id="unit-1")
 
 
 class _Request(BaseModel):
@@ -51,6 +55,7 @@ def _agent(
             maximum_characters=maximum_characters,
             response_reserve_characters=17,
         ),
+        usage_sink=NullInferenceUsageSink(),
     )
 
 
@@ -67,7 +72,7 @@ def test_bounded_inference_agent_sends_only_compact_request_json() -> None:
     )
     exact = _agent(exact_limit, calls)
 
-    result = exact(request)
+    result = exact(request, context=_CONTEXT)
 
     assert result.output == _Response(accepted=True)
     assert calls == ['{"evidence":"material evidence"}']
@@ -77,7 +82,7 @@ def test_bounded_inference_agent_hashes_the_complete_provider_visible_request() 
     calls: list[str] = []
     agent = _agent(10_000, calls)
 
-    result = agent(_Request(evidence="material evidence"))
+    result = agent(_Request(evidence="material evidence"), context=_CONTEXT)
 
     rendered_request = agent._system_prompt + agent._output_schema + calls[0]  # pyright: ignore[reportPrivateUsage]
     assert result.request_hash == deterministic_request_hash(rendered_request)
@@ -91,7 +96,7 @@ def test_bounded_inference_agent_rejects_before_provider_io_when_response_reserv
     undersized = _agent(exact_limit - 1, calls)
 
     with pytest.raises(InferenceBudgetExceededError) as raised:
-        _ = undersized(request)
+        _ = undersized(request, context=_CONTEXT)
 
     breakdown = raised.value.breakdown
     assert breakdown.rendered_total == exact_limit
@@ -109,7 +114,6 @@ def test_bounded_inference_agent_records_unavailable_usage_on_provider_failure()
     def fail(_message: str) -> tuple[_Response, InferenceUsage]:
         raise provider_error
 
-    tracking = InferenceTracking(sink)
     agent = BoundedInferenceAgent[_Request, _Response].create(
         invoke=fail,
         system_prompt="system prompt",
@@ -117,11 +121,11 @@ def test_bounded_inference_agent_records_unavailable_usage_on_provider_failure()
         model_name="provider:model",
         stage="A2",
         purpose="test_failure",
-        tracking=tracking,
+        usage_sink=sink,
     )
 
-    with pytest.raises(InferenceInvocationError) as raised, tracking.scope(run_id="run-1", work_unit_id="unit-1"):
-        _ = agent(_Request(evidence="material evidence"))
+    with pytest.raises(InferenceInvocationError) as raised:
+        _ = agent(_Request(evidence="material evidence"), context=_CONTEXT)
 
     assert raised.value.__cause__ is provider_error
     assert len(sink.records) == 1
@@ -135,7 +139,6 @@ def test_bounded_inference_agent_records_sdk_usage_retained_on_provider_failure(
     def fail(_message: str) -> tuple[_Response, InferenceUsage]:
         raise ProviderInferenceError(usage=usage, failure_kind="UnexpectedModelBehavior")
 
-    tracking = InferenceTracking(sink)
     agent = BoundedInferenceAgent[_Request, _Response].create(
         invoke=fail,
         system_prompt="system prompt",
@@ -143,10 +146,10 @@ def test_bounded_inference_agent_records_sdk_usage_retained_on_provider_failure(
         model_name="provider:model",
         stage="A2",
         purpose="test_failure",
-        tracking=tracking,
+        usage_sink=sink,
     )
 
     with pytest.raises(InferenceInvocationError):
-        _ = agent(_Request(evidence="material evidence"))
+        _ = agent(_Request(evidence="material evidence"), context=_CONTEXT)
 
     assert sink.records[0].usage == usage

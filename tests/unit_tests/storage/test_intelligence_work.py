@@ -9,9 +9,10 @@ from typing import TYPE_CHECKING
 from typing import cast
 
 import pytest
+from pydantic import JsonValue
 
 from money_pit.agents.inference import InferenceCallRecord
-from money_pit.agents.inference import InferenceCorrelation
+from money_pit.agents.inference import InferenceInvocationContext
 from money_pit.agents.inference import InferenceUsage
 from money_pit.composition import _reconcile_holding_discovery_units  # pyright: ignore[reportPrivateUsage]
 from money_pit.composition import _reconcile_universe_discovery_units  # pyright: ignore[reportPrivateUsage]
@@ -24,7 +25,6 @@ from money_pit.portfolio.repository import SnapshotRepository
 from money_pit.portfolio.snapshots import PortfolioStatePayload
 from money_pit.portfolio.snapshots import PortfolioStatePosition
 from money_pit.portfolio.snapshots import PortfolioStateSnapshot
-from money_pit.research.memory import PlannedResearchTaskStore
 from money_pit.storage.database import Database
 from money_pit.storage.database import TransactionMode
 from money_pit.storage.intelligence_work import DiscoveryUnitKind
@@ -63,6 +63,70 @@ def database(tmp_path: Path) -> Database:
 @pytest.fixture
 def repository(database: Database) -> IntelligenceWorkRepository:
     return IntelligenceWorkRepository(database)
+
+
+def _record_completed_wave(
+    repository: IntelligenceWorkRepository,
+    record: ResearchWaveResultRecord,
+) -> None:
+    repository.record_provider_wave(
+        ProviderResearchWaveRecord(
+            wave_result_id=record.wave_result_id,
+            job_id=record.job_id,
+            session_id=record.session_id,
+            origin_run_id=record.origin_run_id,
+            wave_number=record.wave_number,
+            recorded_at=record.recorded_at,
+            provider_result={},
+            search_count_delta=record.search_count_delta,
+            accepted_fetch_count_delta=record.accepted_fetch_count_delta,
+        )
+    )
+    repository.complete_provider_wave(
+        wave_result_id=record.wave_result_id,
+        completion_run_id=record.execution_completed_run_id or record.origin_run_id,
+        execution=record.execution,
+        context=record.context,
+        completed_at=record.execution_completed_at or record.recorded_at,
+    )
+
+
+def _checkpoint_research_wave(
+    repository: IntelligenceWorkRepository,
+    database: Database,
+    *,
+    job_id: str = "job-1",
+    wave_number: int = 1,
+    search_count_delta: int = 2,
+    accepted_fetch_count_delta: int = 4,
+    digest: JsonValue = None,
+) -> ResearchCheckpointRecord:
+    session_id = f"session-{job_id}-{wave_number}"
+    _seed_research_session(database, session_id=session_id)
+    wave_result_id = f"wave-{job_id}-{wave_number}"
+    _record_completed_wave(
+        repository,
+        ResearchWaveResultRecord(
+            wave_result_id=wave_result_id,
+            job_id=job_id,
+            session_id=session_id,
+            origin_run_id="run-1",
+            execution_completed_run_id="run-1",
+            execution_completed_at=_NOW,
+            wave_number=wave_number,
+            recorded_at=_NOW,
+            execution={},
+            context={},
+            search_count_delta=search_count_delta,
+            accepted_fetch_count_delta=accepted_fetch_count_delta,
+        ),
+    )
+    return repository.checkpoint_completed_wave(
+        wave_result_id=wave_result_id,
+        checkpoint_run_id="run-1",
+        digest={} if digest is None else digest,
+        recorded_at=_NOW,
+    )
 
 
 def _seed_runs_and_candidates(database: Database) -> None:
@@ -269,8 +333,9 @@ def test_claim_research_jobs_reclaims_exact_bounded_jobs_before_new_work(
     ) == (("job-1", "job-2"), ("job-1", "job-2"), ("run-2", "run-2"))
 
 
-def test_append_research_checkpoint_preserves_lifetime_counters_across_resume(
+def test_checkpoint_completed_wave_preserves_lifetime_counters_across_resume(
     repository: IntelligenceWorkRepository,
+    database: Database,
 ) -> None:
     repository.ensure_research_job(_research_job(1))
     _ = repository.claim_research_jobs(
@@ -278,17 +343,10 @@ def test_append_research_checkpoint_preserves_lifetime_counters_across_resume(
         claimed_at=_NOW,
         reclaim_before=_NOW - timedelta(minutes=1),
     )
-    repository.append_research_checkpoint(
-        ResearchCheckpointRecord(
-            checkpoint_id="checkpoint-1",
-            job_id="job-1",
-            run_id="run-1",
-            wave_number=1,
-            search_count=2,
-            accepted_fetch_count=4,
-            recorded_at=_NOW,
-            digest={"remaining_work": ["premise-2"]},
-        )
+    _ = _checkpoint_research_wave(
+        repository,
+        database,
+        digest={"remaining_work": ["premise-2"]},
     )
 
     resumed = repository.claim_research_jobs(
@@ -311,12 +369,13 @@ def test__recover_wave_checkpoint_reconciles_durable_outbox_without_replaying_pr
         claimed_at=_NOW,
         reclaim_before=_NOW - timedelta(minutes=1),
     )[0]
-    repository.record_research_wave_result(
+    _record_completed_wave(
+        repository,
         ResearchWaveResultRecord(
             wave_result_id="wave-1",
             job_id=claimed.job_id,
             session_id="session-1",
-            run_id="run-1",
+            origin_run_id="run-1",
             wave_number=1,
             recorded_at=_NOW,
             execution={
@@ -329,7 +388,7 @@ def test__recover_wave_checkpoint_reconciles_durable_outbox_without_replaying_pr
             context=None,
             search_count_delta=2,
             accepted_fetch_count_delta=3,
-        )
+        ),
     )
     resumed = repository.claim_research_jobs(
         run_id="run-2",
@@ -348,7 +407,7 @@ def test__recover_wave_checkpoint_reconciles_durable_outbox_without_replaying_pr
         checkpoint.search_count,
         checkpoint.accepted_fetch_count,
         repository.uncheckpointed_wave("job-1"),
-    ) == ("run-1", 1, 2, 3, None)
+    ) == ("run-2", 1, 2, 3, None)
 
 
 def test_append_wave_result_completes_provider_wave_reclaimed_by_a_later_run(
@@ -358,12 +417,12 @@ def test_append_wave_result_completes_provider_wave_reclaimed_by_a_later_run(
     repository.ensure_research_job(_research_job(1))
     _seed_research_session(database)
     wave_result_id = hashlib.sha256(("job-1\0" + "1").encode()).hexdigest()
-    repository.record_provider_wave_result(
+    repository.record_provider_wave(
         ProviderResearchWaveRecord(
             wave_result_id=wave_result_id,
             job_id="job-1",
             session_id="session-1",
-            run_id="run-1",
+            origin_run_id="run-1",
             wave_number=1,
             recorded_at=_NOW,
             provider_result={"task_count": 0},
@@ -372,18 +431,21 @@ def test_append_wave_result_completes_provider_wave_reclaimed_by_a_later_run(
         )
     )
 
-    PlannedResearchTaskStore(database).append_wave_result(
-        job_id="job-1",
-        session_id="session-1",
-        run_id="run-2",
-        wave_number=1,
-        recorded_at=_NOW + timedelta(minutes=1),
-        execution=ResearchRoundExecution(task_count=0, query_count=0, fetch_count=0),
+    repository.complete_provider_wave(
+        wave_result_id=wave_result_id,
+        completion_run_id="run-2",
+        completed_at=_NOW + timedelta(minutes=1),
+        execution=ResearchRoundExecution(task_count=0, query_count=0, fetch_count=0).model_dump(mode="json"),
+        context=None,
     )
 
     completed = repository.uncheckpointed_wave("job-1")
     assert completed is not None
-    assert (completed.run_id, completed.wave_number) == ("run-1", 1)
+    assert (completed.origin_run_id, completed.execution_completed_run_id, completed.wave_number) == (
+        "run-1",
+        "run-2",
+        1,
+    )
 
 
 def test_admit_incremental_research_preserves_prior_run_child_ownership(
@@ -397,32 +459,26 @@ def test_admit_incremental_research_preserves_prior_run_child_ownership(
         claimed_at=_NOW,
         reclaim_before=_NOW - timedelta(minutes=1),
     )
-    repository.record_research_wave_result(
+    _record_completed_wave(
+        repository,
         ResearchWaveResultRecord(
             wave_result_id="wave-1",
             job_id="job-1",
             session_id="session-1",
-            run_id="run-1",
+            origin_run_id="run-1",
             wave_number=1,
             recorded_at=_NOW,
             execution={"task_count": 0, "query_count": 0, "fetch_count": 0},
             context=None,
             search_count_delta=0,
             accepted_fetch_count_delta=0,
-        )
-    )
-    repository.checkpoint_research_wave(
-        wave_result_id="wave-1",
-        checkpoint=ResearchCheckpointRecord(
-            checkpoint_id="checkpoint-1",
-            job_id="job-1",
-            run_id="run-1",
-            wave_number=1,
-            search_count=0,
-            accepted_fetch_count=0,
-            recorded_at=_NOW,
-            digest={},
         ),
+    )
+    checkpoint = repository.checkpoint_completed_wave(
+        wave_result_id="wave-1",
+        checkpoint_run_id="run-1",
+        recorded_at=_NOW,
+        digest={},
     )
     with database.transaction(TransactionMode.WRITE) as connection:
         _ = connection.execute(
@@ -449,7 +505,7 @@ def test_admit_incremental_research_preserves_prior_run_child_ownership(
             known_at=_NOW,
             input_job_ids=("job-1",),
             input_wave_result_ids=("wave-1",),
-            input_checkpoint_ids=("checkpoint-1",),
+            input_checkpoint_ids=(checkpoint.checkpoint_id,),
             output_record_ids=(),
             payload={},
         )
@@ -482,12 +538,13 @@ def test__recover_wave_checkpoint_does_not_count_failed_fetch_as_accepted(
         claimed_at=_NOW,
         reclaim_before=_NOW - timedelta(minutes=1),
     )[0]
-    repository.record_research_wave_result(
+    _record_completed_wave(
+        repository,
         ResearchWaveResultRecord(
             wave_result_id="failed-fetch-wave",
             job_id=claimed.job_id,
             session_id="session-1",
-            run_id="run-1",
+            origin_run_id="run-1",
             wave_number=1,
             recorded_at=_NOW,
             execution={
@@ -499,7 +556,7 @@ def test__recover_wave_checkpoint_does_not_count_failed_fetch_as_accepted(
             context=None,
             search_count_delta=1,
             accepted_fetch_count_delta=0,
-        )
+        ),
     )
 
     _recover_wave_checkpoint(repository, claimed)
@@ -570,18 +627,7 @@ def test_claim_research_jobs_reactivates_only_terminal_jobs_due_for_review(
         reclaim_before=_NOW - timedelta(minutes=1),
         maximum_jobs=2,
     )
-    repository.append_research_checkpoint(
-        ResearchCheckpointRecord(
-            checkpoint_id="checkpoint-due-parent",
-            job_id="job-1",
-            run_id="run-1",
-            wave_number=1,
-            search_count=2,
-            accepted_fetch_count=4,
-            recorded_at=_NOW,
-            digest={"remaining_work": []},
-        )
-    )
+    _ = _checkpoint_research_wave(repository, database, digest={"remaining_work": []})
     review_trigger_at = _NOW + timedelta(minutes=1)
     repository.finalize_research_job(
         job_id="job-1",
@@ -914,7 +960,7 @@ def test_usage_for_run_aggregates_cache_retry_and_sanitized_failure(
             purpose="interpret_evidence",
             model="test-model",
             request_hash=_FINGERPRINT,
-            correlation=InferenceCorrelation(run_id="run-1", work_unit_id="chunk-1"),
+            correlation=InferenceInvocationContext(run_id="run-1", work_unit_id="chunk-1"),
             started_at=_NOW,
             completed_at=_NOW + timedelta(seconds=1),
             elapsed_milliseconds=1_000,
@@ -934,7 +980,7 @@ def test_usage_for_run_aggregates_cache_retry_and_sanitized_failure(
             purpose="interpret_frame",
             model="test-model",
             request_hash="b" * 64,
-            correlation=InferenceCorrelation(run_id="run-1", work_unit_id="chunk-1"),
+            correlation=InferenceInvocationContext(run_id="run-1", work_unit_id="chunk-1"),
             started_at=_NOW,
             completed_at=_NOW + timedelta(seconds=1),
             elapsed_milliseconds=1_000,
@@ -976,7 +1022,7 @@ def test_usage_for_run_counts_unavailable_provider_usage_without_inventing_token
             purpose="plan_research",
             model="test-model",
             request_hash=_FINGERPRINT,
-            correlation=InferenceCorrelation(run_id="run-1", work_unit_id="job-1"),
+            correlation=InferenceInvocationContext(run_id="run-1", work_unit_id="job-1"),
             status="failed",
             usage=None,
             started_at=_NOW,

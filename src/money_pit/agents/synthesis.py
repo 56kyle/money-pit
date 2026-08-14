@@ -5,7 +5,7 @@ from pydantic_ai import NativeOutput
 
 from money_pit.agents.budget import BoundedInferenceAgent
 from money_pit.agents.budget import InferenceBudgetLimits
-from money_pit.agents.inference import InferenceTracking
+from money_pit.agents.inference import InferenceUsageSink
 from money_pit.agents.inference import invoke_native_output
 from money_pit.agents.models import openai_responses_model
 from money_pit.agents.models import openai_responses_settings
@@ -21,7 +21,7 @@ def make_synthesis_agent(
     *,
     model: str,
     budget: InferenceBudgetLimits | None = None,
-    tracking: InferenceTracking | None = None,
+    usage_sink: InferenceUsageSink,
 ) -> SynthesisAgent:
     """Return typed A4 synthesis with no source, search, portfolio-write, or broker tools."""
     model_name = model
@@ -46,5 +46,5 @@ def make_synthesis_agent(
         limits=budget,
         stage="A4",
         purpose="synthesize_theses",
-        tracking=tracking,
+        usage_sink=usage_sink,
     )

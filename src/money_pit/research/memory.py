@@ -35,6 +35,7 @@ from money_pit.storage.database import Database
 from money_pit.storage.database import TransactionMode
 from money_pit.storage.intelligence_work import IntelligenceWorkRepository
 from money_pit.storage.intelligence_work import ProviderResearchWaveRecord
+from money_pit.storage.intelligence_work import ResearchWaveIdentity
 
 
 if TYPE_CHECKING:
@@ -313,145 +314,6 @@ class PlannedResearchTaskStore:
                 if cursor.rowcount != 1:
                     raise KeyError(planned_id)
 
-    def append_wave_result(
-        self,
-        *,
-        job_id: str,
-        session_id: str,
-        run_id: str,
-        wave_number: int,
-        recorded_at: datetime,
-        execution: ResearchRoundExecution,
-    ) -> None:
-        """Append the validated wave outbox before work-ledger reconciliation."""
-        wave_result_id = hashlib.sha256(f"{job_id}\0{wave_number}".encode("utf-8")).hexdigest()
-        context_payload = None
-        if execution.context is not None:
-            context_payload = execution.context.model_dump(mode="json")
-            context_payload["alias_bindings"] = [
-                binding.model_dump(mode="json") for binding in execution.context.alias_bindings
-            ]
-        accepted_fetch_count = self._accepted_fetch_delta(job_id)
-        encoded = json.dumps(
-            {
-                "execution": execution.model_dump(mode="json"),
-                "context": context_payload,
-                "search_count_delta": execution.query_count,
-                "accepted_fetch_count_delta": accepted_fetch_count,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        with self._database.transaction(TransactionMode.WRITE) as connection:
-            row = cast(
-                "sqlite3.Row | None",
-                connection.execute(
-                    "SELECT phase FROM research_wave_results WHERE wave_result_id = ?",
-                    (wave_result_id,),
-                ).fetchone(),
-            )
-            if row is None:
-                _ = connection.execute(
-                    """INSERT INTO research_wave_results
-                    (wave_result_id, job_id, session_id, run_id, wave_number, phase, recorded_at,
-                     provider_result_json, execution_json)
-                    VALUES (?, ?, ?, ?, ?, 'execution_completed', ?, 'null', ?)""",
-                    (wave_result_id, job_id, session_id, run_id, wave_number, _utc_text(recorded_at), encoded),
-                )
-            elif str(_column(row, "phase")) == "provider_completed":
-                _ = connection.execute(
-                    """UPDATE research_wave_results SET phase = 'execution_completed', execution_json = ?
-                    WHERE wave_result_id = ? AND phase = 'provider_completed'""",
-                    (encoded, wave_result_id),
-                )
-            stored = cast(
-                "sqlite3.Row | None",
-                connection.execute(
-                    """SELECT job_id, session_id, wave_number, execution_json
-                FROM research_wave_results WHERE wave_result_id = ?""",
-                    (wave_result_id,),
-                ).fetchone(),
-            )
-            if stored is None or tuple(stored) != (job_id, session_id, wave_number, encoded):
-                raise ValueError("Research wave result identity collision")
-
-    def append_provider_wave_result(
-        self,
-        *,
-        job_id: str,
-        session_id: str,
-        run_id: str,
-        wave_number: int,
-        recorded_at: datetime,
-        result: ResearchRoundResult,
-    ) -> None:
-        """Append provider-complete semantics before fallible interpretations."""
-        wave_result_id = hashlib.sha256(f"{job_id}\0{wave_number}".encode("utf-8")).hexdigest()
-        encoded_result = result.model_dump_json()
-        search_count = self._search_count_delta(job_id, session_id)
-        accepted_fetch_count = self._accepted_fetch_delta(job_id)
-        with self._database.transaction(TransactionMode.WRITE) as connection:
-            _ = connection.execute(
-                """INSERT OR IGNORE INTO research_wave_results
-                (wave_result_id, job_id, session_id, run_id, wave_number, phase, recorded_at,
-                 provider_result_json, execution_json)
-                VALUES (?, ?, ?, ?, ?, 'provider_completed', ?, ?, ?)""",
-                (
-                    wave_result_id,
-                    job_id,
-                    session_id,
-                    run_id,
-                    wave_number,
-                    _utc_text(recorded_at),
-                    encoded_result,
-                    json.dumps(
-                        {
-                            "search_count_delta": search_count,
-                            "accepted_fetch_count_delta": accepted_fetch_count,
-                        },
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ),
-                ),
-            )
-
-    def _search_count_delta(self, job_id: str, session_id: str) -> int:
-        """Return exact durable query reservations for this one-wave session."""
-        del job_id
-        with self._database.transaction() as connection:
-            row = cast(
-                "sqlite3.Row",
-                connection.execute(
-                    "SELECT query_count AS reserved FROM research_sessions WHERE session_id = ?",
-                    (session_id,),
-                ).fetchone(),
-            )
-        return int(str(_column(row, "reserved")))
-
-    def _accepted_fetch_delta(self, job_id: str) -> int:
-        """Count newly accepted URI admissions beyond the last durable checkpoint."""
-        with self._database.transaction() as connection:
-            row = cast(
-                "sqlite3.Row",
-                connection.execute(
-                    """SELECT
-                    (SELECT count(*) FROM research_uri_admissions
-                     WHERE job_id = ? AND consumes_fetch_capacity = 1) AS admitted,
-                    COALESCE((SELECT accepted_fetch_count FROM research_job_checkpoints
-                              WHERE job_id = ? ORDER BY wave_number DESC LIMIT 1), 0) AS checkpointed""",
-                    (job_id, job_id),
-                ).fetchone(),
-            )
-        admitted = int(str(_column(row, "admitted")))
-        checkpointed = int(str(_column(row, "checkpointed")))
-        if admitted < checkpointed:
-            raise ValueError("Accepted URI admission count precedes its durable checkpoint")
-        return admitted - checkpointed
-
-    def pending_provider_wave_result(self, job_id: str) -> ProviderResearchWaveRecord | None:
-        """Return provider-complete work that still needs semantic interpretation."""
-        return IntelligenceWorkRepository(self._database).pending_provider_wave(job_id)
-
 
 def _allocate_result_limits(
     tasks: tuple[ResearchTaskDraft, ...],
@@ -478,6 +340,7 @@ class DurableResearchRoundRunner:
         service: ResearchService,
         repository: ResearchRepository,
         planned_tasks: PlannedResearchTaskStore,
+        work_repository: IntelligenceWorkRepository,
         interpreter: InterpretationService | None = None,
         material_assessor: ClaimVerificationMaterialAssessor | None = None,
     ) -> None:
@@ -485,6 +348,7 @@ class DurableResearchRoundRunner:
         self._service: ResearchService = service
         self._repository: ResearchRepository = repository
         self._planned_tasks: PlannedResearchTaskStore = planned_tasks
+        self._work: IntelligenceWorkRepository = work_repository
         self._interpreter: InterpretationService | None = interpreter
         self._material_assessor: ClaimVerificationMaterialAssessor | None = material_assessor
 
@@ -613,9 +477,7 @@ class DurableResearchRoundRunner:
             raise ResearchBudgetExceededError("Research tasks exceed the assigned query budget")
         if len(tasks) > fetch_budget:
             raise ResearchBudgetExceededError("Research tasks exceed the assigned fetch budget")
-        pending_provider = (
-            None if job_id.startswith("legacy:") else self._planned_tasks.pending_provider_wave_result(job_id)
-        )
+        pending_provider = None if job_id.startswith("legacy:") else self._work.pending_provider_wave(job_id)
         durable_round = self._repository.research_round_state(session_id, round_number)
         resumed_execution_tasks = durable_round.tasks
         allocated_result_limits: tuple[int, ...] = _allocate_result_limits(tasks, fetch_budget=fetch_budget)
@@ -652,16 +514,26 @@ class DurableResearchRoundRunner:
                 )
             )
             if pending_provider is None and not job_id.startswith("legacy:"):
-                self._planned_tasks.append_provider_wave_result(
+                search_delta, fetch_delta = self._work.provider_wave_deltas(
                     job_id=job_id,
                     session_id=session_id,
-                    run_id=run_id,
-                    wave_number=round_number,
-                    recorded_at=decision_at,
-                    result=result,
+                )
+                wave_result_id = ResearchWaveIdentity(job_id=job_id, wave_number=round_number).wave_result_id
+                self._work.record_provider_wave(
+                    ProviderResearchWaveRecord(
+                        wave_result_id=wave_result_id,
+                        job_id=job_id,
+                        session_id=session_id,
+                        origin_run_id=run_id,
+                        wave_number=round_number,
+                        recorded_at=decision_at,
+                        provider_result=result.model_dump(mode="json"),
+                        search_count_delta=search_delta,
+                        accepted_fetch_count_delta=fetch_delta,
+                    )
                 )
                 provider_phase_durable = True
-                pending_provider = self._planned_tasks.pending_provider_wave_result(job_id)
+                pending_provider = self._work.pending_provider_wave(job_id)
                 if pending_provider is None:
                     raise ValueError("Durable provider wave could not be reloaded")
             after = self._repository.budget_state(session_id)
@@ -729,13 +601,19 @@ class DurableResearchRoundRunner:
             context=context,
         )
         if not job_id.startswith("legacy:"):
-            self._planned_tasks.append_wave_result(
-                job_id=job_id,
-                session_id=session_id,
-                run_id=run_id,
-                wave_number=round_number,
-                recorded_at=decision_at,
-                execution=execution,
+            wave_result_id = ResearchWaveIdentity(job_id=job_id, wave_number=round_number).wave_result_id
+            context_payload = None
+            if execution.context is not None:
+                context_payload = execution.context.model_dump(mode="json")
+                context_payload["alias_bindings"] = [
+                    binding.model_dump(mode="json") for binding in execution.context.alias_bindings
+                ]
+            self._work.complete_provider_wave(
+                wave_result_id=wave_result_id,
+                completion_run_id=run_id,
+                execution=execution.model_dump(mode="json", exclude={"context"}),
+                context=context_payload,
+                completed_at=decision_at,
             )
         if on_completed is not None:
             on_completed(execution)

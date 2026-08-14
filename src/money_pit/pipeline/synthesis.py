@@ -4,7 +4,6 @@ import hashlib
 import json
 from collections.abc import Callable
 from collections.abc import Mapping
-from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from datetime import timedelta
@@ -17,7 +16,7 @@ from pydantic import JsonValue
 
 from money_pit.agents.budget import request_character_allowance
 from money_pit.agents.budget import serialized_inference_request_size
-from money_pit.agents.inference import InferenceTracking
+from money_pit.agents.inference import InferenceInvocationContext
 from money_pit.contracts import ClaimMemory
 from money_pit.contracts import ContributionDraft
 from money_pit.contracts import ResolutionCandidateSet
@@ -546,7 +545,6 @@ def make_synthesis_node(  # noqa: C901 - factory closes explicit typed A4 capabi
     clock: Callable[[], datetime] = lambda: datetime.now(tz=timezone.utc),
     model_point_in_time_certified: bool = False,
     prompt_character_budget: int = 120_000,
-    tracking: InferenceTracking | None = None,
     work_repository: IntelligenceWorkRepository | None = None,
 ) -> PipelineNode:
     """Return A4 with append-only intelligence authority and deterministic gates."""
@@ -678,13 +676,18 @@ def make_synthesis_node(  # noqa: C901 - factory closes explicit typed A4 capabi
         request = _bound_synthesis_request(request, resolved_prompt_character_budget)
         if claimed_unit is not None:
             _require_bounded_unit_context(request, claimed_unit.payload, research_context)
-        work_unit_id = "synthesis:" + ":".join(candidate.candidate_thesis_id for candidate in request.candidates)
-        scope = nullcontext() if tracking is None else tracking.scope(run_id=run_id, work_unit_id=work_unit_id)
+        work_unit_id = (
+            claimed_unit.unit_id
+            if claimed_unit is not None
+            else "synthesis:" + ":".join(candidate.candidate_thesis_id for candidate in request.candidates)
+        )
         if claimed_unit is not None and claimed_unit.validated_output is not None:
             draft = SynthesisDraft.model_validate(claimed_unit.validated_output)
         else:
-            with scope:
-                draft = agent(request).output
+            draft = agent(
+                request,
+                context=InferenceInvocationContext(run_id=run_id, work_unit_id=work_unit_id),
+            ).output
             if work_repository is not None and claimed_unit is not None:
                 validated_output = draft.model_dump(mode="json")
                 checkpoint_fingerprint = hashlib.sha256(

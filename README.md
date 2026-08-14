@@ -1,8 +1,8 @@
-# money-pit 0.0.4
+# money-pit 0.0.5
 
 `money-pit` is a persistent, point-in-time investment-research harness for long-only US equities and ETFs. It discovers theses from configured sources and a layered universe, performs bounded research, preserves immutable claim and thesis history, and produces optimizer-derived portfolio plans.
 
-Nothing has reached production. Release 0.0.4 uses a durable, incremental intelligence workflow. Live execution requires an exact, unexpired plan approval by default.
+Nothing has reached production. Release 0.0.5 uses a durable, audited incremental intelligence workflow. Live execution requires an exact, unexpired plan approval by default.
 
 ## Configuration
 
@@ -25,6 +25,7 @@ Existing caches are not imported or read. In particular, `data/daily_show/` rema
 money-pit source list|check|status|sync|backfill|ingest
 money-pit intelligence update [--source ID] [--through interpretation|discovery|research|synthesis] [--iterations N]
 money-pit intelligence status [--source ID]
+money-pit intelligence audit [--source ID]
 money-pit intelligence runs|show|usage
 money-pit intelligence promote-claim CANONICAL_KEY --reason "operator rationale"
 money-pit research list|show

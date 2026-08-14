@@ -17,11 +17,12 @@ from pydantic import Field
 
 from money_pit.agents.inference import InferenceCallRecord
 from money_pit.agents.inference import InferenceCallStatus
+from money_pit.agents.inference import InferenceInvocationContext
 from money_pit.agents.inference import InferenceInvocationError
 from money_pit.agents.inference import InferenceResult
 from money_pit.agents.inference import InferenceStage
-from money_pit.agents.inference import InferenceTracking
 from money_pit.agents.inference import InferenceUsage
+from money_pit.agents.inference import InferenceUsageSink
 from money_pit.agents.inference import ProviderInferenceError
 from money_pit.agents.inference import deterministic_request_hash
 from money_pit.agents.inference import monotonic_milliseconds_since
@@ -98,7 +99,7 @@ class BoundedInferenceAgent(Generic[RequestT, ResponseT]):
     _stage: InferenceStage
     _purpose: str
     _model_name: str
-    _tracking: InferenceTracking
+    _usage_sink: InferenceUsageSink
 
     @classmethod
     def create(
@@ -111,7 +112,7 @@ class BoundedInferenceAgent(Generic[RequestT, ResponseT]):
         limits: InferenceBudgetLimits | None = None,
         stage: InferenceStage,
         purpose: str,
-        tracking: InferenceTracking | None = None,
+        usage_sink: InferenceUsageSink,
     ) -> "BoundedInferenceAgent[RequestT, ResponseT]":
         """Build one boundary from the exact fixed provider-visible components."""
         return cls(
@@ -127,7 +128,7 @@ class BoundedInferenceAgent(Generic[RequestT, ResponseT]):
             _stage=stage,
             _purpose=purpose,
             _model_name=model_name,
-            _tracking=tracking or InferenceTracking(),
+            _usage_sink=usage_sink,
         )
 
     @property
@@ -139,7 +140,12 @@ class BoundedInferenceAgent(Generic[RequestT, ResponseT]):
             raise InferenceBudgetExceededError(self._breakdown(user_message_characters=0))
         return allowance
 
-    def __call__(self, request: RequestT) -> InferenceResult[ResponseT]:
+    def __call__(
+        self,
+        request: RequestT,
+        *,
+        context: InferenceInvocationContext,
+    ) -> InferenceResult[ResponseT]:
         """Reject an oversized rendered envelope before invoking the provider."""
         user_message = serialize_inference_request(request)
         message = user_message
@@ -163,6 +169,7 @@ class BoundedInferenceAgent(Generic[RequestT, ResponseT]):
                 started_at=started_at,
                 monotonic_started=monotonic_started,
                 failure_kind=error.failure_kind,
+                context=context,
             )
             raise InferenceInvocationError(stage=self._stage, failure_kind=error.failure_kind) from error
         except Exception as error:
@@ -174,6 +181,7 @@ class BoundedInferenceAgent(Generic[RequestT, ResponseT]):
                 started_at=started_at,
                 monotonic_started=monotonic_started,
                 failure_kind=failure_kind,
+                context=context,
             )
             raise InferenceInvocationError(stage=self._stage, failure_kind=failure_kind) from error
         self._record(
@@ -183,6 +191,7 @@ class BoundedInferenceAgent(Generic[RequestT, ResponseT]):
             started_at=started_at,
             monotonic_started=monotonic_started,
             failure_kind=None,
+            context=context,
         )
         return InferenceResult(output=output, usage=usage, request_hash=request_hash)
 
@@ -195,16 +204,17 @@ class BoundedInferenceAgent(Generic[RequestT, ResponseT]):
         started_at: datetime,
         monotonic_started: float,
         failure_kind: str | None,
+        context: InferenceInvocationContext,
     ) -> None:
         """Record content-free usage at the provider boundary."""
         completed_at = utc_now()
-        self._tracking.record(
+        self._usage_sink.record_inference_call(
             InferenceCallRecord(
                 stage=self._stage,
                 purpose=self._purpose,
                 model=self._model_name,
                 request_hash=request_hash,
-                correlation=self._tracking.correlation,
+                correlation=context,
                 status=status,
                 usage=usage,
                 started_at=started_at,

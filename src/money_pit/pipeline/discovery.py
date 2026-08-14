@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable  # noqa: TC003 - used by the runtime default clock
-from contextlib import nullcontext
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -19,6 +18,7 @@ from pydantic import TypeAdapter
 
 from money_pit.agents.budget import request_character_allowance
 from money_pit.agents.budget import serialized_inference_request_size
+from money_pit.agents.inference import InferenceInvocationContext
 from money_pit.contracts import CandidateThesisDraft
 from money_pit.contracts import ClaimMemory
 from money_pit.contracts import DiscoveryAgent
@@ -52,7 +52,6 @@ from money_pit.storage.intelligence_work import DiscoveryUnitKind
 
 
 if TYPE_CHECKING:
-    from money_pit.agents.inference import InferenceTracking
     from money_pit.schemas.claims import ClaimObservation
     from money_pit.schemas.universe import UniverseLayer
     from money_pit.storage.intelligence_work import DiscoveryBatchRecord
@@ -130,7 +129,6 @@ def _resolve_discovery_drafts(
     requests: tuple[DiscoveryRequest, ...],
     discovery_batch: DiscoveryBatchRecord | None,
     agent: DiscoveryAgent,
-    tracking: InferenceTracking | None,
     run_id: str,
 ) -> tuple[DiscoveryDraft, ...]:
     if discovery_batch is not None and discovery_batch.validated_output is not None:
@@ -138,9 +136,12 @@ def _resolve_discovery_drafts(
     drafts: list[DiscoveryDraft] = []
     for index, request in enumerate(requests):
         work_unit_id = f"discovery:{run_id}:{index}" if discovery_batch is None else discovery_batch.batch_id
-        scope = nullcontext() if tracking is None else tracking.scope(run_id=run_id, work_unit_id=work_unit_id)
-        with scope:
-            drafts.append(agent(request).output)
+        drafts.append(
+            agent(
+                request,
+                context=InferenceInvocationContext(run_id=run_id, work_unit_id=work_unit_id),
+            ).output
+        )
     return tuple(drafts)
 
 
@@ -348,7 +349,6 @@ def make_discovery_node(
     clock: Callable[[], datetime] = lambda: datetime.now(tz=timezone.utc),
     model_point_in_time_certified: bool = False,
     prompt_character_budget: int = 120_000,
-    tracking: InferenceTracking | None = None,
     work_repository: IntelligenceWorkRepository | None = None,
 ) -> PipelineNode:
     """Return A2 with claim-read, universe-read, and append-only candidate authority."""
@@ -463,7 +463,6 @@ def make_discovery_node(
             requests=requests,
             discovery_batch=discovery_batch,
             agent=agent,
-            tracking=tracking,
             run_id=run_id,
         )
         unknown_providers = {

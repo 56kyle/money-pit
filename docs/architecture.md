@@ -1,6 +1,6 @@
 # Architecture
 
-money-pit 0.0.4 is a persistent staged system. SQLite owns cross-run intelligence and immutable files own acquired assets, run artifacts, and reports. Every update has a UUID and an explicit point-in-time boundary.
+money-pit 0.0.5 is a persistent staged system. SQLite owns cross-run intelligence and immutable files own acquired assets, run artifacts, and reports. Every update has a UUID and an explicit point-in-time boundary.
 
 ## Stages
 
@@ -19,7 +19,7 @@ SecretSpec resolves credentials at the outer capability boundary. Each credentia
 
 ## Persistence and replay
 
-The database starts from the 0.0.4 schema. Initialization atomically migrates only an exact 0.0.3 predecessor. The migration preserves existing evidence, interpretations, candidates, research sessions, and run artifacts, then backfills durable incremental work identities. Unknown releases, metadata drift, and catalog drift are rejected before mutation. Claims, verifications, thesis revisions, decisions, plans, approvals, executions, and outcomes are append-only. Point-in-time reads filter by `known_at` and the requested cutoff; replay cannot observe later state and never executes A6.
+The database starts from the 0.0.5 schema. Initialization atomically migrates only an exact 0.0.4 predecessor. The migration preserves existing evidence, interpretations, candidates, research sessions, waves, usage, and run artifacts while separating provider origin from semantic completion and checkpoint ownership. Unknown releases, metadata drift, and catalog drift are rejected before mutation. Claims, verifications, thesis revisions, decisions, plans, approvals, executions, and outcomes are append-only. Point-in-time reads filter by `known_at` and the requested cutoff; replay cannot observe later state and never executes A6.
 
 Intelligence status and run inspection read only SQLite state. They do not load capability credentials or construct providers. Portfolio review composes A5 independently from the incremental intelligence runner and uses the latest eligible durable thesis state.
 

@@ -7,6 +7,7 @@ from typing import cast
 
 import pytest
 
+from money_pit.agents.inference import InferenceInvocationContext
 from money_pit.agents.inference import InferenceResult
 from money_pit.agents.inference import InferenceUsage
 from money_pit.config import ConfigurationScope
@@ -32,7 +33,7 @@ from money_pit.storage.migrations import expected_schema_fingerprint
 from money_pit.storage.runs import RunRepository
 
 
-_PREDECESSOR_RELEASE = "0.0.3"
+_PREDECESSOR_RELEASE = "0.0.4"
 _INITIALIZED_AT = "2026-08-01T12:00:00+00:00"
 _INCREMENTAL_RUN_ID = "12d1838e-caae-4f45-9c06-91ef7f2b9135"
 
@@ -145,6 +146,20 @@ def _create_exact_predecessor(path: Path) -> str:
                 ) VALUES (?, ?, 'fx-evolution-youtube', 'fx-definition', ?, ?)""",
                 (video_id, f"version-{index}", f"https://video.test/{video_id}", _INITIALIZED_AT),
             )
+        delta = (
+            importlib.resources.files("money_pit.storage.sql")
+            .joinpath("schema_0_0_4_delta.sql")
+            .read_text(encoding="utf-8")
+        )
+        _ = connection.executescript(delta)
+        migrations_module._backfill_interpretation_work(connection)  # pyright: ignore[reportPrivateUsage]
+        migrations_module._backfill_discovery_work(connection)  # pyright: ignore[reportPrivateUsage]
+        migrations_module._backfill_research_jobs(connection)  # pyright: ignore[reportPrivateUsage]
+        fingerprint = catalog_fingerprint(connection)
+        _ = connection.execute(
+            """UPDATE schema_metadata SET release = ?, schema_fingerprint = ? WHERE singleton = 1""",
+            (_PREDECESSOR_RELEASE, fingerprint),
+        )
         connection.commit()
     finally:
         connection.close()
@@ -231,6 +246,7 @@ def _seed_partially_interpreted_media_bundle(
                         _INITIALIZED_AT,
                     ),
                 )
+        migrations_module._backfill_interpretation_work(connection)  # pyright: ignore[reportPrivateUsage]
         connection.commit()
     finally:
         connection.close()
@@ -379,6 +395,70 @@ def test_initialize_atomically_migrates_exact_0_0_3_and_preserves_rows(tmp_path:
     )
 
 
+def test_initialize_preserves_provider_and_execution_wave_provenance_from_0_0_4(tmp_path: Path) -> None:
+    path = tmp_path / "intelligence.sqlite3"
+    _ = _create_exact_predecessor(path)
+    connection = sqlite3.connect(path)
+    try:
+        _ = connection.execute(
+            """INSERT INTO candidate_theses
+            (candidate_thesis_id, status, created_at, known_at, candidate_json)
+            VALUES ('wave-candidate', 'researching', ?, ?, '{}')""",
+            (_INITIALIZED_AT, _INITIALIZED_AT),
+        )
+        _ = connection.execute(
+            """INSERT INTO research_jobs
+            (job_id, candidate_thesis_id, premise_fingerprint, status, created_at,
+             claimed_run_id, claimed_at, wave_count, search_count, accepted_fetch_count, job_json)
+            VALUES ('wave-job', 'wave-candidate', ?, 'active', ?, 'legacy-run', ?, 0, 0, 0, '{}')""",
+            ("a" * 64, _INITIALIZED_AT, _INITIALIZED_AT),
+        )
+        _ = connection.execute(
+            """INSERT INTO research_sessions
+            (session_id, run_id, scope_kind, scope_subject_id, started_at, deadline_at,
+             maximum_rounds, maximum_queries, maximum_fetches, query_count, fetch_count,
+             status, session_json)
+            VALUES ('wave-session', 'legacy-run', 'candidate_thesis', 'wave-candidate', ?, ?,
+            3, 6, 12, 1, 0, 'active', '{}')""",
+            (_INITIALIZED_AT, "2026-08-01T12:10:00+00:00"),
+        )
+        for wave_id, wave_number, phase, execution_json in (
+            ("provider-wave", 1, "provider_completed", '{"search_count_delta":1,"accepted_fetch_count_delta":0}'),
+            (
+                "execution-wave",
+                2,
+                "execution_completed",
+                '{"search_count_delta":0,"accepted_fetch_count_delta":0,"execution":{},"context":null}',
+            ),
+        ):
+            _ = connection.execute(
+                """INSERT INTO research_wave_results
+                (wave_result_id, job_id, session_id, run_id, wave_number, phase, recorded_at,
+                 provider_result_json, execution_json)
+                VALUES (?, 'wave-job', 'wave-session', 'legacy-run', ?, ?, ?, '{}', ?)""",
+                (wave_id, wave_number, phase, _INITIALIZED_AT, execution_json),
+            )
+        connection.commit()
+    finally:
+        connection.close()
+
+    Database(path).initialize()
+
+    with Database(path).read_only_transaction() as migrated:
+        rows = cast(
+            "list[sqlite3.Row]",
+            migrated.execute(
+                """SELECT wave_result_id, run_id, execution_completed_run_id, checkpointed_run_id
+                FROM research_wave_results WHERE wave_result_id IN ('provider-wave', 'execution-wave')
+                ORDER BY wave_result_id"""
+            ).fetchall(),
+        )
+    assert [tuple(row) for row in rows] == [
+        ("execution-wave", "legacy-run", "legacy-run", None),
+        ("provider-wave", "legacy-run", None, None),
+    ]
+
+
 def test_initialize_backfills_only_exact_interpretation_bundle_coverage(
     tmp_path: Path,
 ) -> None:
@@ -476,7 +556,10 @@ def test_migrated_partial_interpretation_bundle_infers_only_missing_asset(
     )
     calls: list[tuple[str, ...]] = []
 
-    def interpret(request: InterpretationRequest) -> InferenceResult[InterpretationDraft]:
+    def interpret(
+        request: InterpretationRequest, *, context: InferenceInvocationContext
+    ) -> InferenceResult[InterpretationDraft]:
+        del context
         calls.append(tuple(item.alias for item in request.evidence))
         return InferenceResult(
             output=InterpretationDraft(observations=()),

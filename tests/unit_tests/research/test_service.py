@@ -55,6 +55,7 @@ from money_pit.sources._shared import source_definition_hash
 from money_pit.sources.service import EvidenceRepository
 from money_pit.storage.assets import AssetStore
 from money_pit.storage.database import Database
+from money_pit.storage.intelligence_work import IntelligenceWorkRepository
 from money_pit.storage.sources import SourceRepository
 
 
@@ -313,6 +314,7 @@ def _certified_runtime_work(
         interpreter=_interpreter(),
         credentials=SecretSpecInferenceResolver(tmp_path / "unused-secretspec.toml"),
         model="test-model",
+        work_repository=IntelligenceWorkRepository(database),
     )
     session = ResearchSession(
         session_id="session-certified",
@@ -420,6 +422,7 @@ def test_run_round_blocks_current_only_provider_before_io_for_historical_run(tmp
         interpreter=_interpreter(),
         credentials=SecretSpecInferenceResolver(tmp_path / "unused-secretspec.toml"),
         model="test-model",
+        work_repository=IntelligenceWorkRepository(database),
     )
     session = ResearchSession(
         session_id="session-1",
@@ -481,6 +484,7 @@ def test_run_round_uses_certified_cutoff_search_and_fetch_methods(tmp_path: Path
         interpreter=_interpreter(),
         credentials=SecretSpecInferenceResolver(tmp_path / "unused-secretspec.toml"),
         model="test-model",
+        work_repository=IntelligenceWorkRepository(database),
     )
     session = ResearchSession(
         session_id="session-certified",

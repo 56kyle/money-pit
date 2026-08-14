@@ -90,7 +90,6 @@ Homepage = "https://github.com/56kyle/money-pit"
 Repository = "https://github.com/56kyle/money-pit"
 
 [tool.uv]
-cache-dir = ".nox/uv-cache"
 conflicts = [
   [
     { extra = "cpu" },

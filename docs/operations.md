@@ -4,7 +4,17 @@ All development and automated tests must use a temporary data root. Never run de
 
 Database initialization is fail-closed. An unknown non-empty schema is an operator error; the application does not upgrade or rewrite it. Back up runtime state before changing deployed configuration.
 
-Synchronize sources before running `money-pit intelligence update`. Each update advances one bounded batch. Use `money-pit intelligence status` to decide whether another update is necessary. Do not schedule concurrent updates against the same data root. Status and run inspection make no provider calls and need no credentials.
+Synchronize sources before running `money-pit intelligence update`. Each update advances one bounded batch. Use `money-pit intelligence status` to decide whether another update is necessary. Do not schedule concurrent updates against the same data root. Status, audit, review listing, lineage, and run inspection make no provider calls and need no credentials.
+
+If status reports `needs review`:
+
+1. Run `money-pit intelligence reviews [--source SOURCE_ID]`.
+2. Copy the returned `hypothesis-review:...` ID.
+3. Run `money-pit intelligence lineage HYPOTHESIS_REVIEW_ID`.
+4. Compare the capital reference, direction, horizon, mechanisms, and regime assumptions.
+5. Run `money-pit intelligence resolve` with the decision, actor, and reason.
+
+Do not infer hypothesis identity from similar proposal text. Use `same` only when the economic meaning is the same.
 
 Run commands from the project root. Relative configuration paths resolve there, and durable state is under `./data`. `money-pit doctor` inspects schema identity in read-only mode.
 
@@ -16,6 +26,6 @@ Human portfolio output masks account IDs and shows the broker environment. JSON 
 
 Disable execution immediately when positions, cash, open orders, fills, evidence freshness, market drift, tax state, or policy cannot be reconciled. Do not re-enable until the cause is understood and the policy version is explicit.
 
-Run `money-pit portfolio review` only after the required intelligence updates finish. Portfolio review starts at A5 and does not rerun intelligence work. Autonomous live execution remains unavailable until the configured policy and all staged evaluation requirements pass. Reports and outcomes never mutate prompts, policy, or models automatically.
+Run `money-pit portfolio review` only after the required intelligence updates finish and semantic reviews are resolved. Portfolio review starts at A5 and does not rerun intelligence work. A hypothesis with insufficient evidence, an unresolved review, or unavailable semantic state cannot grant capital authority. Autonomous live execution remains unavailable until the configured policy and all staged evaluation requirements pass. Reports and outcomes never mutate prompts, policy, or models automatically.
 
 Supported SecretSpec SDK targets are Windows x64, glibc Linux x64 and arm64, and macOS arm64.

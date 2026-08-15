@@ -1,8 +1,8 @@
-# money-pit 0.0.5
+# money-pit 0.0.6
 
 `money-pit` is a persistent, point-in-time investment-research harness for long-only US equities and ETFs. It discovers theses from configured sources and a layered universe, performs bounded research, preserves immutable claim and thesis history, and produces optimizer-derived portfolio plans.
 
-Nothing has reached production. Release 0.0.5 uses a durable, audited incremental intelligence workflow. Live execution requires an exact, unexpired plan approval by default.
+Nothing has reached production. Release 0.0.6 separates candidate proposals, exact semantic variants, canonical hypothesis groups, research cases, and synthesis eligibility. Live execution requires an exact, unexpired plan approval by default.
 
 ## Configuration
 
@@ -27,6 +27,9 @@ money-pit intelligence update [--source ID] [--through interpretation|discovery|
 money-pit intelligence status [--source ID]
 money-pit intelligence audit [--source ID]
 money-pit intelligence runs|show|usage
+money-pit intelligence reviews [--source ID]
+money-pit intelligence resolve REVIEW_ID --decision same|distinct --actor OPERATOR --reason "rationale"
+money-pit intelligence lineage NAMESPACE:ID
 money-pit intelligence promote-claim CANONICAL_KEY --reason "operator rationale"
 money-pit research list|show
 money-pit claims list|show|refresh
@@ -40,7 +43,7 @@ money-pit doctor
 
 Run `money-pit` with no command to show help. Put global `--json` or `--debug` before the command. JSON mode writes one value to stdout and sends progress to stderr.
 
-Each intelligence iteration is a separate durable run. `--iterations N` stops early when a run commits no durable lifecycle transition. Read-only intelligence inspection does not construct providers.
+Each intelligence iteration is a separate durable run. `--iterations N` stops early when a run commits no durable lifecycle transition. Status, audit, review listing, and lineage inspection do not construct providers. A review resolution records an explicit operator decision without resolving credentials.
 
 Portfolio review runs only portfolio planning. It does not rerun intelligence stages. Execution enablement requires an actor, reason, policy version, and explicit confirmation. Replay never constructs a broker-write client.
 

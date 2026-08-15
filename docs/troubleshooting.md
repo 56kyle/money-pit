@@ -20,9 +20,31 @@ This result is normal. One invocation processes a bounded batch and does not dra
 
 Inspect the update with `money-pit intelligence show RUN_ID`. Completed work remains durable. Correct the provider or credential problem, then run another update. The next update resumes unfinished work and does not repeat completed model calls whose work identity and version bindings are unchanged.
 
+## Status reports needs-review work
+
+1. Run `money-pit intelligence reviews [--source SOURCE_ID]`.
+2. Copy the returned `hypothesis-review:...` ID.
+3. Run `money-pit intelligence lineage HYPOTHESIS_REVIEW_ID`.
+4. Inspect the proposals, discovery origins, research cases, and synthesis state.
+5. Resolve the review only when you can justify `same` or `distinct`.
+
+An open review makes only its related work unavailable.
+
+## Status reports superseded work
+
+Superseded rows are retained audit history and are not runnable. You do not have to remove these rows.
+
+1. Run `money-pit intelligence lineage NAMESPACE:ID` to inspect the active successor.
+2. If the lineage has no valid successor, run `money-pit intelligence audit`.
+3. If the audit reports `blocked`, do not run a provider-backed update.
+
+## Research closes with insufficient evidence
+
+This result is a deterministic stop, not a provider failure. The system records the eligibility assessment and does not spend an A4 call. The hypothesis remains non-investable until new material evidence, a decisive contradiction, or an explicitly due review changes its state.
+
 ## Database fingerprint rejected
 
-The selected database is non-empty and matches neither the 0.0.5 schema nor the exact retained 0.0.4 predecessor. An exact 0.0.4 database migrates automatically in one transaction. Unknown releases, metadata drift, and catalog drift are rejected without mutation. Stop and verify the configured data root; do not rename, manually migrate, or delete an unknown database automatically.
+The selected database is non-empty and matches neither the 0.0.6 schema nor the exact retained 0.0.5 predecessor. An exact 0.0.5 database migrates automatically in one transaction. Unknown releases, metadata drift, and catalog drift are rejected without mutation. Stop and verify the configured data root; do not rename, manually migrate, or delete an unknown database automatically.
 
 Before retrying a failed intelligence update, run `money-pit intelligence audit`. `resumable` means paid work is intact and a later run can continue it. `blocked` means a durable invariant failed; do not run a provider-backed update until the affected IDs are diagnosed.
 

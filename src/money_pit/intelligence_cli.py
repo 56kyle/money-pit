@@ -34,6 +34,8 @@ from money_pit.storage.intelligence_work import IntelligenceWorkRepository
 from money_pit.storage.recovery_audit import RecoveryAuditBlockedError
 from money_pit.storage.recovery_audit import RecoveryAuditor
 from money_pit.storage.runs import RunRepository
+from money_pit.storage.semantic_intelligence import HypothesisReviewDecision
+from money_pit.storage.semantic_intelligence import SemanticIntelligenceRepository
 
 
 intelligence_app = typer.Typer(help="Advance and inspect incremental intelligence work.")
@@ -142,13 +144,54 @@ def intelligence_audit(source: str | None = None) -> None:
     )
 
 
+@intelligence_app.command(name="reviews")
+def intelligence_reviews(source: str | None = None) -> None:
+    """List semantic-equivalence reviews without providers or credentials."""
+    _ = run_operator_command(
+        lambda: SemanticIntelligenceRepository(_read_database()).list_reviews(source_id=source),
+        heading="Intelligence semantic reviews",
+    )
+
+
+@intelligence_app.command(name="resolve")
+def intelligence_resolve(
+    review_id: str,
+    decision: Annotated[HypothesisReviewDecision, typer.Option("--decision")],
+    actor: Annotated[str, typer.Option("--actor")],
+    reason: Annotated[str, typer.Option("--reason")],
+) -> None:
+    """Record one append-only semantic-equivalence decision without providers or credentials."""
+
+    def run() -> object:
+        return SemanticIntelligenceRepository(_read_database()).resolve_review(
+            _required_text(review_id, name="review-id"),
+            decision=decision,
+            actor=_required_text(actor, name="actor"),
+            reason=_required_text(reason, name="reason"),
+            resolved_at=datetime.now(tz=UTC),
+        )
+
+    _ = run_operator_command(run, heading="Intelligence semantic review resolution")
+
+
+@intelligence_app.command(name="lineage")
+def intelligence_lineage(durable_id: str) -> None:
+    """Show semantic lineage for one namespace-qualified durable identity."""
+    _ = run_operator_command(
+        lambda: SemanticIntelligenceRepository(_read_database()).lineage(_required_text(durable_id, name="durable-id")),
+        heading="Intelligence semantic lineage",
+    )
+
+
 def _intelligence_status_report(source: str | None) -> IntelligenceStatusReport:
+    database = _read_database()
     status = intelligence_work_status(
-        database=_read_database(),
+        database=database,
         config=load_application_config(scope=ConfigurationScope.INTELLIGENCE),
         source_id=source,
         implementation_version=APP_VERSION,
     )
+    semantic = SemanticIntelligenceRepository(database).semantic_status(source_id=source)
     categories = {
         "pending": sum(
             (
@@ -170,12 +213,19 @@ def _intelligence_status_report(source: str | None) -> IntelligenceStatusReport:
         ),
         "due_reviews": status.due_research_reviews,
         "unmaterialized": (status.unmaterialized_interpretation_bundles + status.unmaterialized_discovery_units),
-        "unavailable": "not checked (provider-free status)",
+        "needs_review": semantic.needs_review,
+        "unavailable": semantic.unavailable_research_jobs + semantic.unavailable_synthesis_units,
+        "non_investable": semantic.insufficient_evidence_assessments,
+        "superseded": semantic.superseded_research_jobs + semantic.superseded_synthesis_units,
     }
     if categories["active"]:
         next_action = "Inspect the most recent run, then retry the matching intelligence update."
+    elif categories["needs_review"]:
+        next_action = "Run intelligence reviews, inspect each review's lineage, then resolve the review."
     elif categories["pending"] or categories["due_reviews"] or categories["unmaterialized"]:
         next_action = "Run intelligence update to advance the queued durable work."
+    elif categories["unavailable"]:
+        next_action = "Run intelligence audit, then inspect the unavailable work's semantic lineage."
     else:
         next_action = "No intelligence update is required."
     return IntelligenceStatusReport(
@@ -183,7 +233,15 @@ def _intelligence_status_report(source: str | None) -> IntelligenceStatusReport:
         next_action=next_action,
         categories=categories,
         durable=status,
+        semantic=semantic,
     )
+
+
+def _required_text(value: str, *, name: str) -> str:
+    normalized = " ".join(value.split())
+    if not normalized:
+        raise typer.BadParameter(f"{name} cannot be blank")
+    return normalized
 
 
 @intelligence_app.command(name="runs")

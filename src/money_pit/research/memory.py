@@ -36,6 +36,9 @@ from money_pit.storage.database import TransactionMode
 from money_pit.storage.intelligence_work import IntelligenceWorkRepository
 from money_pit.storage.intelligence_work import ProviderResearchWaveRecord
 from money_pit.storage.intelligence_work import ResearchWaveIdentity
+from money_pit.storage.semantic_intelligence import ResearchJobTaskBinding
+from money_pit.storage.semantic_intelligence import ResearchTaskRole
+from money_pit.storage.semantic_intelligence import SemanticIntelligenceRepository
 
 
 if TYPE_CHECKING:
@@ -55,9 +58,14 @@ if TYPE_CHECKING:
 class PlannedResearchTaskStore:
     """Persist A2 research plans separately from live A3 sessions."""
 
-    def __init__(self, database: Database) -> None:
+    def __init__(
+        self,
+        database: Database,
+        semantic_repository: SemanticIntelligenceRepository | None = None,
+    ) -> None:
         """Bind planned work to an initialized database."""
         self._database: Database = database
+        self._semantic: SemanticIntelligenceRepository | None = semantic_repository
 
     def append_task(
         self,
@@ -115,6 +123,7 @@ class PlannedResearchTaskStore:
         *,
         run_id: str,
         known_at: datetime,
+        job_id: str | None = None,
     ) -> tuple[str, ...]:
         """Atomically persist one paid planner result before execution."""
         prepared: list[tuple[str, str, str]] = []
@@ -141,7 +150,18 @@ class PlannedResearchTaskStore:
                 )
                 if row is None or str(_column(row, "task_json")) != task_json:
                     raise ValueError("Planned research task identity collision")
-        return tuple(item[0] for item in prepared)
+        task_ids = tuple(item[0] for item in prepared)
+        if job_id is not None:
+            if self._semantic is None:
+                raise ValueError("Job-local planner tasks require semantic intelligence persistence")
+            self._semantic.bind_research_job_tasks(
+                job_id=job_id,
+                bindings=tuple(
+                    ResearchJobTaskBinding(task_id=task_id, role=ResearchTaskRole.PLANNER_FOLLOWUP)
+                    for task_id in task_ids
+                ),
+            )
+        return task_ids
 
     def planner_result(self, *, job_id: str, wave_number: int) -> ResearchRoundPlan | None:
         """Return a complete durable planner result, including an empty result."""
@@ -224,6 +244,61 @@ class PlannedResearchTaskStore:
                 )
         return tuple(ResearchTaskDraft.model_validate_json(str(_column(row, "task_json"))) for row in rows)
 
+    def tasks_for_candidate(
+        self,
+        candidate_thesis_id: str,
+        *,
+        as_of: datetime,
+        origin_unit_ids: tuple[str, ...] = (),
+    ) -> tuple[ResearchTaskDraft, ...]:
+        """Return the immutable candidate premise without lifecycle filtering."""
+        with self._database.read_only_transaction() as connection:
+            if origin_unit_ids:
+                rows: list[sqlite3.Row] = cast(
+                    "list[sqlite3.Row]",
+                    connection.execute(
+                        """SELECT DISTINCT task.task_json, task.known_at, task.created_at, task.task_id
+                    FROM planned_research_tasks AS task
+                    JOIN planned_research_task_origins AS origin ON origin.task_id = task.task_id
+                    WHERE task.candidate_thesis_id = ? AND task.known_at <= ?
+                      AND origin.unit_id IN (SELECT value FROM json_each(?))
+                    ORDER BY task.known_at, task.created_at, task.task_id""",
+                        (candidate_thesis_id, _utc_text(as_of), json.dumps(origin_unit_ids)),
+                    ).fetchall(),
+                )
+            else:
+                rows = cast(
+                    "list[sqlite3.Row]",
+                    connection.execute(
+                        """SELECT task_json FROM planned_research_tasks
+                    WHERE candidate_thesis_id = ? AND known_at <= ?
+                    ORDER BY known_at, created_at, task_id""",
+                        (candidate_thesis_id, _utc_text(as_of)),
+                    ).fetchall(),
+                )
+        return tuple(ResearchTaskDraft.model_validate_json(str(_column(row, "task_json"))) for row in rows)
+
+    def pending_for_job(self, job_id: str, *, as_of: datetime) -> tuple[ResearchTaskDraft, ...]:
+        """Return pending job-local tasks without consulting global task lifecycle."""
+        if self._semantic is None:
+            raise ValueError("Job-local research requires semantic intelligence persistence")
+        task_ids = tuple(binding.task_id for binding in self._semantic.task_bindings_for_job(job_id, due_only=True))
+        if not task_ids:
+            return ()
+        with self._database.read_only_transaction() as connection:
+            rows = cast(
+                "list[sqlite3.Row]",
+                connection.execute(
+                    """SELECT task_id, task_json FROM planned_research_tasks
+                    WHERE task_id IN (SELECT value FROM json_each(?)) AND known_at <= ?""",
+                    (json.dumps(task_ids), _utc_text(as_of)),
+                ).fetchall(),
+            )
+        by_id = {str(_column(row, "task_id")): str(_column(row, "task_json")) for row in rows}
+        if by_id.keys() != set(task_ids):
+            raise ValueError("Job-local task binding references an unknown task definition")
+        return tuple(ResearchTaskDraft.model_validate_json(by_id[task_id]) for task_id in task_ids)
+
     def materialize(
         self,
         task: ResearchTaskDraft,
@@ -233,6 +308,7 @@ class PlannedResearchTaskStore:
         session_id: str,
         round_number: int,
         as_of: datetime,
+        job_id: str | None = None,
     ) -> tuple[str, ResearchTask]:
         """Bind one plan to a real session and return its execution contract."""
         del run_id
@@ -258,6 +334,19 @@ class PlannedResearchTaskStore:
             ),
             created_at=as_of,
         )
+        if job_id is not None:
+            if self._semantic is None:
+                raise ValueError("Job-local task execution requires semantic intelligence persistence")
+            execution_task = execution_task.model_copy(
+                update={"task_id": f"execution:{job_id}:{planned_id}:{round_number}"}
+            )
+            self._semantic.materialize_job_task(
+                job_id=job_id,
+                task_id=planned_id,
+                session_id=session_id,
+                materialized_task_id=execution_task.task_id,
+            )
+            return planned_id, execution_task
         with self._database.transaction(TransactionMode.WRITE) as connection:
             planned_row = cast(
                 "sqlite3.Row | None",
@@ -284,8 +373,24 @@ class PlannedResearchTaskStore:
                 raise KeyError(planned_id)
         return planned_id, execution_task
 
-    def complete(self, planned_ids: tuple[str, ...], *, completed_at: datetime) -> None:
+    def complete(
+        self,
+        planned_ids: tuple[str, ...],
+        *,
+        completed_at: datetime,
+        job_id: str | None = None,
+    ) -> None:
         """Mark materialized plans complete after their durable round succeeds."""
+        if job_id is not None:
+            if self._semantic is None:
+                raise ValueError("Job-local task completion requires semantic intelligence persistence")
+            for planned_id in planned_ids:
+                self._semantic.complete_job_task(
+                    job_id=job_id,
+                    task_id=planned_id,
+                    completed_at=completed_at,
+                )
+            return
         with self._database.transaction(TransactionMode.WRITE) as connection:
             for planned_id in planned_ids:
                 cursor = connection.execute(
@@ -299,8 +404,14 @@ class PlannedResearchTaskStore:
                 if cursor.rowcount != 1:
                     raise KeyError(planned_id)
 
-    def release(self, planned_ids: tuple[str, ...]) -> None:
+    def release(self, planned_ids: tuple[str, ...], *, job_id: str | None = None) -> None:
         """Return interrupted materialized work to the resumable pending queue."""
+        if job_id is not None:
+            if self._semantic is None:
+                raise ValueError("Job-local task release requires semantic intelligence persistence")
+            for planned_id in planned_ids:
+                self._semantic.release_job_task(job_id=job_id, task_id=planned_id)
+            return
         with self._database.transaction(TransactionMode.WRITE) as connection:
             for planned_id in planned_ids:
                 cursor = connection.execute(
@@ -343,6 +454,7 @@ class DurableResearchRoundRunner:
         work_repository: IntelligenceWorkRepository,
         interpreter: InterpretationService | None = None,
         material_assessor: ClaimVerificationMaterialAssessor | None = None,
+        semantic_repository: SemanticIntelligenceRepository | None = None,
     ) -> None:
         """Bind the service, session repository, and A2 plan queue."""
         self._service: ResearchService = service
@@ -351,6 +463,8 @@ class DurableResearchRoundRunner:
         self._work: IntelligenceWorkRepository = work_repository
         self._interpreter: InterpretationService | None = interpreter
         self._material_assessor: ClaimVerificationMaterialAssessor | None = material_assessor
+        self._semantic: SemanticIntelligenceRepository | None = semantic_repository
+        self._semantic_tasks_enabled: bool = semantic_repository is not None
 
     def start_session(
         self,
@@ -362,12 +476,14 @@ class DurableResearchRoundRunner:
         maximum_rounds: int,
         maximum_queries: int,
         maximum_fetches: int,
+        job_id: str | None = None,
     ) -> str:
         """Create the real bounded session at the harness start time."""
         return self.start_scoped_session(
             run_id=run_id,
             scope=CandidateThesisResearchScope(
                 candidate_thesis_id=candidate.candidate_thesis_id,
+                research_job_id=job_id,
             ),
             started_at=started_at,
             deadline=deadline,
@@ -386,9 +502,13 @@ class DurableResearchRoundRunner:
         maximum_rounds: int,
         maximum_queries: int,
         maximum_fetches: int,
+        job_id: str | None = None,
     ) -> str:
         """Resume the candidate's interrupted session without repaying completed provider work."""
-        scope = CandidateThesisResearchScope(candidate_thesis_id=candidate.candidate_thesis_id)
+        scope = CandidateThesisResearchScope(
+            candidate_thesis_id=candidate.candidate_thesis_id,
+            research_job_id=job_id,
+        )
         active = self._repository.active_session_for_scope(scope)
         if active is not None:
             if active.run_id != run_id:
@@ -398,6 +518,7 @@ class DurableResearchRoundRunner:
                     reclaim_before=started_at - timedelta(minutes=30),
                     deadline=deadline,
                 )
+            self._bind_semantic_session(scope, active.session_id, started_at)
             return active.session_id
         return self.start_session(
             run_id=run_id,
@@ -407,6 +528,7 @@ class DurableResearchRoundRunner:
             maximum_rounds=maximum_rounds,
             maximum_queries=maximum_queries,
             maximum_fetches=maximum_fetches,
+            job_id=job_id,
         )
 
     def pending_tasks_for_session(self, session_id: str) -> tuple[ResearchTaskDraft, ...]:
@@ -453,7 +575,25 @@ class DurableResearchRoundRunner:
                 maximum_fetches=maximum_fetches,
             ),
         )
+        self._bind_semantic_session(scope, session_id, started_at)
         return session_id
+
+    def _bind_semantic_session(
+        self,
+        scope: ResearchScope,
+        session_id: str,
+        bound_at: datetime,
+    ) -> None:
+        if (
+            self._semantic is not None
+            and isinstance(scope, CandidateThesisResearchScope)
+            and scope.research_job_id is not None
+        ):
+            self._semantic.bind_research_session(
+                job_id=scope.research_job_id,
+                session_id=session_id,
+                bound_at=bound_at,
+            )
 
     def run_round(  # noqa: C901 - explicit durable phase recovery branches
         self,
@@ -481,13 +621,14 @@ class DurableResearchRoundRunner:
         durable_round = self._repository.research_round_state(session_id, round_number)
         resumed_execution_tasks = durable_round.tasks
         allocated_result_limits: tuple[int, ...] = _allocate_result_limits(tasks, fetch_budget=fetch_budget)
-        for task in tasks:
-            _ = self._planned_tasks.append_task(task, run_id=run_id, known_at=decision_at)
-        materialized = (
-            ()
-            if pending_provider is not None or resumed_execution_tasks
-            else tuple(
-                self._planned_tasks.materialize(
+        semantic_job_id = job_id if self._semantic_tasks_enabled and not job_id.startswith("legacy:") else None
+
+        def materialize_task(
+            task: ResearchTaskDraft,
+            allocated_result_limit: int,
+        ) -> tuple[str, ResearchTask]:
+            if semantic_job_id is None:
+                return self._planned_tasks.materialize(
                     task,
                     allocated_maximum_results=allocated_result_limit,
                     run_id=run_id,
@@ -495,6 +636,23 @@ class DurableResearchRoundRunner:
                     round_number=round_number,
                     as_of=decision_at,
                 )
+            return self._planned_tasks.materialize(
+                task,
+                allocated_maximum_results=allocated_result_limit,
+                run_id=run_id,
+                session_id=session_id,
+                round_number=round_number,
+                as_of=decision_at,
+                job_id=semantic_job_id,
+            )
+
+        for task in tasks:
+            _ = self._planned_tasks.append_task(task, run_id=run_id, known_at=decision_at)
+        materialized = (
+            ()
+            if pending_provider is not None or resumed_execution_tasks
+            else tuple(
+                materialize_task(task, allocated_result_limit)
                 for task, allocated_result_limit in zip(tasks, allocated_result_limits, strict=True)
             )
         )
@@ -568,13 +726,22 @@ class DurableResearchRoundRunner:
             )
         except Exception:
             if not provider_phase_durable:
-                self._planned_tasks.release(tuple(item[0] for item in materialized))
+                planned_ids = tuple(item[0] for item in materialized)
+                if semantic_job_id is None:
+                    self._planned_tasks.release(planned_ids)
+                else:
+                    self._planned_tasks.release(planned_ids, job_id=semantic_job_id)
             raise
         if materialized:
-            self._planned_tasks.complete(
-                tuple(item[0] for item in materialized),
-                completed_at=decision_at,
-            )
+            planned_ids = tuple(item[0] for item in materialized)
+            if semantic_job_id is None:
+                self._planned_tasks.complete(planned_ids, completed_at=decision_at)
+            else:
+                self._planned_tasks.complete(
+                    planned_ids,
+                    completed_at=decision_at,
+                    job_id=semantic_job_id,
+                )
         context = _build_round_context(
             round_number,
             tasks,

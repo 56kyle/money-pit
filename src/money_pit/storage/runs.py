@@ -235,7 +235,7 @@ class RunRepository:
             rows = cast(
                 "list[sqlite3.Row]",
                 connection.execute(
-                    f"""SELECT run.run_id, run.through_stage, run.started_at, run.manifest_json,
+                    f"""SELECT run.*,
                     terminal.status, terminal.completed_at
                     FROM runs AS run LEFT JOIN run_terminal_events AS terminal USING (run_id)
                     WHERE run.through_stage IN ('A1', 'A2', 'A3', 'A4')

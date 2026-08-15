@@ -82,6 +82,15 @@ def test_append_terminal_event_is_exact_and_idempotent(tmp_path: Path) -> None:
     assert repository.terminal_event_for_run(_RUN_ID) == event
 
 
+def test_recent_intelligence_runs_rehydrates_complete_run_record(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+
+    recent = repository.recent_intelligence_runs(limit=1)
+
+    assert len(recent) == 1
+    assert recent[0].run_id == _RUN_ID
+
+
 def test_append_terminal_event_rejects_different_second_outcome(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     repository.append_terminal_event(_completed_event())

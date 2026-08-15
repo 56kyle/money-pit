@@ -35,6 +35,7 @@ def _observation(
     claim_text: str,
     *,
     known_at: datetime = _REQUESTED_AS_OF,
+    instruments: tuple[str, ...] = ("NEW",),
 ) -> ClaimObservation:
     return ClaimObservation(
         observation_id=observation_id,
@@ -48,7 +49,7 @@ def _observation(
         effective_from=known_at,
         valid_until=known_at + timedelta(days=30),
         horizon_class=HorizonClass.TACTICAL,
-        instruments=("NEW",),
+        instruments=instruments,
     )
 
 
@@ -231,6 +232,36 @@ def test_resolution_candidates_returns_only_bounded_visible_matches(
     )
 
     assert tuple(item.observation_id for item in candidates) == ("first",)
+
+
+def test_resolution_candidates_rejects_common_word_only_matches(
+    claim_database: Database,
+    claim_repository: ClaimRepository,
+) -> None:
+    subject = _observation(
+        "subject",
+        "Michael Burry added to a short position in Nebius, Micron, and Oracle",
+        instruments=("NEBIUS", "MICRON", "ORACLE"),
+    )
+    relevant = _observation(
+        "relevant",
+        "Burry increased bearish positions in Nebius and Oracle",
+        instruments=("NEBIUS", "ORACLE"),
+    )
+    common_words_only = _observation(
+        "common-words-only",
+        "Investors also added to positions while rates remained unchanged",
+        instruments=("BONDS",),
+    )
+    _insert_observations(claim_database, subject, relevant, common_words_only)
+
+    candidates = claim_repository.resolution_candidates(
+        subject.observation_id,
+        requested_as_of=_REQUESTED_AS_OF,
+        limit=20,
+    )
+
+    assert tuple(item.observation_id for item in candidates) == (relevant.observation_id,)
 
 
 def test_latest_verifications_for_observations_unions_only_exact_same_run_delta(

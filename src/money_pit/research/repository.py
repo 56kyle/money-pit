@@ -953,7 +953,9 @@ def _utc_text(value: datetime) -> str:
 
 def _scope_subject_id(scope: ResearchScope) -> str:
     if isinstance(scope, CandidateThesisResearchScope):
-        return scope.candidate_thesis_id
+        if scope.research_job_id is None:
+            return scope.candidate_thesis_id
+        return f"{scope.candidate_thesis_id}|research-job:{scope.research_job_id}"
     if isinstance(scope, CanonicalClaimResearchScope):
         return scope.canonical_claim_key
     return scope.observation_id

@@ -1,6 +1,9 @@
+import json
 from datetime import UTC
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
+from typing import cast
 
 import pytest
 from typer.testing import CliRunner
@@ -14,12 +17,22 @@ from money_pit.config import load_application_config
 from money_pit.intelligence_cli import intelligence_app
 from money_pit.pipeline.orchestration import IntelligenceStage
 from money_pit.pipeline.orchestration import IntelligenceUpdateReport
+from money_pit.schemas.claims import HorizonClass
 from money_pit.schemas.runs import RunRecord
+from money_pit.schemas.theses import CandidateThesis
+from money_pit.schemas.theses import ThesisDirection
+from money_pit.schemas.universe import DiscoveryBasis
 from money_pit.storage.database import Database
+from money_pit.storage.database import TransactionMode
 from money_pit.storage.intelligence_work import IntelligenceWorkCompletionCounts
 from money_pit.storage.intelligence_work import IntelligenceWorkStatus
 from money_pit.storage.intelligence_work import RunInferenceUsage
 from money_pit.storage.runs import RunRepository
+from money_pit.storage.semantic_intelligence import SemanticIntelligenceRepository
+
+
+if TYPE_CHECKING:
+    import sqlite3
 
 
 _NOW = datetime(2026, 8, 12, 20, tzinfo=UTC)
@@ -29,6 +42,38 @@ def _database(path: Path) -> Database:
     database = Database(path)
     database.initialize()
     return database
+
+
+def _semantic_review_database(path: Path) -> tuple[Database, str]:
+    database = _database(path)
+    repository = SemanticIntelligenceRepository(database)
+    for candidate_id, theme in (
+        ("candidate:1", "Gold miners"),
+        ("candidate:2", "Precious-metal equities"),
+    ):
+        candidate = CandidateThesis(
+            candidate_thesis_id=candidate_id,
+            subject=theme,
+            direction=ThesisDirection.LONG,
+            instrument_reference="VanEck Gold Miners ETF",
+            instrument="GDX",
+            theme=theme,
+            horizon_class=HorizonClass.MEDIUM_TERM,
+            discovery_basis=DiscoveryBasis(source_claim_keys=("claim:gold",)),
+            causal_mechanisms=("Operating leverage",),
+            regime_assumptions=("Stable funding",),
+            created_at=_NOW,
+            known_at=_NOW,
+        )
+        with database.transaction(TransactionMode.WRITE) as connection:
+            _ = connection.execute(
+                """INSERT INTO candidate_theses
+                (candidate_thesis_id, status, created_at, known_at, candidate_json)
+                VALUES (?, 'open', ?, ?, ?)""",
+                (candidate_id, _NOW.isoformat(), _NOW.isoformat(), candidate.model_dump_json()),
+            )
+        reconciliation = repository.reconcile_candidate(candidate, recorded_at=_NOW)
+    return database, reconciliation.reviews[0].review_id
 
 
 def _reject_configuration_load(
@@ -116,6 +161,111 @@ def test_intelligence_audit_is_provider_and_configuration_free_json(
     assert result.exit_code == 0
     assert '"status":"healthy"' in result.stdout
     assert result.stderr == ""
+
+
+def test_intelligence_reviews_is_provider_free_and_does_not_mutate_review_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database, review_id = _semantic_review_database(tmp_path / "reviews.sqlite3")
+    monkeypatch.setattr(intelligence_cli, "_read_database", lambda: database)
+    monkeypatch.setattr(intelligence_cli, "load_application_config", _reject_configuration_load)
+    with database.read_only_transaction() as connection:
+        before_row = cast(
+            "sqlite3.Row",
+            connection.execute("SELECT count(*) FROM hypothesis_reviews").fetchone(),
+        )
+
+    result = CliRunner().invoke(app, ["--json", "intelligence", "reviews"])
+
+    with database.read_only_transaction() as connection:
+        after_row = cast(
+            "sqlite3.Row",
+            connection.execute("SELECT count(*) FROM hypothesis_reviews").fetchone(),
+        )
+    payload = cast("list[dict[str, object]]", json.loads(result.stdout))
+    assert (result.exit_code, result.stderr, before_row[0], after_row[0], payload[0]["review_id"]) == (
+        0,
+        "",
+        1,
+        1,
+        review_id,
+    )
+
+
+def test_intelligence_resolve_records_append_only_decision_without_configuration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database, review_id = _semantic_review_database(tmp_path / "resolve.sqlite3")
+    monkeypatch.setattr(intelligence_cli, "_read_database", lambda: database)
+    monkeypatch.setattr(intelligence_cli, "load_application_config", _reject_configuration_load)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "--json",
+            "intelligence",
+            "resolve",
+            review_id,
+            "--decision",
+            "distinct",
+            "--actor",
+            "operator",
+            "--reason",
+            "Different horizon intent.",
+        ],
+    )
+
+    with database.read_only_transaction() as connection:
+        durable = cast(
+            "sqlite3.Row",
+            connection.execute(
+                """SELECT review.review_id, resolution.decision, resolution.actor, resolution.reason
+                FROM hypothesis_reviews review
+                JOIN hypothesis_review_resolutions resolution USING (review_id)"""
+            ).fetchone(),
+        )
+    payload = cast("dict[str, object]", json.loads(result.stdout))
+    assert (result.exit_code, result.stderr, tuple(durable), payload["status"]) == (
+        0,
+        "",
+        (review_id, "distinct", "operator", "Different horizon intent."),
+        "distinct",
+    )
+
+
+def test_intelligence_lineage_is_provider_free_and_read_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database, _review_id = _semantic_review_database(tmp_path / "lineage.sqlite3")
+    monkeypatch.setattr(intelligence_cli, "_read_database", lambda: database)
+    monkeypatch.setattr(intelligence_cli, "load_application_config", _reject_configuration_load)
+    with database.read_only_transaction() as connection:
+        before_row = cast(
+            "sqlite3.Row",
+            connection.execute("SELECT count(*) FROM candidate_hypothesis_memberships").fetchone(),
+        )
+
+    result = CliRunner().invoke(
+        app,
+        ["--json", "intelligence", "lineage", "candidate:1"],
+    )
+
+    with database.read_only_transaction() as connection:
+        after_row = cast(
+            "sqlite3.Row",
+            connection.execute("SELECT count(*) FROM candidate_hypothesis_memberships").fetchone(),
+        )
+    payload = cast("dict[str, object]", json.loads(result.stdout))
+    assert (result.exit_code, result.stderr, before_row[0], after_row[0], payload["candidate_ids"]) == (
+        0,
+        "",
+        2,
+        2,
+        ["candidate:1"],
+    )
 
 
 def test_intelligence_show_reports_durable_usage_without_loading_configuration(

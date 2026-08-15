@@ -105,8 +105,9 @@ class _NoopTaskMemory:
         *,
         run_id: str,
         known_at: datetime,
+        job_id: str | None = None,
     ) -> tuple[str, ...]:
-        del run_id, known_at
+        del run_id, known_at, job_id
         return tuple(f"task-{index}" for index, _task in enumerate(tasks))
 
     def planner_result(self, *, job_id: str, wave_number: int) -> ResearchRoundPlan | None:
@@ -134,6 +135,25 @@ class _NoopTaskMemory:
         origin_unit_ids: tuple[str, ...] = (),
     ) -> tuple[ResearchTaskDraft, ...]:
         del candidate_thesis_id, run_id, as_of, origin_unit_ids
+        return ()
+
+    def pending_for_job(
+        self,
+        job_id: str,
+        *,
+        as_of: datetime,
+    ) -> tuple[ResearchTaskDraft, ...]:
+        del job_id, as_of
+        return ()
+
+    def tasks_for_candidate(
+        self,
+        candidate_thesis_id: str,
+        *,
+        as_of: datetime,
+        origin_unit_ids: tuple[str, ...] = (),
+    ) -> tuple[ResearchTaskDraft, ...]:
+        del candidate_thesis_id, as_of, origin_unit_ids
         return ()
 
 
@@ -164,6 +184,24 @@ class _CrashAfterPlannerCheckpointMemory(_NoopTaskMemory):
         if self._crash:
             self._crash = False
             raise RuntimeError("simulated hard kill after planner checkpoint")
+
+
+class _PendingTaskMemory(_NoopTaskMemory):
+    def __init__(self, tasks: tuple[ResearchTaskDraft, ...]) -> None:
+        super().__init__()
+        self._tasks: tuple[ResearchTaskDraft, ...] = tasks
+
+    @override
+    def pending_for_candidate(
+        self,
+        candidate_thesis_id: str,
+        *,
+        run_id: str,
+        as_of: datetime,
+        origin_unit_ids: tuple[str, ...] = (),
+    ) -> tuple[ResearchTaskDraft, ...]:
+        del candidate_thesis_id, run_id, as_of, origin_unit_ids
+        return self._tasks
 
 
 def _candidate() -> CandidateThesis:
@@ -236,6 +274,7 @@ def test_research_candidate_resumes_after_crash_without_repeating_durable_wave()
         material_claim_keys=("claim-1",),
         maximum_results=1,
     )
+    task_memory = _PendingTaskMemory((task,))
 
     def planner(
         request: ResearchPlanningRequest, *, context: InferenceInvocationContext
@@ -263,7 +302,7 @@ def test_research_candidate_resumes_after_crash_without_repeating_durable_wave()
             initial_tasks=(task,),
             runner=cast("ResearchRoundRunner", runner),
             planner=planner,
-            task_memory=cast("ResearchTaskMemory", _NoopTaskMemory()),
+            task_memory=task_memory,
             budget=ResearchBudget(maximum_elapsed=timedelta(minutes=10)),
             clock=lambda: _NOW,
             prompt_character_budget=10_000,
@@ -281,7 +320,7 @@ def test_research_candidate_resumes_after_crash_without_repeating_durable_wave()
         initial_tasks=(task,),
         runner=cast("ResearchRoundRunner", runner),
         planner=planner,
-        task_memory=cast("ResearchTaskMemory", _NoopTaskMemory()),
+        task_memory=task_memory,
         budget=ResearchBudget(maximum_elapsed=timedelta(minutes=10)),
         clock=lambda: _NOW,
         prompt_character_budget=10_000,
@@ -290,6 +329,42 @@ def test_research_candidate_resumes_after_crash_without_repeating_durable_wave()
     )
 
     assert (runner.round_calls, runner.finalize_calls, planner_calls) == (1, 1, 0)
+
+
+def test_research_candidate_does_not_rematerialize_completed_initial_tasks() -> None:
+    runner = _CrashResumeRunner()
+    task = ResearchTaskDraft(
+        candidate_thesis_id="candidate-1",
+        provider="edgar",
+        query="Previously completed exact query",
+        purpose="Reuse its durable completion.",
+        maximum_results=1,
+    )
+
+    def reject_planner(
+        request: ResearchPlanningRequest, *, context: InferenceInvocationContext
+    ) -> InferenceResult[ResearchRoundPlan]:
+        del request, context
+        raise AssertionError("Completed initial work must not invoke the planner again.")
+
+    result = research_candidate(
+        _candidate(),
+        run_id="run-retry",
+        job_id="job-retry",
+        requested_as_of=_NOW,
+        historical_explicit=False,
+        initial_tasks=(task,),
+        runner=cast("ResearchRoundRunner", runner),
+        planner=reject_planner,
+        task_memory=cast("ResearchTaskMemory", _NoopTaskMemory()),
+        budget=ResearchBudget(maximum_elapsed=timedelta(minutes=10)),
+        clock=lambda: _NOW,
+        prompt_character_budget=10_000,
+        allowed_provider_names=("edgar",),
+    )
+
+    assert result.stop_reason is ResearchStopReason.NO_NEW_INDEPENDENT_PROVENANCE
+    assert (runner.round_calls, runner.finalize_calls) == (0, 1)
 
 
 def test_research_candidate_resumes_empty_planner_result_without_repeating_inference() -> None:

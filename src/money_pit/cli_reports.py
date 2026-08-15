@@ -13,6 +13,7 @@ from money_pit.pipeline.orchestration import IntelligenceUpdateReport
 from money_pit.storage.intelligence_work import FilteredInferenceUsage
 from money_pit.storage.intelligence_work import IntelligenceWorkCompletionCounts
 from money_pit.storage.intelligence_work import IntelligenceWorkStatus
+from money_pit.storage.semantic_intelligence import SemanticWorkStatus
 
 
 _FROZEN_CONFIG = ConfigDict(frozen=True, extra="forbid")
@@ -49,8 +50,9 @@ class IntelligenceStatusReport(BaseModel):
     model_config: ClassVar[ConfigDict] = _FROZEN_CONFIG
     source_id: str | None
     next_action: str
-    categories: dict[str, int | str]
+    categories: dict[str, int]
     durable: IntelligenceWorkStatus
+    semantic: SemanticWorkStatus
 
 
 class ReplayReport(BaseModel):

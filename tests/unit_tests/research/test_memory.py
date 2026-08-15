@@ -146,7 +146,7 @@ def test_materialize_binds_an_a2_plan_to_the_bounded_a3_session(tmp_path: Path) 
     )
     _ = planned.append_task(task, run_id=_RUN_ID, known_at=_AS_OF)
 
-    _, execution_task = planned.materialize(
+    planned_id, execution_task = planned.materialize(
         task,
         allocated_maximum_results=task.maximum_results,
         run_id=_RUN_ID,
@@ -154,8 +154,11 @@ def test_materialize_binds_an_a2_plan_to_the_bounded_a3_session(tmp_path: Path) 
         round_number=1,
         as_of=_AS_OF,
     )
+    planned.complete((planned_id,), completed_at=_AS_OF)
 
     assert execution_task.session_id == session.session_id
+    assert planned.pending_for_candidate(candidate.candidate_thesis_id, run_id=_RUN_ID, as_of=_AS_OF) == ()
+    assert planned.tasks_for_candidate(candidate.candidate_thesis_id, as_of=_AS_OF) == (task,)
 
 
 def test_pending_for_candidate_preserves_a2_task_across_failed_producing_run(

@@ -58,6 +58,7 @@ from money_pit.schemas.theses import ThesisDirection
 from money_pit.schemas.theses import ThesisRevision
 from money_pit.schemas.theses import ThesisStatus
 from money_pit.storage.database import Database
+from money_pit.storage.semantic_intelligence import SemanticIntelligenceRepository
 
 
 class InstrumentAuthority(Protocol):
@@ -99,6 +100,7 @@ class PersistentPortfolioPlanningInputProvider:
     ) -> None:
         """Bind persistent readers and current-state providers only."""
         self._database: Database = database
+        self._semantic_intelligence: SemanticIntelligenceRepository = SemanticIntelligenceRepository(database)
         self._strategy: StrategyConfig = strategy
         self._portfolio: PortfolioStateProvider = portfolio
         self._market: MarketStateProvider = market
@@ -187,11 +189,22 @@ class PersistentPortfolioPlanningInputProvider:
             kind, tradable = self._instruments.instrument_authority(instrument)
             instrument_kinds[instrument] = kind
             scenarios = None if revision is None else _scenario_distribution(revision, self._strategy)
+            semantic_eligibility = (
+                None
+                if revision is None
+                else self._semantic_intelligence.portfolio_eligibility_for_revision(revision.revision_id)
+            )
             decision = evaluate_candidate_eligibility(
                 CandidateAdmissionInput(
                     instrument=instrument,
                     instrument_kind=kind,
                     held_weight=current_weights[instrument],
+                    intelligence_available=(
+                        False if semantic_eligibility is None else semantic_eligibility.intelligence_available
+                    ),
+                    synthesis_evidence_sufficient=(
+                        False if semantic_eligibility is None else semantic_eligibility.synthesis_evidence_sufficient
+                    ),
                     thesis_active=revision is not None and revision.status is ThesisStatus.ACTIVE,
                     thesis_is_bearish=revision is not None and revision.direction is ThesisDirection.BEARISH,
                     thesis_valid_until=None if revision is None else revision.valid_until,

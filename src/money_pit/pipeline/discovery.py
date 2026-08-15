@@ -40,6 +40,7 @@ from money_pit.graph.state import require_run_started_at
 from money_pit.pipeline.artifacts import StageArtifact
 from money_pit.pipeline.artifacts import StageArtifactStore
 from money_pit.pipeline.artifacts import persist_stage_artifact
+from money_pit.pipeline.candidate_grounding import require_candidate_grounding
 from money_pit.pipeline.chain import Stage
 from money_pit.pipeline.identity import stable_identifier
 from money_pit.pipeline.temporal import require_model_temporal_authority
@@ -52,10 +53,12 @@ from money_pit.storage.intelligence_work import DiscoveryUnitKind
 
 
 if TYPE_CHECKING:
+    from money_pit.schemas.claims import CanonicalClaim
     from money_pit.schemas.claims import ClaimObservation
     from money_pit.schemas.universe import UniverseLayer
     from money_pit.storage.intelligence_work import DiscoveryBatchRecord
     from money_pit.storage.intelligence_work import IntelligenceWorkRepository
+    from money_pit.storage.semantic_intelligence import SemanticIntelligenceRepository
 
 
 class UnknownDiscoveryClaimError(Exception):
@@ -310,6 +313,24 @@ def _source_grounded_references(
     )
 
 
+def _require_chunk_candidate_grounding(
+    candidates: tuple[CandidateThesis, ...],
+    *,
+    observations: tuple[ClaimObservation, ...],
+    claims: tuple[CanonicalClaim, ...],
+    observation_ids: tuple[str, ...],
+) -> None:
+    if not observation_ids:
+        return
+    for candidate in candidates:
+        _ = require_candidate_grounding(
+            candidate,
+            observations=observations,
+            claims=claims,
+            eligible_observation_ids=frozenset(observation_ids),
+        )
+
+
 def bind_research_tasks(
     tasks: tuple[ResearchTaskDraft, ...],
     candidates: tuple[CandidateThesis, ...],
@@ -336,7 +357,21 @@ def bind_research_tasks(
     return tuple(bound)
 
 
-def make_discovery_node(
+def _required_semantic_repository(
+    repository: SemanticIntelligenceRepository | None,
+) -> SemanticIntelligenceRepository:
+    if repository is None:
+        raise ValueError("Incremental discovery requires semantic intelligence persistence")
+    return repository
+
+
+def _required_discovery_batch(batch: DiscoveryBatchRecord | None) -> DiscoveryBatchRecord:
+    if batch is None:
+        raise ValueError("Incremental discovery admission requires its claimed durable batch")
+    return batch
+
+
+def make_discovery_node(  # noqa: C901 - factory closes explicit typed A2 capabilities
     *,
     claims: ClaimMemory,
     theses: ThesisMemory,
@@ -350,8 +385,12 @@ def make_discovery_node(
     model_point_in_time_certified: bool = False,
     prompt_character_budget: int = 120_000,
     work_repository: IntelligenceWorkRepository | None = None,
+    semantic_repository: SemanticIntelligenceRepository | None = None,
 ) -> PipelineNode:
     """Return A2 with claim-read, universe-read, and append-only candidate authority."""
+    if work_repository is not None and semantic_repository is None:
+        raise ValueError("Incremental discovery requires semantic intelligence persistence")
+    incremental_semantic = semantic_repository
     request_budget = min(
         prompt_character_budget,
         request_character_allowance(agent, fallback=prompt_character_budget),
@@ -492,6 +531,12 @@ def make_discovery_node(
                 )
                 for candidate in draft.candidates
             )
+            _require_chunk_candidate_grounding(
+                chunk_candidates,
+                observations=observations,
+                claims=projections,
+                observation_ids=same_run_ids,
+            )
             materialized.extend(chunk_candidates)
             tasks_by_chunk.append((draft.research_tasks, chunk_candidates))
         candidates = tuple({item.candidate_thesis_id: item for item in materialized}.values())
@@ -518,7 +563,16 @@ def make_discovery_node(
             result_fingerprint=result_fingerprint,
         )
         for candidate in candidates:
-            theses.append_candidate(candidate)
+            if work_repository is None:
+                theses.append_candidate(candidate)
+            else:
+                claimed_batch = _required_discovery_batch(discovery_batch)
+                _ = _required_semantic_repository(incremental_semantic).admit_candidate_semantics(
+                    candidate,
+                    batch_id=claimed_batch.batch_id,
+                    origin_unit_ids=claimed_batch.unit_ids,
+                    recorded_at=clock(),
+                )
         planned_research_task_ids = tuple(
             research_tasks.append_task(
                 task,

@@ -22,6 +22,7 @@ from money_pit.sources.service import EvidenceRepository
 from money_pit.storage.assets import AssetStore
 from money_pit.storage.database import Database
 from money_pit.storage.intelligence_work import IntelligenceWorkRepository
+from money_pit.storage.semantic_intelligence import SemanticIntelligenceRepository
 from money_pit.storage.sources import SourceRepository
 
 
@@ -51,7 +52,8 @@ def build_research_runtime(
 ) -> ResearchRuntime:
     """Compose persistent evidence work and bounded research adapters."""
     repository = ResearchRepository(database)
-    planned_tasks = PlannedResearchTaskStore(database)
+    semantic_repository = SemanticIntelligenceRepository(database)
+    planned_tasks = PlannedResearchTaskStore(database, semantic_repository)
     service = ResearchService(
         providers,
         repository,
@@ -78,5 +80,6 @@ def build_research_runtime(
             work_repository,
             interpreter=interpreter,
             material_assessor=ClaimVerificationMaterialAssessor(claims),
+            semantic_repository=semantic_repository,
         ),
     )

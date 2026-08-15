@@ -222,6 +222,20 @@ class ResearchRoundExecution(BaseModel):
     context: ResearchCumulativeContext | None = Field(default=None, exclude=True)
 
 
+class CandidateResearchSummary(BaseModel):
+    """Immutable, checkpoint-safe A3 summary for one candidate."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    candidate_thesis_id: str
+    session_id: str
+    rounds: tuple[ResearchRoundExecution, ...]
+    stop_reason: ResearchStopReason
+    planner_requests: tuple["ResearchPlanningRequest", ...] = ()
+    planner_responses: tuple[ResearchRoundPlan, ...] = ()
+    normalized_queries: tuple[str, ...] = ()
+
+
 class ResearchPlanningRequest(BaseModel):
     """A3 context after a completed round."""
 
@@ -342,6 +356,29 @@ class ResolutionCandidateSet(BaseModel):
     candidate_observation_ids: tuple[str, ...]
 
 
+class SynthesisObservation(BaseModel):
+    """Compact A4 claim semantics without fragment-level provenance."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+    observation_id: str = Field(min_length=1)
+    claim_text: str = Field(min_length=1)
+    claim_kind: ClaimKind
+    category: ClaimCategory
+    source_item_id: str = Field(min_length=1)
+    asserted_at: AwareDatetime
+    known_at: AwareDatetime
+    effective_from: AwareDatetime | None = None
+    event_at: AwareDatetime | None = None
+    review_at: AwareDatetime | None = None
+    valid_until: AwareDatetime | None = None
+    horizon_class: HorizonClass
+    instruments: tuple[str, ...] = ()
+    themes: tuple[str, ...] = ()
+    causal_mechanisms: tuple[str, ...] = ()
+    regime_assumptions: tuple[str, ...] = ()
+    supersedes_observation_id: str | None = None
+
+
 class SynthesisRequest(BaseModel):
     """A4 bounded point-in-time synthesis input."""
 
@@ -349,7 +386,7 @@ class SynthesisRequest(BaseModel):
 
     candidates: tuple[CandidateThesis, ...]
     claims: tuple[CanonicalClaim, ...]
-    observations: tuple[ClaimObservation, ...]
+    observations: tuple[SynthesisObservation, ...]
     resolution_candidate_sets: tuple[ResolutionCandidateSet, ...]
     prior_revisions: tuple[ThesisRevision, ...]
     requested_as_of: AwareDatetime
@@ -605,6 +642,15 @@ class ThesisMemory(Protocol):
         """Return exact revisions attributed to the current run."""
         ...
 
+    def latest_revision_for_candidates(
+        self,
+        candidate_ids: tuple[str, ...],
+        *,
+        as_of: datetime,
+    ) -> ThesisRevision | None:
+        """Return the latest revision promoted from any exact proposal identity."""
+        ...
+
 
 class ResearchRoundRunner(Protocol):
     """Capability-scoped adapter over durable read-only research providers."""
@@ -619,6 +665,7 @@ class ResearchRoundRunner(Protocol):
         maximum_rounds: int,
         maximum_queries: int,
         maximum_fetches: int,
+        job_id: str | None = None,
     ) -> str:
         """Create the candidate session at A3's actual start time."""
         ...
@@ -633,6 +680,7 @@ class ResearchRoundRunner(Protocol):
         maximum_rounds: int,
         maximum_queries: int,
         maximum_fetches: int,
+        job_id: str | None = None,
     ) -> str:
         """Resume interrupted durable candidate work or create a new wave session."""
         ...
@@ -713,6 +761,7 @@ class ResearchTaskMemory(Protocol):
         *,
         run_id: str,
         known_at: datetime,
+        job_id: str | None = None,
     ) -> tuple[str, ...]:
         """Atomically persist one paid planner result before execution."""
         ...
@@ -748,4 +797,23 @@ class ResearchTaskMemory(Protocol):
         origin_unit_ids: tuple[str, ...] = (),
     ) -> tuple[ResearchTaskDraft, ...]:
         """Return pending tasks for one candidate."""
+        ...
+
+    def pending_for_job(
+        self,
+        job_id: str,
+        *,
+        as_of: datetime,
+    ) -> tuple[ResearchTaskDraft, ...]:
+        """Return pending job-local initial and planner tasks."""
+        ...
+
+    def tasks_for_candidate(
+        self,
+        candidate_thesis_id: str,
+        *,
+        as_of: datetime,
+        origin_unit_ids: tuple[str, ...] = (),
+    ) -> tuple[ResearchTaskDraft, ...]:
+        """Return the immutable task premise regardless of lifecycle status."""
         ...

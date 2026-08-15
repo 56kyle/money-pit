@@ -13,6 +13,7 @@ from money_pit.agents.inference import InferenceInvocationContext
 from money_pit.agents.inference import InferenceResult
 from money_pit.agents.inference import InferenceUsage
 from money_pit.claims.repository import ClaimRepository
+from money_pit.claims.repository import deterministic_claim_key
 from money_pit.composition import ApplicationDependencies
 from money_pit.composition import build_application_runtime
 from money_pit.composition import execute_portfolio_review
@@ -119,6 +120,7 @@ from money_pit.storage.assets import AssetStore
 from money_pit.storage.database import Database
 from money_pit.storage.intelligence_work import IntelligenceWorkRepository
 from money_pit.storage.runs import RunRepository
+from money_pit.storage.semantic_intelligence import SemanticIntelligenceRepository
 from money_pit.storage.sources import SourceRepository
 
 
@@ -327,6 +329,7 @@ def _discover(request: DiscoveryRequest, *, context: InferenceInvocationContext)
                     provider="primary",
                     query="NEW quarterly filing backlog",
                     purpose="Verify the candidate's material backlog premise.",
+                    material_claim_keys=(deterministic_claim_key(_PRIMARY_CLAIM),),
                     maximum_results=1,
                 ),
             ),
@@ -634,7 +637,8 @@ def test_incremental_intelligence_then_a5_review_and_approved_a6_execution(
         )
         if ThesisRepository(database).revisions_as_of(as_of=run_time):
             break
-    assert reports[0].remaining.active_research_jobs == 1
+    assert reports[0].remaining.active_research_jobs == 0
+    assert (reports[0].completed.research_jobs, reports[0].completed.synthesis_units) == (1, 1)
     assert all(report.completed_stages == ("A1", "A2", "A3", "A4") for report in reports)
 
     no_recursion_runtime = build_application_runtime(
@@ -688,6 +692,16 @@ def test_incremental_intelligence_then_a5_review_and_approved_a6_execution(
         work=work,
     )
     assert no_recursion_report.completed.discovery_units == 0
+
+    pre_review_revision = ThesisRepository(database).revisions_as_of(as_of=run_time)[0]
+    pre_review_eligibility = SemanticIntelligenceRepository(database).portfolio_eligibility_for_revision(
+        pre_review_revision.revision_id
+    )
+    assert pre_review_eligibility.model_dump() == {
+        "revision_id": pre_review_revision.revision_id,
+        "intelligence_available": True,
+        "synthesis_evidence_sufficient": False,
+    }
 
     portfolio_runtime = portfolio_runtime_factory()
 
@@ -815,13 +829,13 @@ def test_incremental_intelligence_then_a5_review_and_approved_a6_execution(
         2,
         "NEW",
         True,
-        ("NEW", "SPY"),
+        ("SPY",),
         plan.plan_hash,
         receipt.submitted_trade_identities,
         (OutcomeBoundary.REVIEW, OutcomeBoundary.HORIZON),
         {(revisions[0].revision_id, plan.payload.plan_id, plan.plan_hash)},
     )
-    assert submitted_orders[0].symbol == "NEW"
+    assert submitted_orders[0].symbol == "SPY"
 
 
 def test_build_portfolio_runtime_uses_injected_read_providers_without_external_credentials(tmp_path: Path) -> None:

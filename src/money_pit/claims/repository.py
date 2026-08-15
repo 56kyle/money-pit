@@ -44,8 +44,63 @@ _CLAIM_TOKEN_PATTERN: re.Pattern[str] = re.compile(r"[\w]+", flags=re.UNICODE)
 _MAX_RESOLUTION_CANDIDATES = 100
 _MAX_UNRESOLVED_PAGE = 100
 _MAX_QUERY_TOKENS = 16
+_RESOLUTION_SEARCH_POOL = 100
+_RESOLUTION_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "been",
+        "by",
+        "for",
+        "from",
+        "has",
+        "have",
+        "in",
+        "is",
+        "it",
+        "of",
+        "on",
+        "or",
+        "that",
+        "the",
+        "to",
+        "was",
+        "were",
+        "while",
+        "with",
+    }
+)
 ModelT = TypeVar("ModelT", bound=BaseModel)
 StoredResolution = tuple[ClaimResolutionDecision, str]
+
+
+def _resolution_tokens(raw_tokens: list[str]) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            token.casefold() for token in raw_tokens if len(token) > 2 and token.casefold() not in _RESOLUTION_STOPWORDS
+        )
+    )
+
+
+def _is_resolution_candidate(
+    subject: ClaimObservation,
+    candidate: ClaimObservation,
+    *,
+    subject_tokens: tuple[str, ...],
+) -> bool:
+    candidate_tokens = set(_resolution_tokens(_CLAIM_TOKEN_PATTERN.findall(candidate.claim_text)))
+    if len(candidate_tokens.intersection(subject_tokens)) >= 2:
+        return True
+    if " ".join(subject.claim_text.split()).casefold() == " ".join(candidate.claim_text.split()).casefold():
+        return True
+    subject_references = {value.casefold() for value in (*subject.instruments, *subject.themes)}
+    candidate_references = {value.casefold() for value in (*candidate.instruments, *candidate.themes)}
+    return bool(subject_references.intersection(candidate_references))
 
 
 class ClaimRepositoryError(StorageError):
@@ -305,8 +360,8 @@ class ClaimRepository:
             raise ValueError("same_run_observation_ids must be unique.")
         subject = self.observations_by_ids((subject_observation_id,))[0]
         raw_tokens: list[str] = cast("list[str]", _CLAIM_TOKEN_PATTERN.findall(subject.claim_text))
-        tokens: tuple[str, ...] = tuple(dict.fromkeys(token.casefold() for token in raw_tokens))
-        selected_tokens = tuple(token for token in tokens if len(token) > 1)[:_MAX_QUERY_TOKENS]
+        tokens: tuple[str, ...] = _resolution_tokens(raw_tokens)
+        selected_tokens = tokens[:_MAX_QUERY_TOKENS]
         if not selected_tokens:
             return ()
         match_query = " OR ".join(f'"{token}"' for token in selected_tokens)
@@ -331,9 +386,12 @@ class ClaimRepository:
         with self._database.transaction() as connection:
             rows = connection.execute(
                 query,
-                (match_query, subject_observation_id, *visibility_values, limit),
+                (match_query, subject_observation_id, *visibility_values, _RESOLUTION_SEARCH_POOL),
             ).fetchall()
-        return _models_from_rows(rows, "observation_json", ClaimObservation)
+        candidates = _models_from_rows(rows, "observation_json", ClaimObservation)
+        return tuple(
+            candidate for candidate in candidates if _is_resolution_candidate(subject, candidate, subject_tokens=tokens)
+        )[:limit]
 
     def history_as_of(
         self,

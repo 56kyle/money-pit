@@ -22,6 +22,7 @@ money-pit source sync SOURCE_ID
 money-pit source ingest SOURCE_ID https://youtu.be/VIDEO_ID
 money-pit intelligence status --source SOURCE_ID
 money-pit intelligence audit --source SOURCE_ID
+money-pit intelligence reviews --source SOURCE_ID
 money-pit intelligence update --source SOURCE_ID
 money-pit intelligence show RUN_ID
 money-pit intelligence promote-claim CANONICAL_KEY --reason "operator rationale"
@@ -41,7 +42,23 @@ An update processes a bounded batch and can finish with queued work remaining. `
 
 A source-specific update processes work caused by that source. An update without `--source` advances the global queue fairly. Research evidence verifies its assigned candidate and does not automatically become new discovery input.
 
-`money-pit intelligence status`, `money-pit intelligence audit`, and `money-pit intelligence show` only read durable state. They do not resolve credentials or construct inference and research providers. The audit distinguishes safe resumable work from blocked invariant violations. `money-pit portfolio review` starts A5 from the latest durable intelligence and current portfolio state. It does not rerun interpretation, discovery, research, or synthesis.
+`money-pit intelligence status`, `money-pit intelligence audit`, `money-pit intelligence reviews`, `money-pit intelligence lineage`, and `money-pit intelligence show` only read durable state. They do not resolve credentials or construct inference and research providers. The audit distinguishes safe resumable work from blocked invariant violations.
+
+Status reports `needs_review`, `unavailable`, `non_investable`, and `superseded` counts separately in JSON. Human output replaces underscores with spaces. An insufficient-evidence assessment is non-investable history. It does not create runnable work or change the next update action.
+
+Each candidate proposal retains one exact semantic variant. Equal variants join the same canonical hypothesis group automatically. A possible match that is not exact creates a review. While a review is open, the affected work is unavailable and unrelated work can continue. Inspect and resolve a review with:
+
+A proposal without an instrument, instrument reference, or layered universe reference remains unclassified and unavailable. A shared theme does not grant capital-reference authority or automatic equivalence.
+
+```bash
+money-pit intelligence reviews --source SOURCE_ID
+money-pit intelligence lineage hypothesis-review:REVIEW_HASH
+money-pit intelligence resolve REVIEW_ID --decision same --actor OPERATOR --reason "Why these proposals represent one hypothesis"
+```
+
+Use `--decision distinct` when the proposals differ materially. A `same` decision is rejected when the capital reference, direction, or horizon is incompatible. Resolution is an append-only operator action. It does not run a provider or read a credential.
+
+`money-pit portfolio review` starts A5 from the latest eligible durable intelligence and current portfolio state. It does not rerun interpretation, discovery, research, or synthesis. Insufficient-evidence and unresolved hypotheses cannot create portfolio exposure.
 
 `intelligence promote-claim` is the explicit, provider-free boundary for sending a materially changed canonical claim back through discovery. The reason is recorded as operator provenance. A3 verification evidence never recursively creates discovery work.
 

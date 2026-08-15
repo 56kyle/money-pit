@@ -25,6 +25,9 @@ from money_pit.agents.inference import InferenceUsage
 from money_pit.storage.database import Database
 from money_pit.storage.database import TransactionMode
 from money_pit.storage.errors import StorageError
+from money_pit.storage.semantic_intelligence import SynthesisDisposition
+from money_pit.storage.semantic_intelligence import SynthesisEligibility
+from money_pit.storage.semantic_intelligence import SynthesisMaterialState
 
 
 if TYPE_CHECKING:
@@ -785,11 +788,13 @@ class IntelligenceWorkRepository:
             if any(origin.unit_id not in batch_unit_ids for origin in candidate_origins):
                 raise WorkTransitionError("Candidate origin does not belong to its discovery batch.")
             for origin in candidate_origins:
-                _ = connection.execute(
-                    """INSERT INTO candidate_discovery_origins
-                    (candidate_thesis_id, unit_id, batch_id) VALUES (?, ?, ?)""",
-                    (origin.candidate_thesis_id, origin.unit_id, batch_id),
-                )
+                stored = connection.execute(
+                    """SELECT batch_id FROM candidate_discovery_origins
+                    WHERE candidate_thesis_id = ? AND unit_id = ?""",
+                    (origin.candidate_thesis_id, origin.unit_id),
+                ).fetchone()
+                if stored is None or str(stored[0]) != batch_id:
+                    raise WorkTransitionError("Candidate discovery lineage must be admitted before batch completion.")
             cursor = connection.execute(
                 """UPDATE discovery_batches SET status = 'completed', completed_at = ?,
                 result_fingerprint = ?, output_candidate_ids_json = ?
@@ -852,6 +857,16 @@ class IntelligenceWorkRepository:
                     ORDER BY origin.unit_id""",
                     (candidate_thesis_id, source_id),
                 ).fetchall()
+        return tuple(str(row[0]) for row in rows)
+
+    def research_job_origin_unit_ids(self, job_id: str) -> tuple[str, ...]:
+        """Return the exact discovery lineage bound to one semantic research job."""
+        with self._database.transaction() as connection:
+            rows = connection.execute(
+                """SELECT unit_id FROM research_job_discovery_origins
+                WHERE job_id = ? ORDER BY unit_id""",
+                (job_id,),
+            ).fetchall()
         return tuple(str(row[0]) for row in rows)
 
     def candidates_for_research_reconciliation(self, source_id: str | None = None) -> tuple[str, ...]:
@@ -984,15 +999,35 @@ class IntelligenceWorkRepository:
                 params.append(source_id)
             params.append(maximum_jobs)
             rows = connection.execute(
-                f"""SELECT job_id, status, next_review_at FROM research_jobs AS job WHERE (
-                  (status != 'terminal' AND (
-                    status = 'pending' OR claimed_run_id = ? OR claimed_at <= ?
+                f"""SELECT job.job_id, job.status, job.next_review_at FROM research_jobs AS job
+                JOIN research_job_semantics AS semantic ON semantic.job_id = job.job_id
+                JOIN research_cases AS research_case ON research_case.case_id = semantic.case_id
+                JOIN canonical_hypothesis_groups AS hypothesis_group
+                  ON hypothesis_group.group_id = research_case.hypothesis_id
+                WHERE semantic.disposition = 'current' AND hypothesis_group.status = 'current'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM canonical_hypothesis_group_variants AS group_variant
+                    JOIN hypothesis_variants AS variant USING (variant_id)
+                    WHERE group_variant.group_id = research_case.hypothesis_id
+                      AND variant.availability = 'unavailable')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM hypothesis_reviews AS review
+                    LEFT JOIN hypothesis_review_resolutions AS resolution USING (review_id)
+                    WHERE resolution.review_id IS NULL AND (
+                      review.subject_variant_id IN (
+                        SELECT variant_id FROM canonical_hypothesis_group_variants
+                        WHERE group_id = research_case.hypothesis_id)
+                      OR review.comparison_variant_id IN (
+                        SELECT variant_id FROM canonical_hypothesis_group_variants
+                        WHERE group_id = research_case.hypothesis_id))) AND (
+                  (job.status != 'terminal' AND (
+                    job.status = 'pending' OR job.claimed_run_id = ? OR job.claimed_at <= ?
                     OR EXISTS (SELECT 1 FROM run_terminal_events AS terminal
                                WHERE terminal.run_id = job.claimed_run_id)))
-                  OR (status = 'terminal' AND next_review_at IS NOT NULL AND next_review_at <= ?)
+                  OR (job.status = 'terminal' AND job.next_review_at IS NOT NULL AND job.next_review_at <= ?)
                 ) {source_clause}
-                ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'terminal' THEN 1 ELSE 2 END,
-                         created_at, job_id LIMIT ?""",  # noqa: S608  # nosec B608 -- fixed internal clause.
+                ORDER BY CASE job.status WHEN 'active' THEN 0 WHEN 'terminal' THEN 1 ELSE 2 END,
+                         job.created_at, job.job_id LIMIT ?""",  # noqa: S608  # nosec B608 -- fixed internal clause.
                 params,
             ).fetchall()
             claimed_job_ids: list[str] = []
@@ -1487,18 +1522,93 @@ class IntelligenceWorkRepository:
         except (ValidationError, TypeError, ValueError, json.JSONDecodeError) as error:
             raise MalformedWorkRecordError("Stored URI admission is malformed.") from error
 
-    def finalize_research_job(
-        self, *, job_id: str, completed_at: datetime, stop_reason: str, next_review_at: datetime | None = None
+    def finalize_research_with_material(
+        self,
+        *,
+        job_id: str,
+        completed_at: datetime,
+        stop_reason: str,
+        material_state: SynthesisMaterialState,
+        active_claim_run_id: str | None = None,
+        synthesis_unit: SynthesisUnitRecord | None = None,
+        synthesis_disposition: SynthesisDisposition | None = None,
+        next_review_at: datetime | None = None,
     ) -> None:
-        """Mark active research terminal until material inputs change or review is due."""
+        """Atomically close research and persist its decision-material obligation."""
+        _require_material_finalization_request(
+            job_id=job_id,
+            material_state=material_state,
+            synthesis_unit=synthesis_unit,
+            synthesis_disposition=synthesis_disposition,
+        )
         with self._database.transaction(TransactionMode.WRITE) as connection:
-            cursor = connection.execute(
-                """UPDATE research_jobs SET status = 'terminal', completed_at = ?, stop_reason = ?,
-                next_review_at = ? WHERE job_id = ? AND status = 'active'""",
-                (_time(completed_at), stop_reason, _optional_time(next_review_at), job_id),
+            job_state = _require_recoverable_research_job(
+                connection,
+                job_id=job_id,
+                completed_at=completed_at,
+                stop_reason=stop_reason,
+                next_review_at=next_review_at,
+                active_claim_run_id=active_claim_run_id,
             )
-            if cursor.rowcount != 1:
-                raise WorkTransitionError("Research job is not active.")
+            if _effective_research_job_group(connection, job_id) != material_state.hypothesis_id:
+                raise WorkTransitionError(
+                    "Synthesis material hypothesis must equal the research job's effective canonical group."
+                )
+            _insert_or_require_material_state(connection, material_state)
+            if synthesis_unit is not None and synthesis_disposition is not None:
+                _insert_or_require_synthesis_unit_binding(
+                    connection,
+                    material_state=material_state,
+                    synthesis_unit=synthesis_unit,
+                    synthesis_disposition=synthesis_disposition,
+                    recorded_at=completed_at,
+                )
+            if str(job_state[0]) == "active":
+                cursor = connection.execute(
+                    """UPDATE research_jobs SET status = 'terminal', completed_at = ?, stop_reason = ?,
+                    next_review_at = ? WHERE job_id = ? AND status = 'active' AND claimed_run_id = ?""",
+                    (
+                        _time(completed_at),
+                        stop_reason,
+                        _optional_time(next_review_at),
+                        job_id,
+                        active_claim_run_id,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise WorkTransitionError("Research job changed during terminal material admission.")
+
+    def terminal_research_jobs_awaiting_materialization(
+        self,
+        source_id: str | None = None,
+    ) -> tuple[ClaimedResearchJobRecord, ...]:
+        """Return terminal current heads whose durable checkpoint still needs a material assessment."""
+        params: tuple[object, ...] = () if source_id is None else (source_id, source_id)
+        source_clause = (
+            ""
+            if source_id is None
+            else """AND EXISTS (
+          SELECT 1 FROM research_job_discovery_origins origin
+          JOIN discovery_units unit USING (unit_id)
+          WHERE origin.job_id = job.job_id AND unit.source_id = ?)
+        AND NOT EXISTS (
+          SELECT 1 FROM research_job_discovery_origins origin
+          JOIN discovery_units unit USING (unit_id)
+          WHERE origin.job_id = job.job_id AND (unit.source_id IS NULL OR unit.source_id != ?))"""
+        )
+        with self._database.transaction() as connection:
+            rows = connection.execute(
+                f"""SELECT job.job_id FROM research_jobs job
+                JOIN research_job_semantics semantic USING (job_id)
+                WHERE job.status = 'terminal' AND semantic.disposition = 'current'
+                  AND EXISTS (SELECT 1 FROM research_job_checkpoints checkpoint
+                              WHERE checkpoint.job_id = job.job_id)
+                  AND NOT EXISTS (SELECT 1 FROM synthesis_material_origins origin
+                                  WHERE origin.research_job_id = job.job_id)
+                  {source_clause} ORDER BY job.completed_at, job.job_id""",  # noqa: S608  # nosec B608 -- fixed internal clause.
+                params,
+            ).fetchall()
+            return tuple(_research_job(connection, str(row[0])) for row in rows)
 
     def ensure_synthesis_unit(self, unit: SynthesisUnitRecord) -> None:
         """Create one per-candidate synthesis unit idempotently."""
@@ -1554,7 +1664,27 @@ class IntelligenceWorkRepository:
             row = connection.execute(
                 f"""SELECT unit.unit_id FROM synthesis_units AS unit
                 JOIN research_jobs AS job ON job.job_id = unit.research_job_id
-                WHERE unit.status != 'completed'
+                JOIN synthesis_unit_semantics AS semantic ON semantic.unit_id = unit.unit_id
+                JOIN synthesis_material_states AS material ON material.material_state_id = semantic.material_state_id
+                JOIN canonical_hypothesis_groups AS hypothesis_group
+                  ON hypothesis_group.group_id = material.hypothesis_id
+                WHERE unit.status != 'completed' AND semantic.disposition = 'current'
+                  AND material.eligibility = 'eligible' AND hypothesis_group.status = 'current'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM canonical_hypothesis_group_variants AS group_variant
+                    JOIN hypothesis_variants AS variant USING (variant_id)
+                    WHERE group_variant.group_id = material.hypothesis_id
+                      AND variant.availability = 'unavailable')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM hypothesis_reviews AS review
+                    LEFT JOIN hypothesis_review_resolutions AS resolution USING (review_id)
+                    WHERE resolution.review_id IS NULL AND (
+                      review.subject_variant_id IN (
+                        SELECT variant_id FROM canonical_hypothesis_group_variants
+                        WHERE group_id = material.hypothesis_id)
+                      OR review.comparison_variant_id IN (
+                        SELECT variant_id FROM canonical_hypothesis_group_variants
+                        WHERE group_id = material.hypothesis_id)))
                   AND (unit.status = 'pending' OR unit.claimed_run_id = ? OR unit.claimed_at <= ?
                     OR EXISTS (SELECT 1 FROM run_terminal_events AS terminal
                                WHERE terminal.run_id = unit.claimed_run_id)) {source_clause}
@@ -2196,6 +2326,57 @@ def _create_review_cycle(
         SELECT ?, unit_id FROM research_job_discovery_origins WHERE job_id = ?""",
         (successor_job_id, parent_job_id),
     )
+    semantic = connection.execute(
+        """SELECT case_id, semantic_premise_fingerprint FROM research_job_semantics
+        WHERE job_id = ? AND disposition = 'current'""",
+        (parent_job_id,),
+    ).fetchone()
+    if semantic is None:
+        raise WorkTransitionError("Due research parent has no current semantic case.")
+    case_id = str(semantic[0])
+    _ = connection.execute(
+        """UPDATE research_job_semantics
+        SET disposition = 'superseded', successor_job_id = ?
+        WHERE job_id = ? AND disposition = 'current'""",
+        (successor_job_id, parent_job_id),
+    )
+    _ = connection.execute(
+        """UPDATE synthesis_unit_semantics
+        SET disposition = 'superseded', successor_unit_id = NULL,
+            successor_research_job_id = ?
+        WHERE disposition = 'current' AND material_state_id IN (
+          SELECT material_state_id FROM synthesis_material_origins
+          WHERE research_job_id = ?)""",
+        (successor_job_id, parent_job_id),
+    )
+    _ = connection.execute(
+        """INSERT INTO research_job_semantics
+        (job_id, case_id, semantic_premise_fingerprint, successor_job_id, disposition, recorded_at)
+        VALUES (?, ?, ?, NULL, 'current', ?)""",
+        (successor_job_id, case_id, str(semantic[1]), created_at),
+    )
+    _ = connection.execute(
+        """INSERT INTO research_job_predecessors (successor_job_id, predecessor_job_id)
+        VALUES (?, ?)""",
+        (successor_job_id, parent_job_id),
+    )
+    _ = connection.execute(
+        """INSERT INTO research_job_tasks
+        (job_id, task_id, role, execution_status, materialized_session_id,
+         materialized_task_id, completed_at, reused_from_job_id, reused_from_task_id, binding_json)
+        SELECT ?, task_id, role, 'pending', NULL, NULL, NULL, NULL, NULL, '{}'
+        FROM research_job_tasks WHERE job_id = ?""",
+        (successor_job_id, parent_job_id),
+    )
+    _ = connection.execute(
+        """INSERT INTO research_job_task_origins (job_id, task_id, unit_id)
+        SELECT ?, task_id, unit_id FROM research_job_task_origins WHERE job_id = ?""",
+        (successor_job_id, parent_job_id),
+    )
+    _ = connection.execute(
+        "UPDATE research_cases SET head_job_id = ? WHERE case_id = ? AND head_job_id = ?",
+        (successor_job_id, case_id, parent_job_id),
+    )
     cursor = connection.execute(
         """UPDATE research_jobs SET next_review_at = NULL
         WHERE job_id = ? AND status = 'terminal' AND next_review_at = ?""",
@@ -2248,6 +2429,186 @@ def _synthesis_unit(connection: sqlite3.Connection, unit_id: str) -> ClaimedSynt
             "validated_output": json.loads(str(row["validated_output_json"])),
         }
     )
+
+
+def _effective_research_job_group(connection: sqlite3.Connection, job_id: str) -> str:
+    row = connection.execute(
+        """SELECT research_case.hypothesis_id FROM research_job_semantics semantic
+        JOIN research_cases research_case USING (case_id) WHERE semantic.job_id = ?""",
+        (job_id,),
+    ).fetchone()
+    if row is None:
+        raise WorkTransitionError("Research job has no semantic hypothesis binding.")
+    current = str(row[0])
+    seen: set[str] = set()
+    while True:
+        if current in seen:
+            raise MalformedWorkRecordError("Canonical hypothesis group supersession contains a cycle.")
+        seen.add(current)
+        successors = connection.execute(
+            """SELECT successor_group_id FROM canonical_hypothesis_group_supersessions
+            WHERE predecessor_group_id = ?""",
+            (current,),
+        ).fetchall()
+        if not successors:
+            group = connection.execute(
+                "SELECT status FROM canonical_hypothesis_groups WHERE group_id = ?", (current,)
+            ).fetchone()
+            if group is None or str(group[0]) != "current":
+                raise MalformedWorkRecordError("Research job hypothesis does not resolve to a current group.")
+            return current
+        if len(successors) != 1:
+            raise MalformedWorkRecordError("Canonical hypothesis group has multiple successors.")
+        current = str(successors[0][0])
+
+
+def _require_material_finalization_request(
+    *,
+    job_id: str,
+    material_state: SynthesisMaterialState,
+    synthesis_unit: SynthesisUnitRecord | None,
+    synthesis_disposition: SynthesisDisposition | None,
+) -> None:
+    if job_id not in material_state.research_job_ids:
+        raise WorkTransitionError("Final synthesis material must identify its research job origin.")
+    if (synthesis_unit is None) != (synthesis_disposition is None):
+        raise WorkTransitionError("A synthesis unit and its semantic disposition must be admitted together.")
+    if synthesis_unit is not None and synthesis_unit.research_job_id != job_id:
+        raise WorkTransitionError("The synthesis unit must originate from the finalized research job.")
+    if synthesis_unit is not None and synthesis_unit.input_fingerprint != material_state.material_fingerprint:
+        raise WorkTransitionError("The synthesis unit fingerprint must equal its material fingerprint.")
+    if (
+        synthesis_disposition is SynthesisDisposition.CURRENT
+        and material_state.eligibility is not SynthesisEligibility.ELIGIBLE
+    ):
+        raise WorkTransitionError("Only eligible material may own the current synthesis unit.")
+
+
+def _require_recoverable_research_job(
+    connection: sqlite3.Connection,
+    *,
+    job_id: str,
+    completed_at: datetime,
+    stop_reason: str,
+    next_review_at: datetime | None,
+    active_claim_run_id: str | None,
+) -> tuple[object, ...]:
+    row = connection.execute(
+        """SELECT status, completed_at, stop_reason, next_review_at, claimed_run_id
+        FROM research_jobs WHERE job_id = ?""",
+        (job_id,),
+    ).fetchone()
+    if row is None:
+        raise WorkTransitionError("Research job does not exist.")
+    expected = ("terminal", _time(completed_at), stop_reason, _optional_time(next_review_at))
+    values = tuple(row[:4])
+    if str(row[0]) == "active":
+        if active_claim_run_id is None or str(row[4]) != active_claim_run_id:
+            raise WorkTransitionError("Active research finalization requires its exact claim owner.")
+    elif values != expected:
+        raise WorkTransitionError("Research job is neither active nor the exact terminal recovery target.")
+    return values
+
+
+def _insert_or_require_material_state(
+    connection: sqlite3.Connection,
+    material_state: SynthesisMaterialState,
+) -> None:
+    _ = connection.execute(
+        """INSERT INTO synthesis_material_states
+        (material_state_id, hypothesis_id, material_fingerprint, eligibility,
+         prior_revision_id, created_at, assessment_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(material_state_id) DO NOTHING""",
+        (
+            material_state.material_state_id,
+            material_state.hypothesis_id,
+            material_state.material_fingerprint,
+            material_state.eligibility.value,
+            material_state.prior_revision_id,
+            _time(material_state.created_at),
+            _json(material_state.assessment),
+        ),
+    )
+    stored = connection.execute(
+        """SELECT hypothesis_id, material_fingerprint, eligibility, prior_revision_id,
+        assessment_json FROM synthesis_material_states WHERE material_state_id = ?""",
+        (material_state.material_state_id,),
+    ).fetchone()
+    expected = (
+        material_state.hypothesis_id,
+        material_state.material_fingerprint,
+        material_state.eligibility.value,
+        material_state.prior_revision_id,
+        _json(material_state.assessment),
+    )
+    if stored is None or tuple(stored) != expected:
+        raise ImmutableWorkCollisionError("Synthesis material identity is bound to different content.")
+    for origin_job_id in material_state.research_job_ids:
+        _ = connection.execute(
+            """INSERT OR IGNORE INTO synthesis_material_origins
+            (material_state_id, research_job_id) VALUES (?, ?)""",
+            (material_state.material_state_id, origin_job_id),
+        )
+
+
+def _insert_or_require_synthesis_unit_binding(
+    connection: sqlite3.Connection,
+    *,
+    material_state: SynthesisMaterialState,
+    synthesis_unit: SynthesisUnitRecord,
+    synthesis_disposition: SynthesisDisposition,
+    recorded_at: datetime,
+) -> None:
+    _insert_initial_lifecycle_record(
+        connection,
+        "synthesis_units",
+        "unit_id",
+        synthesis_unit.unit_id,
+        {
+            "unit_id": synthesis_unit.unit_id,
+            "research_job_id": synthesis_unit.research_job_id,
+            "input_fingerprint": synthesis_unit.input_fingerprint,
+            "status": WorkStatus.PENDING,
+            "created_at": _time(synthesis_unit.created_at),
+            "claimed_run_id": None,
+            "claimed_at": None,
+            "completed_at": None,
+            "checkpoint_fingerprint": None,
+            "validated_output_json": "null",
+            "unit_payload_hash": hashlib.sha256(_json(synthesis_unit.payload).encode()).hexdigest(),
+            "unit_json": _json(synthesis_unit.payload),
+        },
+        immutable_columns=("unit_id", "research_job_id", "input_fingerprint", "unit_payload_hash", "unit_json"),
+    )
+    if synthesis_disposition is SynthesisDisposition.CURRENT:
+        existing = connection.execute(
+            """SELECT unit_id FROM synthesis_unit_semantics
+            WHERE material_state_id = ? AND disposition = 'current'""",
+            (material_state.material_state_id,),
+        ).fetchone()
+        if existing is not None and str(existing[0]) != synthesis_unit.unit_id:
+            raise ImmutableWorkCollisionError("Synthesis material already has a different current unit identity.")
+    _ = connection.execute(
+        """INSERT INTO synthesis_unit_semantics
+        (unit_id, material_state_id, disposition, successor_unit_id, recorded_at)
+        VALUES (?, ?, ?, NULL, ?) ON CONFLICT(unit_id) DO NOTHING""",
+        (
+            synthesis_unit.unit_id,
+            material_state.material_state_id,
+            synthesis_disposition.value,
+            _time(recorded_at),
+        ),
+    )
+    stored = connection.execute(
+        """SELECT material_state_id, disposition FROM synthesis_unit_semantics
+        WHERE unit_id = ?""",
+        (synthesis_unit.unit_id,),
+    ).fetchone()
+    if stored is None or (str(stored[0]), str(stored[1])) != (
+        material_state.material_state_id,
+        synthesis_disposition.value,
+    ):
+        raise ImmutableWorkCollisionError("Synthesis unit semantic binding is bound to different content.")
 
 
 def _count_interpretation(connection: sqlite3.Connection, source_id: str | None) -> tuple[int, int]:
@@ -2303,13 +2664,57 @@ def _count_research(
     )
     params = () if source_id is None else (source_id,)
     rows = connection.execute(
-        f"SELECT status, count(*) FROM research_jobs AS job WHERE status != 'terminal' {clause} GROUP BY status",  # noqa: S608  # nosec B608 -- clause is selected from fixed internal SQL.
+        f"""SELECT job.status, count(*) FROM research_jobs AS job
+        JOIN research_job_semantics AS semantic ON semantic.job_id = job.job_id
+        JOIN research_cases AS research_case ON research_case.case_id = semantic.case_id
+        JOIN canonical_hypothesis_groups AS hypothesis_group
+          ON hypothesis_group.group_id = research_case.hypothesis_id
+        WHERE job.status != 'terminal' AND semantic.disposition = 'current'
+          AND hypothesis_group.status = 'current'
+          AND NOT EXISTS (
+            SELECT 1 FROM canonical_hypothesis_group_variants AS group_variant
+            JOIN hypothesis_variants AS variant USING (variant_id)
+            WHERE group_variant.group_id = research_case.hypothesis_id
+              AND variant.availability = 'unavailable')
+          AND NOT EXISTS (
+            SELECT 1 FROM hypothesis_reviews AS review
+            LEFT JOIN hypothesis_review_resolutions AS resolution USING (review_id)
+            WHERE resolution.review_id IS NULL AND (
+              review.subject_variant_id IN (
+                SELECT variant_id FROM canonical_hypothesis_group_variants
+                WHERE group_id = research_case.hypothesis_id)
+              OR review.comparison_variant_id IN (
+                SELECT variant_id FROM canonical_hypothesis_group_variants
+                WHERE group_id = research_case.hypothesis_id)))
+          {clause} GROUP BY job.status""",  # noqa: S608  # nosec B608 -- clause is selected from fixed internal SQL.
         params,
     ).fetchall()
     pending, active = _status_counts(rows)
     due_row = connection.execute(
         f"""SELECT count(*) FROM research_jobs AS job
-        WHERE status = 'terminal' AND next_review_at IS NOT NULL AND next_review_at <= ? {clause}""",  # noqa: S608  # nosec B608 -- clause is selected from fixed internal SQL.
+        JOIN research_job_semantics AS semantic ON semantic.job_id = job.job_id
+        JOIN research_cases AS research_case ON research_case.case_id = semantic.case_id
+        JOIN canonical_hypothesis_groups AS hypothesis_group
+          ON hypothesis_group.group_id = research_case.hypothesis_id
+        WHERE job.status = 'terminal' AND semantic.disposition = 'current'
+          AND hypothesis_group.status = 'current'
+          AND job.next_review_at IS NOT NULL AND job.next_review_at <= ?
+          AND NOT EXISTS (
+            SELECT 1 FROM canonical_hypothesis_group_variants AS group_variant
+            JOIN hypothesis_variants AS variant USING (variant_id)
+            WHERE group_variant.group_id = research_case.hypothesis_id
+              AND variant.availability = 'unavailable')
+          AND NOT EXISTS (
+            SELECT 1 FROM hypothesis_reviews AS review
+            LEFT JOIN hypothesis_review_resolutions AS resolution USING (review_id)
+            WHERE resolution.review_id IS NULL AND (
+              review.subject_variant_id IN (
+                SELECT variant_id FROM canonical_hypothesis_group_variants
+                WHERE group_id = research_case.hypothesis_id)
+              OR review.comparison_variant_id IN (
+                SELECT variant_id FROM canonical_hypothesis_group_variants
+                WHERE group_id = research_case.hypothesis_id)))
+          {clause}""",  # noqa: S608  # nosec B608 -- clause is selected from fixed internal SQL.
         (_time(as_of), *params),
     ).fetchone()
     return pending, active, int(due_row[0])
@@ -2322,13 +2727,40 @@ def _count_synthesis(connection: sqlite3.Connection, source_id: str | None) -> t
         else """AND EXISTS (
         SELECT 1 FROM research_job_discovery_origins AS origin
         JOIN discovery_units AS discovery USING (unit_id)
-        WHERE origin.job_id = job.job_id AND discovery.source_id = ?)"""
+        WHERE origin.job_id = job.job_id AND discovery.source_id = ?)
+        AND NOT EXISTS (
+        SELECT 1 FROM research_job_discovery_origins AS origin
+        JOIN discovery_units AS discovery USING (unit_id)
+        WHERE origin.job_id = job.job_id
+          AND (discovery.source_id IS NULL OR discovery.source_id != ?))"""
     )
-    params = () if source_id is None else (source_id,)
+    params = () if source_id is None else (source_id, source_id)
     rows = connection.execute(
         f"""SELECT unit.status, count(*) FROM synthesis_units AS unit
         JOIN research_jobs AS job ON job.job_id = unit.research_job_id
-        WHERE unit.status != 'completed' {clause} GROUP BY unit.status""",  # noqa: S608  # nosec B608 -- fixed internal clause.
+        JOIN synthesis_unit_semantics AS semantic ON semantic.unit_id = unit.unit_id
+        JOIN synthesis_material_states AS material ON material.material_state_id = semantic.material_state_id
+        JOIN canonical_hypothesis_groups AS hypothesis_group
+          ON hypothesis_group.group_id = material.hypothesis_id
+        WHERE unit.status != 'completed' AND semantic.disposition = 'current'
+          AND material.eligibility = 'eligible'
+          AND hypothesis_group.status = 'current'
+          AND NOT EXISTS (
+            SELECT 1 FROM canonical_hypothesis_group_variants AS group_variant
+            JOIN hypothesis_variants AS variant USING (variant_id)
+            WHERE group_variant.group_id = material.hypothesis_id
+              AND variant.availability = 'unavailable')
+          AND NOT EXISTS (
+            SELECT 1 FROM hypothesis_reviews AS review
+            LEFT JOIN hypothesis_review_resolutions AS resolution USING (review_id)
+            WHERE resolution.review_id IS NULL AND (
+              review.subject_variant_id IN (
+                SELECT variant_id FROM canonical_hypothesis_group_variants
+                WHERE group_id = material.hypothesis_id)
+              OR review.comparison_variant_id IN (
+                SELECT variant_id FROM canonical_hypothesis_group_variants
+                WHERE group_id = material.hypothesis_id)))
+          {clause} GROUP BY unit.status""",  # noqa: S608  # nosec B608 -- fixed internal clause.
         params,
     ).fetchall()
     return _status_counts(rows)

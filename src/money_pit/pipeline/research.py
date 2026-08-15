@@ -1,7 +1,6 @@
 """Module implementing the bounded iterative A3 research loop."""
 
 import hashlib
-import json
 from collections.abc import Callable
 from datetime import datetime
 from datetime import timedelta
@@ -17,6 +16,7 @@ from pydantic import TypeAdapter
 from money_pit.agents.budget import request_character_allowance
 from money_pit.agents.budget import serialized_inference_request_size
 from money_pit.agents.inference import InferenceInvocationContext
+from money_pit.contracts import CandidateResearchSummary as CandidateResearchSummary
 from money_pit.contracts import ClaimMemory
 from money_pit.contracts import ResearchPlanningAgent
 from money_pit.contracts import ResearchPlanningRequest
@@ -37,9 +37,15 @@ from money_pit.graph.state import require_run_id
 from money_pit.graph.state import require_run_started_at
 from money_pit.pipeline.artifacts import build_stage_artifact
 from money_pit.pipeline.artifacts import try_install_stage_artifact_file
+from money_pit.pipeline.candidate_grounding import CANDIDATE_GROUNDING_POLICY_VERSION
+from money_pit.pipeline.candidate_grounding import require_candidate_grounding
 from money_pit.pipeline.chain import Stage
 from money_pit.pipeline.discovery import UnknownResearchProviderError
 from money_pit.pipeline.identity import stable_identifier
+from money_pit.pipeline.synthesis_material import SynthesisDecision
+from money_pit.pipeline.synthesis_material import canonical_synthesis_context
+from money_pit.pipeline.synthesis_material import merge_research_contexts
+from money_pit.pipeline.synthesis_material import project_synthesis_material
 from money_pit.pipeline.temporal import require_model_temporal_authority
 from money_pit.schemas.research import EvidenceAliasBinding
 from money_pit.schemas.research import MaterialAnchorAssessment
@@ -51,6 +57,10 @@ from money_pit.schemas.research import ResearchStopReason
 from money_pit.schemas.runs import ArtifactRecordKind
 from money_pit.schemas.runs import bind_artifact_record
 from money_pit.schemas.theses import CandidateThesis
+from money_pit.semantic_identity import candidate_semantic_variant
+from money_pit.semantic_identity import research_premise_semantics
+from money_pit.semantic_identity import research_scope_fingerprint
+from money_pit.semantic_identity import research_task_semantics
 from money_pit.storage.admission import IntelligenceAdmissionRepository
 from money_pit.storage.intelligence_work import ClaimedResearchJobRecord
 from money_pit.storage.intelligence_work import IncrementalResearchAdmissionRecord
@@ -59,6 +69,12 @@ from money_pit.storage.intelligence_work import ResearchCheckpointRecord
 from money_pit.storage.intelligence_work import ResearchJobRecord
 from money_pit.storage.intelligence_work import SynthesisUnitRecord
 from money_pit.storage.intelligence_work import WorkClaim
+from money_pit.storage.semantic_intelligence import ResearchJobTaskBinding
+from money_pit.storage.semantic_intelligence import ResearchTaskRole
+from money_pit.storage.semantic_intelligence import SemanticIntelligenceRepository
+from money_pit.storage.semantic_intelligence import SynthesisDisposition
+from money_pit.storage.semantic_intelligence import SynthesisEligibility
+from money_pit.storage.semantic_intelligence import SynthesisMaterialState
 
 
 class ResearchBudgetViolationError(Exception):
@@ -92,20 +108,6 @@ _MAXIMUM_CANDIDATES_PER_UPDATE = 2
 _MAXIMUM_QUERIES_PER_WAVE = 2
 _MAXIMUM_FETCHES_PER_WAVE = 4
 _JSON_VALUE_ADAPTER: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
-
-
-class CandidateResearchSummary(BaseModel):
-    """Immutable A3 summary for one candidate."""
-
-    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
-
-    candidate_thesis_id: str
-    session_id: str
-    rounds: tuple[ResearchRoundExecution, ...]
-    stop_reason: ResearchStopReason
-    planner_requests: tuple[ResearchPlanningRequest, ...] = ()
-    planner_responses: tuple[ResearchRoundPlan, ...] = ()
-    normalized_queries: tuple[str, ...] = ()
 
 
 class ResearchArtifactPayload(BaseModel):
@@ -187,18 +189,32 @@ def research_candidate(  # noqa: C901 - explicit hard-stop branches belong to th
     allowed_provider_names: tuple[str, ...],
     prior_checkpoint: ResearchCheckpointRecord | None = None,
     checkpoint_wave: Callable[[ResearchCheckpointRecord], None] | None = None,
+    job_scoped_tasks: bool = False,
 ) -> CandidateResearchSummary:
     """Run research until a typed stop condition or deterministic bound is reached."""
     started_at: datetime = clock()
     deadline: datetime = started_at + budget.maximum_elapsed
-    session_id: str = runner.resume_or_start_session(
-        run_id=run_id,
-        candidate=candidate,
-        started_at=started_at,
-        deadline=deadline,
-        maximum_rounds=budget.maximum_rounds,
-        maximum_queries=budget.maximum_queries,
-        maximum_fetches=budget.maximum_fetches,
+    session_id: str = (
+        runner.resume_or_start_session(
+            run_id=run_id,
+            candidate=candidate,
+            started_at=started_at,
+            deadline=deadline,
+            maximum_rounds=budget.maximum_rounds,
+            maximum_queries=budget.maximum_queries,
+            maximum_fetches=budget.maximum_fetches,
+        )
+        if not job_scoped_tasks
+        else runner.resume_or_start_session(
+            run_id=run_id,
+            candidate=candidate,
+            started_at=started_at,
+            deadline=deadline,
+            maximum_rounds=budget.maximum_rounds,
+            maximum_queries=budget.maximum_queries,
+            maximum_fetches=budget.maximum_fetches,
+            job_id=job_id,
+        )
     )
     prior_summary, prior_contexts = _restore_research_checkpoint(prior_checkpoint)
     executions: list[ResearchRoundExecution] = []
@@ -211,12 +227,24 @@ def research_candidate(  # noqa: C901 - explicit hard-stop branches belong to th
         if separator:
             query_keys_seen.add((provider, query))
     resumed_tasks = runner.pending_tasks_for_session(session_id)
-    durable_planner_tasks = task_memory.pending_for_candidate(
-        candidate.candidate_thesis_id,
-        run_id=run_id,
-        as_of=started_at,
+    durable_planner_tasks = (
+        task_memory.pending_for_candidate(
+            candidate.candidate_thesis_id,
+            run_id=run_id,
+            as_of=started_at,
+        )
+        if job_id is None or not job_scoped_tasks
+        else task_memory.pending_for_job(job_id, as_of=started_at)
     )
-    pending: tuple[ResearchTaskDraft, ...] = deduplicate_tasks(resumed_tasks or durable_planner_tasks or initial_tasks)
+    pending: tuple[ResearchTaskDraft, ...] = deduplicate_tasks(resumed_tasks or durable_planner_tasks)
+    pending_query_keys = {
+        (task.provider.casefold(), " ".join(task.query.split()).casefold()) for task in durable_planner_tasks
+    }
+    query_keys_seen.update(
+        (task.provider.casefold(), " ".join(task.query.split()).casefold())
+        for task in initial_tasks
+        if (task.provider.casefold(), " ".join(task.query.split()).casefold()) not in pending_query_keys
+    )
     stop_reason: ResearchStopReason | None = None
     planner_requests: list[ResearchPlanningRequest] = []
     planner_responses: list[ResearchRoundPlan] = []
@@ -289,6 +317,8 @@ def research_candidate(  # noqa: C901 - explicit hard-stop branches belong to th
         stop_reason = ResearchStopReason.DECISIVE_CONTRADICTION
     elif recovered_assessment.evidence_standard_satisfied:
         stop_reason = ResearchStopReason.EVIDENCE_STANDARD_SATISFIED
+    elif prior_checkpoint is None and initial_tasks and not pending:
+        stop_reason = ResearchStopReason.NO_NEW_INDEPENDENT_PROVENANCE
     for round_number in range(starting_wave, min(budget.maximum_rounds, starting_wave) + 1):
         if stop_reason is not None:
             break
@@ -375,6 +405,7 @@ def research_candidate(  # noqa: C901 - explicit hard-stop branches belong to th
                 pending,
                 run_id=run_id,
                 known_at=clock(),
+                job_id=(job_id if job_scoped_tasks else None),
             )
 
         novel_pending = tuple(
@@ -619,6 +650,116 @@ def _material_claim_keys(job: ResearchJobRecord) -> tuple[str, ...]:
     )
 
 
+def _checkpoint_contexts(digest: JsonValue) -> tuple[ResearchCumulativeContext, ...]:
+    if not isinstance(digest, dict):
+        raise PromptProjectionError("Research checkpoint digest must be an object")
+    values = digest.get("contexts")
+    if not isinstance(values, list):
+        return ()
+    return tuple(ResearchCumulativeContext.model_validate(value) for value in values)
+
+
+def _prior_hypothesis_revision_id(
+    *,
+    hypothesis_id: str,
+    semantic: SemanticIntelligenceRepository,
+    theses: ThesisMemory,
+    as_of: datetime,
+) -> str | None:
+    revision = theses.latest_revision_for_candidates(
+        semantic.candidate_ids_for_hypothesis(hypothesis_id),
+        as_of=as_of,
+    )
+    return None if revision is None else revision.revision_id
+
+
+def _hypothesis_candidate_ids(
+    job: ResearchJobRecord,
+) -> tuple[str, ...]:
+    if not isinstance(job.payload, dict):
+        raise PromptProjectionError("Research job payload must be an object")
+    premises = job.payload.get("premises")
+    if not isinstance(premises, dict):
+        raise PromptProjectionError("Research job payload has no premises")
+    values = premises.get("candidate_ids")
+    if values is None:
+        return (job.candidate_thesis_id,)
+    if not isinstance(values, list) or not all(isinstance(value, str) and value for value in values):
+        raise PromptProjectionError("Research job candidate identities must be non-empty strings")
+    return tuple(dict.fromkeys(value for value in values if isinstance(value, str)))
+
+
+def _synthesis_material_admission(
+    *,
+    job: ResearchJobRecord,
+    summary: CandidateResearchSummary,
+    digest: JsonValue,
+    completed_at: datetime,
+    grounded_observation_ids: tuple[str, ...],
+    claims: ClaimMemory,
+    theses: ThesisMemory,
+    semantic: SemanticIntelligenceRepository,
+) -> tuple[SynthesisMaterialState, SynthesisUnitRecord | None, SynthesisDisposition | None]:
+    hypothesis_id = semantic.hypothesis_id_for_candidate(summary.candidate_thesis_id)
+    if hypothesis_id is None:
+        raise PromptProjectionError("Terminal research job has no canonical hypothesis")
+    context = canonical_synthesis_context(merge_research_contexts(_checkpoint_contexts(digest)))
+    material_keys = frozenset(context.material_anchor_assessment.material_claim_keys)
+    material_claims = tuple(
+        item for item in claims.projections_as_of(as_of=completed_at) if item.canonical_claim_key in material_keys
+    )
+    projection = project_synthesis_material(
+        hypothesis_id=hypothesis_id,
+        grounded_observation_ids=grounded_observation_ids,
+        material_claims=material_claims,
+        research_context=context,
+        prior_revision_id=_prior_hypothesis_revision_id(
+            hypothesis_id=hypothesis_id,
+            semantic=semantic,
+            theses=theses,
+            as_of=completed_at,
+        ),
+    )
+    material_fingerprint = projection.material_state_id.removeprefix("synthesis-material:")
+    eligibility = (
+        SynthesisEligibility.ELIGIBLE
+        if projection.decision is SynthesisDecision.ELIGIBLE
+        else SynthesisEligibility.INSUFFICIENT_EVIDENCE
+    )
+    material_state = SynthesisMaterialState(
+        material_state_id=projection.material_state_id,
+        hypothesis_id=hypothesis_id,
+        material_fingerprint=material_fingerprint,
+        eligibility=eligibility,
+        prior_revision_id=projection.prior_revision_id,
+        created_at=completed_at,
+        assessment=projection.model_dump(mode="json"),
+        research_job_ids=(job.job_id,),
+    )
+    if projection.decision is SynthesisDecision.INSUFFICIENT_EVIDENCE:
+        return material_state, None, None
+    existing_unit_id = semantic.synthesis_unit_id_for_material_state(projection.material_state_id)
+    if existing_unit_id is not None:
+        return material_state, None, None
+    unit_id = stable_identifier("synthesis-unit", {"material_state_id": projection.material_state_id})
+    unit = SynthesisUnitRecord(
+        unit_id=unit_id,
+        research_job_id=job.job_id,
+        input_fingerprint=material_fingerprint,
+        created_at=material_state.created_at,
+        payload={
+            "candidate_id": summary.candidate_thesis_id,
+            "candidate_ids": list(_hypothesis_candidate_ids(job)),
+            "hypothesis_id": hypothesis_id,
+            "material_state_id": projection.material_state_id,
+            "context": {"contexts": [_research_context_payload(context)]},
+            "grounding_policy_version": CANDIDATE_GROUNDING_POLICY_VERSION,
+            "origin_observation_ids": list(grounded_observation_ids),
+        },
+    )
+    return material_state, unit, SynthesisDisposition.CURRENT
+
+
 def _restore_research_checkpoint(
     checkpoint: ResearchCheckpointRecord | None,
 ) -> tuple[CandidateResearchSummary | None, tuple[ResearchCumulativeContext, ...]]:
@@ -661,6 +802,179 @@ def _validate_stop_reason(reason: ResearchStopReason, request: ResearchPlanningR
         raise InvalidResearchStopReasonError("Budget-expired stop was proposed before a hard budget was exhausted")
 
 
+def _ensure_semantic_research_heads(  # noqa: C901 - semantic grouping keeps lineage decisions explicit
+    *,
+    candidate_ids: tuple[str, ...],
+    source_id: str | None,
+    requested_as_of: datetime,
+    state: PipelineState,
+    claims: ClaimMemory,
+    theses: ThesisMemory,
+    tasks: ResearchTaskMemory,
+    work: IntelligenceWorkRepository,
+    semantic: SemanticIntelligenceRepository,
+    run_id: str,
+    recorded_at: datetime,
+) -> None:
+    """Create one current research head per exact hypothesis and material premise."""
+    grouped: dict[tuple[str, str], list[tuple[CandidateThesis, tuple[str, ...]]]] = {}
+    for candidate in theses.candidates_by_ids(candidate_ids):
+        if not candidate_semantic_variant(candidate).capital_available:
+            continue
+        origins = work.discovery_origin_unit_ids(candidate.candidate_thesis_id, source_id)
+        hypothesis_id = semantic.hypothesis_id_for_candidate(candidate.candidate_thesis_id)
+        if hypothesis_id is None:
+            raise PromptProjectionError("Research reconciliation requires provider-free candidate semantic admission")
+        units = work.discovery_units_by_ids(origins)
+        origins_by_source: dict[str, list[str]] = {}
+        for unit in units:
+            scope_source = unit.source_id or "global"
+            origins_by_source.setdefault(scope_source, []).append(unit.unit_id)
+        if not origins_by_source:
+            origins_by_source[source_id or "global"] = []
+        for scope_source, scoped_origins in origins_by_source.items():
+            grouped.setdefault((hypothesis_id, scope_source), []).append((candidate, tuple(sorted(scoped_origins))))
+    projections = claims.projections_with_deltas(
+        requested_as_of=requested_as_of,
+        observation_ids=state.get("observation_ids", ()),
+        resolution_ids=state.get("claim_resolution_decision_ids", ()),
+        verification_ids=state.get("verification_result_ids", ()),
+    )
+    for (hypothesis_id, scope_source), members in sorted(grouped.items()):
+        scope_fingerprint = research_scope_fingerprint(None if scope_source == "global" else scope_source)
+        representative = min((item[0] for item in members), key=lambda item: item.candidate_thesis_id)
+        origin_unit_ids = tuple(sorted({unit for _, origins in members for unit in origins}))
+        tasks_by_semantics: dict[str, ResearchTaskDraft] = {}
+        task_origins: dict[str, set[str]] = {}
+        for candidate, origins in members:
+            for task in tasks.tasks_for_candidate(
+                candidate.candidate_thesis_id,
+                as_of=requested_as_of,
+                origin_unit_ids=origins,
+            ):
+                rebound = task.model_copy(update={"candidate_thesis_id": representative.candidate_thesis_id})
+                semantic_key = research_task_semantics(rebound).model_dump_json()
+                _ = tasks_by_semantics.setdefault(semantic_key, rebound)
+                task_origins.setdefault(semantic_key, set()).update(origins)
+        initial_tasks = tuple(tasks_by_semantics[key] for key in sorted(tasks_by_semantics))
+        premise_claim_keys = frozenset(key for task in initial_tasks for key in task.material_claim_keys)
+        material_projections = tuple(
+            projection for projection in projections if projection.canonical_claim_key in premise_claim_keys
+        )
+        premise = research_premise_semantics(
+            hypothesis_id=hypothesis_id,
+            material_claims=material_projections,
+            initial_tasks=initial_tasks,
+        )
+        current_head = semantic.current_research_head(
+            hypothesis_id=hypothesis_id,
+            scope_fingerprint=scope_fingerprint,
+            semantic_premise_fingerprint=premise.fingerprint,
+        )
+        if current_head is not None:
+            continue
+        predecessor_job_ids = semantic.predecessor_research_job_ids(
+            hypothesis_id=hypothesis_id,
+            scope_fingerprint=scope_fingerprint,
+        )
+        job_id = stable_identifier(
+            "research-job",
+            {
+                "hypothesis_id": hypothesis_id,
+                "scope_fingerprint": scope_fingerprint,
+                "premise_fingerprint": premise.fingerprint,
+            },
+        )
+        premise_payload = _JSON_VALUE_ADAPTER.validate_python(
+            {
+                "hypothesis_id": hypothesis_id,
+                "candidate_id": representative.candidate_thesis_id,
+                "candidate_ids": sorted(item[0].candidate_thesis_id for item in members),
+                "material_claims": [item.model_dump(mode="json") for item in material_projections],
+                "tasks": [task.model_dump(mode="json") for task in initial_tasks],
+            }
+        )
+        work.ensure_research_job(
+            ResearchJobRecord(
+                job_id=job_id,
+                candidate_thesis_id=representative.candidate_thesis_id,
+                premise_fingerprint=premise.fingerprint,
+                source_discovery_unit_id=(origin_unit_ids[0] if len(origin_unit_ids) == 1 else None),
+                created_at=min(item[0].created_at for item in members),
+                payload={"candidate_id": representative.candidate_thesis_id, "premises": premise_payload},
+            ),
+            origin_unit_ids=origin_unit_ids,
+        )
+        bindings_list: list[ResearchJobTaskBinding] = []
+        for semantic_key in sorted(tasks_by_semantics):
+            task = tasks_by_semantics[semantic_key]
+            exact_origins = tuple(sorted(task_origins[semantic_key]))
+            bindings_list.append(
+                ResearchJobTaskBinding(
+                    task_id=tasks.append_task(
+                        task,
+                        run_id=run_id,
+                        known_at=recorded_at,
+                        origin_unit_ids=exact_origins,
+                    ),
+                    role=ResearchTaskRole.INITIAL,
+                    origin_unit_ids=exact_origins,
+                )
+            )
+        bindings = tuple(bindings_list)
+        _ = semantic.ensure_research_job_semantics(
+            job_id=job_id,
+            hypothesis_id=hypothesis_id,
+            scope_fingerprint=scope_fingerprint,
+            semantic_premise_fingerprint=premise.fingerprint,
+            task_bindings=bindings,
+            predecessor_job_ids=predecessor_job_ids,
+            recorded_at=recorded_at,
+        )
+
+
+def _reconcile_terminal_materializations(
+    *,
+    source_id: str | None,
+    claims: ClaimMemory,
+    theses: ThesisMemory,
+    work: IntelligenceWorkRepository,
+    semantic: SemanticIntelligenceRepository,
+) -> None:
+    """Complete locally reconstructable post-research transitions before new claims."""
+    for job in work.terminal_research_jobs_awaiting_materialization(source_id):
+        checkpoint = work.latest_research_checkpoint(job.job_id)
+        summary, _contexts = _restore_research_checkpoint(checkpoint)
+        if summary is None or checkpoint is None or job.completed_at is None or job.stop_reason is None:
+            raise PromptProjectionError("Terminal research materialization lacks its required durable checkpoint")
+        grounded_observation_ids = _grounded_job_observation_ids(
+            job=job,
+            completed_at=job.completed_at,
+            claims=claims,
+            theses=theses,
+            work=work,
+        )
+        material_state, synthesis_unit, synthesis_disposition = _synthesis_material_admission(
+            job=job,
+            summary=summary,
+            digest=checkpoint.digest,
+            completed_at=job.completed_at,
+            grounded_observation_ids=grounded_observation_ids,
+            claims=claims,
+            theses=theses,
+            semantic=semantic,
+        )
+        work.finalize_research_with_material(
+            job_id=job.job_id,
+            completed_at=job.completed_at,
+            stop_reason=job.stop_reason,
+            next_review_at=job.next_review_at,
+            material_state=material_state,
+            synthesis_unit=synthesis_unit,
+            synthesis_disposition=synthesis_disposition,
+        )
+
+
 def make_research_node(  # noqa: C901 - explicit incremental recovery branches remain visible
     *,
     claims: ClaimMemory,
@@ -676,8 +990,11 @@ def make_research_node(  # noqa: C901 - explicit incremental recovery branches r
     prompt_character_budget: int = 120_000,
     allowed_provider_names: tuple[str, ...],
     work_repository: IntelligenceWorkRepository | None = None,
+    semantic_repository: SemanticIntelligenceRepository | None = None,
 ) -> PipelineNode:
     """Return A3 with read-only provider execution and durable research bookkeeping."""
+    if work_repository is not None and semantic_repository is None:
+        raise ValueError("Incremental research requires semantic intelligence persistence")
     resolved_budget: ResearchBudget = budget or ResearchBudget()
     resolved_prompt_character_budget = min(
         prompt_character_budget,
@@ -709,64 +1026,28 @@ def make_research_node(  # noqa: C901 - explicit incremental recovery branches r
         claimed_jobs = ()
         if work_repository is not None:
             selected_ids.update(work_repository.candidates_for_research_reconciliation(state.get("source_id")))
-            for candidate_id in sorted(selected_ids):
-                candidate = theses.candidates_by_ids((candidate_id,))[0]
-                origin_unit_ids = work_repository.discovery_origin_unit_ids(
-                    candidate_id,
-                    state.get("source_id"),
-                )
-                initial_tasks = tasks.pending_for_candidate(
-                    candidate_id,
-                    run_id=run_id,
-                    as_of=requested_as_of,
-                    origin_unit_ids=origin_unit_ids,
-                )
-                latest_job = work_repository.latest_research_job_for_candidate(
-                    candidate_id,
-                    state.get("source_id"),
-                )
-                if not initial_tasks and latest_job is not None:
-                    initial_tasks = _research_job_tasks(latest_job)
-                premise_claim_keys = tuple(
-                    dict.fromkeys(key for task in initial_tasks for key in task.material_claim_keys)
-                )
-                projections = claims.projections_with_deltas(
-                    requested_as_of=requested_as_of,
-                    observation_ids=state.get("observation_ids", ()),
-                    resolution_ids=state.get("claim_resolution_decision_ids", ()),
-                    verification_ids=state.get("verification_result_ids", ()),
-                )
-                material_projections = tuple(
-                    projection.model_dump(mode="json", exclude={"projected_as_of"})
-                    for projection in projections
-                    if projection.canonical_claim_key in premise_claim_keys
-                )
-                premise_payload = _JSON_VALUE_ADAPTER.validate_python(
-                    {
-                        "candidate": candidate.model_dump(mode="json"),
-                        "discovery_origin_unit_ids": list(origin_unit_ids),
-                        "material_claims": list(material_projections),
-                        "tasks": [task.model_dump(mode="json") for task in deduplicate_tasks(initial_tasks)],
-                    }
-                )
-                premise_fingerprint = hashlib.sha256(
-                    json.dumps(premise_payload, sort_keys=True, separators=(",", ":")).encode()
-                ).hexdigest()
-                job_id = stable_identifier(
-                    "research-job",
-                    {"candidate_id": candidate_id, "premise_fingerprint": premise_fingerprint},
-                )
-                work_repository.ensure_research_job(
-                    ResearchJobRecord(
-                        job_id=job_id,
-                        candidate_thesis_id=candidate_id,
-                        premise_fingerprint=premise_fingerprint,
-                        source_discovery_unit_id=(origin_unit_ids[0] if len(origin_unit_ids) == 1 else None),
-                        created_at=candidate.created_at,
-                        payload={"candidate_id": candidate_id, "premises": premise_payload},
-                    ),
-                    origin_unit_ids=origin_unit_ids,
-                )
+            if semantic_repository is None:
+                raise PromptProjectionError("Incremental research requires semantic intelligence persistence")
+            _ensure_semantic_research_heads(
+                candidate_ids=tuple(sorted(selected_ids)),
+                source_id=state.get("source_id"),
+                requested_as_of=requested_as_of,
+                state=state,
+                claims=claims,
+                theses=theses,
+                tasks=tasks,
+                work=work_repository,
+                semantic=semantic_repository,
+                run_id=run_id,
+                recorded_at=decision_at,
+            )
+            _reconcile_terminal_materializations(
+                source_id=state.get("source_id"),
+                claims=claims,
+                theses=theses,
+                work=work_repository,
+                semantic=semantic_repository,
+            )
             claimed_at = clock()
             claim = WorkClaim(run_id=run_id, claimed_at=claimed_at)
             claimed_jobs = work_repository.claim_research_jobs(
@@ -840,6 +1121,7 @@ def make_research_node(  # noqa: C901 - explicit incremental recovery branches r
                     )
                 ),
                 checkpoint_wave=(None if work_repository is None else _checkpoint_writer(work_repository)),
+                job_scoped_tasks=semantic_repository is not None,
             )
             for candidate in candidates
         )
@@ -874,8 +1156,28 @@ def make_research_node(  # noqa: C901 - explicit incremental recovery branches r
                         if projection.canonical_claim_key in material_claim_keys
                         and projection.next_refresh_at is not None
                     )
-                    work_repository.finalize_research_job(
+                    if semantic_repository is None:
+                        raise PromptProjectionError("Incremental research requires semantic intelligence persistence")
+                    grounded_observation_ids = _grounded_job_observation_ids(
+                        job=job,
+                        completed_at=completed_at,
+                        claims=claims,
+                        theses=theses,
+                        work=work_repository,
+                    )
+                    material_state, synthesis_unit, synthesis_disposition = _synthesis_material_admission(
+                        job=job,
+                        summary=summary,
+                        digest=digest,
+                        completed_at=completed_at,
+                        grounded_observation_ids=grounded_observation_ids,
+                        claims=claims,
+                        theses=theses,
+                        semantic=semantic_repository,
+                    )
+                    work_repository.finalize_research_with_material(
                         job_id=job.job_id,
+                        active_claim_run_id=run_id,
                         completed_at=completed_at,
                         stop_reason=summary.stop_reason.value,
                         next_review_at=_next_research_review(
@@ -883,38 +1185,9 @@ def make_research_node(  # noqa: C901 - explicit incremental recovery branches r
                             completed_at,
                             material_claim_refreshes=material_claim_refreshes,
                         ),
-                    )
-                    input_fingerprint = hashlib.sha256(
-                        json.dumps(digest, sort_keys=True, separators=(",", ":")).encode()
-                    ).hexdigest()
-                    origin_units = work_repository.discovery_units_by_ids(
-                        work_repository.discovery_origin_unit_ids(
-                            summary.candidate_thesis_id,
-                            state.get("source_id"),
-                        )
-                    )
-                    origin_observation_ids = tuple(
-                        dict.fromkeys(
-                            identifier
-                            for unit in origin_units
-                            for identifier in _discovery_observation_ids(unit.payload)
-                        )
-                    )
-                    work_repository.ensure_synthesis_unit(
-                        SynthesisUnitRecord(
-                            unit_id=stable_identifier(
-                                "synthesis-unit",
-                                {"job_id": job.job_id, "input_fingerprint": input_fingerprint},
-                            ),
-                            research_job_id=job.job_id,
-                            input_fingerprint=input_fingerprint,
-                            created_at=clock(),
-                            payload={
-                                "candidate_id": summary.candidate_thesis_id,
-                                "context": digest,
-                                "origin_observation_ids": list(origin_observation_ids),
-                            },
-                        )
+                        material_state=material_state,
+                        synthesis_unit=synthesis_unit,
+                        synthesis_disposition=synthesis_disposition,
                     )
         decision_at = clock()
         artifact_known_at = clock()
@@ -1042,6 +1315,33 @@ def _discovery_observation_ids(payload: JsonValue) -> tuple[str, ...]:
     if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
         return ()
     return tuple(value for value in values if isinstance(value, str))
+
+
+def _grounded_job_observation_ids(
+    *,
+    job: ResearchJobRecord,
+    completed_at: datetime,
+    claims: ClaimMemory,
+    theses: ThesisMemory,
+    work: IntelligenceWorkRepository,
+) -> tuple[str, ...]:
+    origin_units = work.discovery_units_by_ids(work.research_job_origin_unit_ids(job.job_id))
+    origin_observation_ids = tuple(
+        dict.fromkeys(identifier for unit in origin_units for identifier in _discovery_observation_ids(unit.payload))
+    )
+    origin_observations = claims.observations_by_ids(origin_observation_ids)
+    return tuple(
+        dict.fromkeys(
+            observation_id
+            for candidate in theses.candidates_by_ids(_hypothesis_candidate_ids(job))
+            for observation_id in require_candidate_grounding(
+                candidate,
+                observations=origin_observations,
+                claims=claims.projections_as_of(as_of=completed_at),
+                eligible_observation_ids=frozenset(origin_observation_ids),
+            )
+        )
+    )
 
 
 def _admit_recovered_research_stage(

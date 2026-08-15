@@ -23,6 +23,7 @@ from money_pit.contracts import ResolutionCandidateSet
 from money_pit.contracts import ResolutionDraft
 from money_pit.contracts import SynthesisAgent
 from money_pit.contracts import SynthesisDraft
+from money_pit.contracts import SynthesisObservation
 from money_pit.contracts import SynthesisRequest
 from money_pit.contracts import ThesisMemory
 from money_pit.contracts import ThesisRevisionDraft
@@ -38,6 +39,9 @@ from money_pit.graph.state import require_run_started_at
 from money_pit.pipeline.artifacts import StageArtifact
 from money_pit.pipeline.artifacts import build_stage_artifact
 from money_pit.pipeline.artifacts import try_install_stage_artifact_file
+from money_pit.pipeline.candidate_grounding import CANDIDATE_GROUNDING_POLICY_VERSION
+from money_pit.pipeline.candidate_grounding import CandidateGroundingError
+from money_pit.pipeline.candidate_grounding import require_candidate_grounding
 from money_pit.pipeline.chain import Stage
 from money_pit.pipeline.identity import stable_identifier
 from money_pit.pipeline.research import reindex_research_aliases
@@ -121,6 +125,43 @@ class _RevisionTarget:
     promoted_from_candidate_id: str | None
     prior: ThesisRevision | None
     instrument: str | None
+
+
+def _project_synthesis_observation(observation: ClaimObservation) -> SynthesisObservation:
+    """Project claim semantics without fragment identifiers the model cannot dereference."""
+    return SynthesisObservation.model_validate(observation.model_dump(exclude={"evidence_fragment_ids"}))
+
+
+def _grounded_claimed_origin_ids(
+    claimed_unit: ClaimedSynthesisUnitRecord | None,
+    *,
+    candidates: tuple[CandidateThesis, ...],
+    claims: ClaimMemory,
+    requested_as_of: datetime,
+) -> tuple[str, ...]:
+    if claimed_unit is None:
+        return ()
+    if not candidates:
+        raise UnknownSynthesisReferenceError("Incremental synthesis requires at least one canonical proposal")
+    origin_ids = _synthesis_origin_observation_ids(claimed_unit.payload)
+    if isinstance(claimed_unit.payload, dict):
+        policy = claimed_unit.payload.get("grounding_policy_version")
+        if policy == CANDIDATE_GROUNDING_POLICY_VERSION:
+            return origin_ids
+        if policy is not None:
+            raise CandidateGroundingError(f"Unknown synthesis grounding policy: {policy}")
+    return tuple(
+        dict.fromkeys(
+            observation_id
+            for candidate in candidates
+            for observation_id in require_candidate_grounding(
+                candidate,
+                observations=claims.observations_by_ids(origin_ids),
+                claims=claims.projections_as_of(as_of=requested_as_of),
+                eligible_observation_ids=frozenset(origin_ids),
+            )
+        )
+    )
 
 
 def materialize_resolution(
@@ -582,13 +623,29 @@ def make_synthesis_node(  # noqa: C901 - factory closes explicit typed A4 capabi
                 "decision_at": clock(),
             }
         durable_context = None if claimed_unit is None else _synthesis_research_context(claimed_unit.payload)
+        selected_candidate_ids = (
+            state.get("candidate_thesis_ids", ())
+            if claimed_unit is None
+            else _synthesis_candidate_ids(claimed_unit.payload)
+        )
+        baseline_candidates = theses.candidates_as_of(as_of=requested_as_of) if claimed_unit is None else ()
+        same_run_candidates = theses.candidates_by_ids(selected_candidate_ids)
+        candidates = tuple(
+            {item.candidate_thesis_id: item for item in (*baseline_candidates, *same_run_candidates)}.values()
+        )
+        grounded_origin_ids = _grounded_claimed_origin_ids(
+            claimed_unit,
+            candidates=candidates,
+            claims=claims,
+            requested_as_of=requested_as_of,
+        )
         all_same_run_observation_ids = (
             state.get("observation_ids", ())
             if durable_context is None
             else tuple(
                 dict.fromkeys(
                     (
-                        *_synthesis_origin_observation_ids({} if claimed_unit is None else claimed_unit.payload),
+                        *grounded_origin_ids,
                         *(item.observation_id for item in durable_context.new_observations),
                     )
                 )
@@ -632,21 +689,12 @@ def make_synthesis_node(  # noqa: C901 - factory closes explicit typed A4 capabi
             candidate for _, candidates in resolution_candidates_by_subject for candidate in candidates
         )
         observations = tuple({item.observation_id: item for item in (*subjects, *resolution_candidates)}.values())
+        request_observations = tuple(_project_synthesis_observation(item) for item in observations)
         projections = claims.projections_with_deltas(
             requested_as_of=requested_as_of,
             observation_ids=all_same_run_observation_ids,
             resolution_ids=state.get("claim_resolution_decision_ids", ()),
             verification_ids=state.get("verification_result_ids", ()),
-        )
-        selected_candidate_ids = (
-            state.get("candidate_thesis_ids", ())
-            if claimed_unit is None
-            else (_synthesis_candidate_id(claimed_unit.payload),)
-        )
-        baseline_candidates = theses.candidates_as_of(as_of=requested_as_of) if claimed_unit is None else ()
-        same_run_candidates = theses.candidates_by_ids(selected_candidate_ids)
-        candidates = tuple(
-            {item.candidate_thesis_id: item for item in (*baseline_candidates, *same_run_candidates)}.values()
         )
         all_prior_revisions = theses.revisions_as_of(as_of=requested_as_of)
         candidate_subjects = {item.subject.strip().casefold() for item in candidates}
@@ -666,7 +714,7 @@ def make_synthesis_node(  # noqa: C901 - factory closes explicit typed A4 capabi
         request = SynthesisRequest(
             candidates=candidates,
             claims=projections,
-            observations=observations,
+            observations=request_observations,
             resolution_candidate_sets=resolution_candidate_sets,
             prior_revisions=prior_revisions,
             requested_as_of=requested_as_of,
@@ -675,7 +723,7 @@ def make_synthesis_node(  # noqa: C901 - factory closes explicit typed A4 capabi
         )
         request = _bound_synthesis_request(request, resolved_prompt_character_budget)
         if claimed_unit is not None:
-            _require_bounded_unit_context(request, claimed_unit.payload, research_context)
+            _require_bounded_unit_context(request, claimed_unit.payload)
         work_unit_id = (
             claimed_unit.unit_id
             if claimed_unit is not None
@@ -905,30 +953,38 @@ def _claim_incremental_synthesis_unit(
     )
 
 
-def _synthesis_candidate_id(payload: JsonValue) -> str:
-    """Read the exact candidate identity from a durable synthesis unit."""
+def _synthesis_candidate_ids(payload: JsonValue) -> tuple[str, ...]:
+    """Read every exact proposal represented by a durable synthesis unit."""
     if not isinstance(payload, dict):
         raise UnknownSynthesisReferenceError("Synthesis work payload must be an object")
+    values = payload.get("candidate_ids")
+    if values is not None:
+        if not isinstance(values, list) or not all(isinstance(value, str) and value for value in values):
+            raise UnknownSynthesisReferenceError("Synthesis work payload has malformed candidate identities")
+        candidate_ids = tuple(dict.fromkeys(value for value in values if isinstance(value, str)))
+        if candidate_ids:
+            return candidate_ids
     value: JsonValue | None = payload.get("candidate_id")
     if not isinstance(value, str) or not value:
         raise UnknownSynthesisReferenceError("Synthesis work payload has no candidate identity")
-    return value
+    return (value,)
 
 
 def _require_bounded_unit_context(
     request: SynthesisRequest,
     payload: JsonValue,
-    research_context: ResearchCumulativeContext,
 ) -> None:
-    expected_candidate_id = _synthesis_candidate_id(payload)
-    if tuple(item.candidate_thesis_id for item in request.candidates) != (expected_candidate_id,):
-        raise PromptProjectionError("Bounded synthesis request dropped its required candidate")
-    expected_material_keys = set(research_context.material_anchor_assessment.material_claim_keys)
-    bounded_material_keys = {
-        item.canonical_claim_key for item in request.claims if item.canonical_claim_key in expected_material_keys
-    }
-    if bounded_material_keys != expected_material_keys:
-        raise PromptProjectionError("Bounded synthesis request dropped required material claim context")
+    expected_candidate_ids = _synthesis_candidate_ids(payload)
+    if tuple(item.candidate_thesis_id for item in request.candidates) != expected_candidate_ids:
+        raise PromptProjectionError("Bounded synthesis request dropped a required canonical proposal")
+    expected_claim_keys = _required_candidate_claim_keys(request)
+    bounded_claim_keys = {item.canonical_claim_key for item in request.claims}
+    if not expected_claim_keys.issubset(bounded_claim_keys):
+        raise PromptProjectionError("Bounded synthesis request dropped required candidate claim context")
+
+
+def _required_candidate_claim_keys(request: SynthesisRequest) -> set[str]:
+    return {claim_key for candidate in request.candidates for claim_key in candidate.discovery_basis.source_claim_keys}
 
 
 def _synthesis_research_context(payload: JsonValue) -> ResearchCumulativeContext:
@@ -1026,9 +1082,11 @@ def _bound_synthesis_request(  # noqa: C901 - explicit record kinds preserve typ
     context = request.research_context.model_copy(update={"new_observations": (), "evidence": (), "alias_bindings": ()})
     observations_by_id = {item.observation_id: item for item in request.observations}
     resolution_sets: list[ResolutionCandidateSet] = []
-    resolution_observations: dict[str, ClaimObservation] = {}
+    resolution_observations: dict[str, SynthesisObservation] = {}
     records: tuple[
-        tuple[str, str, CandidateThesis | CanonicalClaim | ClaimObservation | ThesisRevision | ResearchEvidenceRecord],
+        tuple[
+            str, str, CandidateThesis | CanonicalClaim | SynthesisObservation | ThesisRevision | ResearchEvidenceRecord
+        ],
         ...,
     ] = (
         *(("candidate", item.candidate_thesis_id, item) for item in request.candidates),
@@ -1039,7 +1097,7 @@ def _bound_synthesis_request(  # noqa: C901 - explicit record kinds preserve typ
     )
     candidates: list[CandidateThesis] = []
     claims: list[CanonicalClaim] = []
-    observations: list[ClaimObservation] = []
+    observations: list[SynthesisObservation] = []
     revisions: list[ThesisRevision] = []
     evidence: list[ResearchEvidenceRecord] = []
 
@@ -1064,7 +1122,7 @@ def _bound_synthesis_request(  # noqa: C901 - explicit record kinds preserve typ
         )
 
     candidates.extend(request.candidates)
-    required_claim_keys = set(request.research_context.material_anchor_assessment.material_claim_keys)
+    required_claim_keys = _required_candidate_claim_keys(request)
     claims.extend(item for item in request.claims if item.canonical_claim_key in required_claim_keys)
     evidence.extend(request.research_context.evidence)
     if serialized_inference_request_size(projected()) > character_budget:
@@ -1101,7 +1159,7 @@ def _bound_synthesis_request(  # noqa: C901 - explicit record kinds preserve typ
         target: (
             list[CandidateThesis]
             | list[CanonicalClaim]
-            | list[ClaimObservation]
+            | list[SynthesisObservation]
             | list[ThesisRevision]
             | list[ResearchEvidenceRecord]
         )

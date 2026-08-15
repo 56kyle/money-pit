@@ -1,11 +1,11 @@
 import hashlib
 import json
+import sqlite3
 from dataclasses import replace
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
 from typing import cast
 
 import pytest
@@ -25,10 +25,16 @@ from money_pit.portfolio.repository import SnapshotRepository
 from money_pit.portfolio.snapshots import PortfolioStatePayload
 from money_pit.portfolio.snapshots import PortfolioStatePosition
 from money_pit.portfolio.snapshots import PortfolioStateSnapshot
+from money_pit.schemas.claims import HorizonClass
+from money_pit.schemas.theses import CandidateThesis
+from money_pit.schemas.theses import ThesisDirection
+from money_pit.schemas.universe import DiscoveryBasis
 from money_pit.storage.database import Database
 from money_pit.storage.database import TransactionMode
+from money_pit.storage.errors import StorageTransactionError
 from money_pit.storage.intelligence_work import DiscoveryUnitKind
 from money_pit.storage.intelligence_work import DiscoveryUnitRecord
+from money_pit.storage.intelligence_work import ImmutableWorkCollisionError
 from money_pit.storage.intelligence_work import IncrementalResearchAdmissionRecord
 from money_pit.storage.intelligence_work import IntelligenceWorkRepository
 from money_pit.storage.intelligence_work import InterpretationBundleRecord
@@ -42,10 +48,11 @@ from money_pit.storage.intelligence_work import SynthesisOutputRecord
 from money_pit.storage.intelligence_work import SynthesisUnitRecord
 from money_pit.storage.intelligence_work import UriDisposition
 from money_pit.storage.intelligence_work import WorkTransitionError
-
-
-if TYPE_CHECKING:
-    import sqlite3
+from money_pit.storage.semantic_intelligence import HypothesisReviewDecision
+from money_pit.storage.semantic_intelligence import SemanticIntelligenceRepository
+from money_pit.storage.semantic_intelligence import SynthesisDisposition
+from money_pit.storage.semantic_intelligence import SynthesisEligibility
+from money_pit.storage.semantic_intelligence import SynthesisMaterialState
 
 
 _NOW = datetime(2026, 8, 12, 20, tzinfo=UTC)
@@ -130,6 +137,23 @@ def _checkpoint_research_wave(
 
 
 def _seed_runs_and_candidates(database: Database) -> None:
+    candidates = tuple(
+        CandidateThesis(
+            candidate_thesis_id=f"candidate-{index}",
+            subject=f"Instrument {index}",
+            direction=ThesisDirection.LONG,
+            instrument_reference=f"Instrument {index}",
+            instrument=f"TEST{index}",
+            theme=f"Theme {index}",
+            horizon_class=HorizonClass.MEDIUM_TERM,
+            discovery_basis=DiscoveryBasis(source_claim_keys=(f"claim:{index}",)),
+            causal_mechanisms=(f"Mechanism {index}",),
+            regime_assumptions=("Stable funding",),
+            created_at=_NOW,
+            known_at=_NOW,
+        )
+        for index in range(1, 5)
+    )
     with database.transaction(TransactionMode.WRITE) as connection:
         for run_id in ("run-1", "run-2"):
             _ = connection.execute(
@@ -139,12 +163,17 @@ def _seed_runs_and_candidates(database: Database) -> None:
                 ) VALUES (?, ?, ?, ?, 'A4', 'sources', 'intelligence', '{}')""",
                 (run_id, _NOW.isoformat(), _NOW.isoformat(), _NOW.isoformat()),
             )
-        for index in range(1, 5):
+        for candidate in candidates:
             _ = connection.execute(
                 """INSERT INTO candidate_theses (
                     candidate_thesis_id, status, created_at, known_at, candidate_json
-                ) VALUES (?, 'open', ?, ?, '{}')""",
-                (f"candidate-{index}", _NOW.isoformat(), _NOW.isoformat()),
+                ) VALUES (?, 'open', ?, ?, ?)""",
+                (
+                    candidate.candidate_thesis_id,
+                    _NOW.isoformat(),
+                    _NOW.isoformat(),
+                    candidate.model_dump_json(),
+                ),
             )
         _ = connection.execute(
             """INSERT INTO evidence_assets (asset_id, content_hash, local_path, metadata_json)
@@ -166,6 +195,9 @@ def _seed_runs_and_candidates(database: Database) -> None:
                 'https://video.test/1', ?)""",
             (_NOW.isoformat(),),
         )
+    semantic = SemanticIntelligenceRepository(database)
+    for candidate in candidates:
+        _ = semantic.reconcile_candidate(candidate, recorded_at=_NOW)
 
 
 def _discovery_unit(identifier: str, *, source_id: str) -> DiscoveryUnitRecord:
@@ -188,6 +220,136 @@ def _research_job(index: int, *, source_unit_id: str | None = None) -> ResearchJ
         source_discovery_unit_id=source_unit_id,
         created_at=_NOW + timedelta(seconds=index),
         payload={"premises": [f"premise-{index}"]},
+    )
+
+
+def _ensure_claimable_research_job(
+    database: Database,
+    repository: IntelligenceWorkRepository,
+    job: ResearchJobRecord,
+    origin_unit_ids: tuple[str, ...] = (),
+) -> None:
+    repository.ensure_research_job(job, origin_unit_ids)
+    semantic = SemanticIntelligenceRepository(database)
+    hypothesis_id = semantic.hypothesis_id_for_candidate(job.candidate_thesis_id)
+    assert hypothesis_id is not None
+    _ = semantic.ensure_research_job_semantics(
+        job_id=job.job_id,
+        hypothesis_id=hypothesis_id,
+        scope_fingerprint="c" * 64,
+        semantic_premise_fingerprint=job.premise_fingerprint,
+        task_bindings=(),
+        recorded_at=job.created_at,
+    )
+
+
+def _ensure_claimable_synthesis_unit(
+    database: Database,
+    repository: IntelligenceWorkRepository,
+    *,
+    job: ResearchJobRecord,
+    unit: SynthesisUnitRecord,
+) -> None:
+    _ensure_claimable_research_job(database, repository, job)
+    repository.ensure_synthesis_unit(unit)
+    semantic = SemanticIntelligenceRepository(database)
+    hypothesis_id = semantic.hypothesis_id_for_candidate(job.candidate_thesis_id)
+    assert hypothesis_id is not None
+    material_state_id = f"synthesis-material:{unit.unit_id}"
+    _ = semantic.ensure_synthesis_material_state(
+        SynthesisMaterialState(
+            material_state_id=material_state_id,
+            hypothesis_id=hypothesis_id,
+            material_fingerprint=unit.input_fingerprint,
+            eligibility=SynthesisEligibility.ELIGIBLE,
+            created_at=unit.created_at,
+            assessment={"evidence_standard_satisfied": True},
+            research_job_ids=(job.job_id,),
+        )
+    )
+    semantic.bind_synthesis_unit(
+        unit_id=unit.unit_id,
+        material_state_id=material_state_id,
+        disposition=SynthesisDisposition.CURRENT,
+        recorded_at=unit.created_at,
+    )
+
+
+def _active_research_job(
+    database: Database,
+    repository: IntelligenceWorkRepository,
+    *,
+    index: int = 1,
+) -> tuple[ResearchJobRecord, str]:
+    job = _research_job(index)
+    _ensure_claimable_research_job(database, repository, job)
+    claimed = repository.claim_research_jobs(
+        run_id="run-1",
+        claimed_at=_NOW,
+        reclaim_before=_NOW - timedelta(minutes=1),
+        maximum_jobs=1,
+    )
+    assert tuple(record.job_id for record in claimed) == (job.job_id,)
+    hypothesis_id = SemanticIntelligenceRepository(database).hypothesis_id_for_candidate(job.candidate_thesis_id)
+    assert hypothesis_id is not None
+    return job, hypothesis_id
+
+
+def _finalize_research_job_with_insufficient_material(
+    database: Database,
+    repository: IntelligenceWorkRepository,
+    *,
+    job_id: str,
+    completed_at: datetime,
+    stop_reason: str,
+    next_review_at: datetime | None = None,
+) -> None:
+    semantic = SemanticIntelligenceRepository(database)
+    with database.read_only_transaction() as connection:
+        candidate_row = cast(
+            "sqlite3.Row",
+            connection.execute(
+                "SELECT candidate_thesis_id FROM research_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone(),
+        )
+        candidate_id = cast("str", candidate_row[0])
+    hypothesis_id = semantic.hypothesis_id_for_candidate(candidate_id)
+    assert hypothesis_id is not None
+    repository.finalize_research_with_material(
+        job_id=job_id,
+        completed_at=completed_at,
+        stop_reason=stop_reason,
+        active_claim_run_id="run-1",
+        next_review_at=next_review_at,
+        material_state=SynthesisMaterialState(
+            material_state_id=f"synthesis-material:{job_id}",
+            hypothesis_id=hypothesis_id,
+            material_fingerprint="e" * 63 + job_id[-1],
+            eligibility=SynthesisEligibility.INSUFFICIENT_EVIDENCE,
+            created_at=completed_at,
+            assessment={"stop_reason": stop_reason},
+            research_job_ids=(job_id,),
+        ),
+    )
+
+
+def _material_state(
+    *,
+    job_id: str,
+    hypothesis_id: str,
+    assessment: JsonValue = None,
+    origin_job_ids: tuple[str, ...] | None = None,
+    created_at: datetime = _NOW,
+) -> SynthesisMaterialState:
+    return SynthesisMaterialState(
+        material_state_id="synthesis-material:terminal",
+        hypothesis_id=hypothesis_id,
+        material_fingerprint="d" * 64,
+        eligibility=SynthesisEligibility.ELIGIBLE,
+        created_at=created_at,
+        assessment={"evidence_standard_satisfied": True} if assessment is None else assessment,
+        research_job_ids=(job_id,) if origin_job_ids is None else origin_job_ids,
     )
 
 
@@ -310,10 +472,11 @@ def test_claim_discovery_batch_with_source_excludes_global_backlog(
 
 
 def test_claim_research_jobs_reclaims_exact_bounded_jobs_before_new_work(
+    database: Database,
     repository: IntelligenceWorkRepository,
 ) -> None:
     for index in range(1, 4):
-        repository.ensure_research_job(_research_job(index))
+        _ensure_claimable_research_job(database, repository, _research_job(index))
     first_claim = repository.claim_research_jobs(
         run_id="run-1",
         claimed_at=_NOW,
@@ -337,7 +500,7 @@ def test_checkpoint_completed_wave_preserves_lifetime_counters_across_resume(
     repository: IntelligenceWorkRepository,
     database: Database,
 ) -> None:
-    repository.ensure_research_job(_research_job(1))
+    _ensure_claimable_research_job(database, repository, _research_job(1))
     _ = repository.claim_research_jobs(
         run_id="run-1",
         claimed_at=_NOW,
@@ -362,7 +525,7 @@ def test__recover_wave_checkpoint_reconciles_durable_outbox_without_replaying_pr
     database: Database,
     repository: IntelligenceWorkRepository,
 ) -> None:
-    repository.ensure_research_job(_research_job(1))
+    _ensure_claimable_research_job(database, repository, _research_job(1))
     _seed_research_session(database)
     claimed = repository.claim_research_jobs(
         run_id="run-1",
@@ -414,7 +577,7 @@ def test_append_wave_result_completes_provider_wave_reclaimed_by_a_later_run(
     database: Database,
     repository: IntelligenceWorkRepository,
 ) -> None:
-    repository.ensure_research_job(_research_job(1))
+    _ensure_claimable_research_job(database, repository, _research_job(1))
     _seed_research_session(database)
     wave_result_id = hashlib.sha256(("job-1\0" + "1").encode()).hexdigest()
     repository.record_provider_wave(
@@ -452,7 +615,7 @@ def test_admit_incremental_research_preserves_prior_run_child_ownership(
     database: Database,
     repository: IntelligenceWorkRepository,
 ) -> None:
-    repository.ensure_research_job(_research_job(1))
+    _ensure_claimable_research_job(database, repository, _research_job(1))
     _seed_research_session(database)
     _ = repository.claim_research_jobs(
         run_id="run-1",
@@ -531,7 +694,7 @@ def test__recover_wave_checkpoint_does_not_count_failed_fetch_as_accepted(
     database: Database,
     repository: IntelligenceWorkRepository,
 ) -> None:
-    repository.ensure_research_job(_research_job(1))
+    _ensure_claimable_research_job(database, repository, _research_job(1))
     _seed_research_session(database)
     claimed = repository.claim_research_jobs(
         run_id="run-1",
@@ -567,27 +730,32 @@ def test__recover_wave_checkpoint_does_not_count_failed_fetch_as_accepted(
 
 
 def test_claim_research_jobs_selects_fresh_job_when_material_premise_changes(
+    database: Database,
     repository: IntelligenceWorkRepository,
 ) -> None:
-    repository.ensure_research_job(_research_job(1))
+    _ensure_claimable_research_job(database, repository, _research_job(1))
     _ = repository.claim_research_jobs(
         run_id="run-1",
         claimed_at=_NOW,
         reclaim_before=_NOW - timedelta(minutes=1),
     )
-    repository.finalize_research_job(
+    _finalize_research_job_with_insufficient_material(
+        database,
+        repository,
         job_id="job-1",
         completed_at=_NOW,
         stop_reason="evidence_standard_satisfied",
     )
-    repository.ensure_research_job(
+    _ensure_claimable_research_job(
+        database,
+        repository,
         ResearchJobRecord(
             job_id="job-1-changed-premise",
             candidate_thesis_id="candidate-1",
             premise_fingerprint="f" * 64,
             created_at=_NOW + timedelta(minutes=1),
             payload={"premises": ["materially changed premise"]},
-        )
+        ),
     )
 
     claimed = repository.claim_research_jobs(
@@ -599,6 +767,286 @@ def test_claim_research_jobs_selects_fresh_job_when_material_premise_changes(
     assert tuple((item.job_id, item.premise_fingerprint, item.wave_count) for item in claimed) == (
         ("job-1-changed-premise", "f" * 64, 0),
     )
+
+
+def test_finalize_research_with_material_atomically_commits_terminal_decision_and_synthesis(
+    database: Database,
+    repository: IntelligenceWorkRepository,
+) -> None:
+    job, hypothesis_id = _active_research_job(database, repository)
+    material = _material_state(job_id=job.job_id, hypothesis_id=hypothesis_id)
+    unit = SynthesisUnitRecord(
+        unit_id="synthesis-terminal",
+        research_job_id=job.job_id,
+        input_fingerprint=material.material_fingerprint,
+        created_at=_NOW,
+        payload={"candidate_ids": [job.candidate_thesis_id]},
+    )
+
+    repository.finalize_research_with_material(
+        job_id=job.job_id,
+        completed_at=_NOW,
+        stop_reason="evidence_standard_satisfied",
+        active_claim_run_id="run-1",
+        material_state=material,
+        synthesis_unit=unit,
+        synthesis_disposition=SynthesisDisposition.CURRENT,
+    )
+
+    with database.read_only_transaction() as connection:
+        durable = tuple(
+            cast(
+                "sqlite3.Row",
+                connection.execute(
+                    """SELECT job.status, material.eligibility, origin.research_job_id,
+                unit.status, semantic.disposition
+                FROM research_jobs job
+                JOIN synthesis_material_origins origin ON origin.research_job_id = job.job_id
+                JOIN synthesis_material_states material USING (material_state_id)
+                JOIN synthesis_unit_semantics semantic USING (material_state_id)
+                JOIN synthesis_units unit USING (unit_id)
+                WHERE job.job_id = ?""",
+                    (job.job_id,),
+                ).fetchone(),
+            )
+        )
+    assert durable == ("terminal", "eligible", job.job_id, "pending", "current")
+
+
+def test_finalize_research_with_material_rolls_back_every_transition_after_late_failure(
+    database: Database,
+    repository: IntelligenceWorkRepository,
+) -> None:
+    job, hypothesis_id = _active_research_job(database, repository)
+    material = _material_state(
+        job_id=job.job_id,
+        hypothesis_id=hypothesis_id,
+        origin_job_ids=(job.job_id, "missing-research-job"),
+    )
+
+    with pytest.raises(StorageTransactionError) as exc_info:
+        repository.finalize_research_with_material(
+            job_id=job.job_id,
+            completed_at=_NOW,
+            stop_reason="evidence_standard_satisfied",
+            active_claim_run_id="run-1",
+            material_state=material,
+        )
+    with database.read_only_transaction() as connection:
+        durable = tuple(
+            cast(
+                "sqlite3.Row",
+                connection.execute(
+                    """SELECT
+                (SELECT status FROM research_jobs WHERE job_id = ?),
+                (SELECT count(*) FROM synthesis_material_states WHERE material_state_id = ?),
+                (SELECT count(*) FROM synthesis_material_origins WHERE material_state_id = ?)""",
+                    (job.job_id, material.material_state_id, material.material_state_id),
+                ).fetchone(),
+            )
+        )
+    assert (isinstance(exc_info.value.__cause__, sqlite3.IntegrityError), durable) == (
+        True,
+        ("active", 0, 0),
+    )
+
+
+def test_finalize_research_with_material_recovers_same_content_and_appends_origin(
+    database: Database,
+    repository: IntelligenceWorkRepository,
+) -> None:
+    job, hypothesis_id = _active_research_job(database, repository)
+    _ensure_claimable_research_job(database, repository, _research_job(2))
+    material = _material_state(job_id=job.job_id, hypothesis_id=hypothesis_id)
+    repository.finalize_research_with_material(
+        job_id=job.job_id,
+        completed_at=_NOW,
+        stop_reason="evidence_standard_satisfied",
+        active_claim_run_id="run-1",
+        material_state=material,
+    )
+
+    repository.finalize_research_with_material(
+        job_id=job.job_id,
+        completed_at=_NOW,
+        stop_reason="evidence_standard_satisfied",
+        active_claim_run_id="run-1",
+        material_state=material.model_copy(
+            update={
+                "created_at": _NOW + timedelta(minutes=1),
+                "research_job_ids": (job.job_id, "job-2"),
+            }
+        ),
+    )
+
+    with database.read_only_transaction() as connection:
+        rows = cast(
+            "list[sqlite3.Row]",
+            connection.execute(
+                """SELECT research_job_id FROM synthesis_material_origins
+                WHERE material_state_id = ? ORDER BY research_job_id""",
+                (material.material_state_id,),
+            ).fetchall(),
+        )
+        origins = tuple(cast("str", row[0]) for row in rows)
+    assert origins == ("job-1", "job-2")
+
+
+def test_finalize_research_with_material_rejects_changed_immutable_assessment(
+    database: Database,
+    repository: IntelligenceWorkRepository,
+) -> None:
+    job, hypothesis_id = _active_research_job(database, repository)
+    material = _material_state(job_id=job.job_id, hypothesis_id=hypothesis_id)
+    repository.finalize_research_with_material(
+        job_id=job.job_id,
+        completed_at=_NOW,
+        stop_reason="evidence_standard_satisfied",
+        active_claim_run_id="run-1",
+        material_state=material,
+    )
+
+    with pytest.raises(ImmutableWorkCollisionError):
+        repository.finalize_research_with_material(
+            job_id=job.job_id,
+            completed_at=_NOW,
+            stop_reason="evidence_standard_satisfied",
+            active_claim_run_id="run-1",
+            material_state=material.model_copy(update={"assessment": {"decisive_contradiction": True}}),
+        )
+
+
+def test_finalize_research_with_material_rejects_unrelated_hypothesis_without_mutation(
+    database: Database,
+    repository: IntelligenceWorkRepository,
+) -> None:
+    job, _hypothesis_id = _active_research_job(database, repository)
+    unrelated_hypothesis = SemanticIntelligenceRepository(database).hypothesis_id_for_candidate("candidate-2")
+    assert unrelated_hypothesis is not None
+
+    with pytest.raises(WorkTransitionError):
+        repository.finalize_research_with_material(
+            job_id=job.job_id,
+            completed_at=_NOW,
+            stop_reason="evidence_standard_satisfied",
+            active_claim_run_id="run-1",
+            material_state=_material_state(job_id=job.job_id, hypothesis_id=unrelated_hypothesis),
+        )
+
+    with database.read_only_transaction() as connection:
+        durable = tuple(
+            cast(
+                "sqlite3.Row",
+                connection.execute(
+                    """SELECT status,
+                (SELECT count(*) FROM synthesis_material_states WHERE material_state_id = ?)
+                FROM research_jobs WHERE job_id = ?""",
+                    ("synthesis-material:terminal", job.job_id),
+                ).fetchone(),
+            )
+        )
+    assert durable == ("active", 0)
+
+
+def test_finalize_research_with_material_rejects_stale_claim_owner_without_mutation(
+    database: Database,
+    repository: IntelligenceWorkRepository,
+) -> None:
+    job, hypothesis_id = _active_research_job(database, repository)
+    material = _material_state(job_id=job.job_id, hypothesis_id=hypothesis_id)
+
+    with pytest.raises(WorkTransitionError):
+        repository.finalize_research_with_material(
+            job_id=job.job_id,
+            completed_at=_NOW,
+            stop_reason="evidence_standard_satisfied",
+            active_claim_run_id="run-2",
+            material_state=material,
+        )
+
+    with database.read_only_transaction() as connection:
+        durable = tuple(
+            cast(
+                "sqlite3.Row",
+                connection.execute(
+                    """SELECT status, claimed_run_id,
+                    (SELECT count(*) FROM synthesis_material_states WHERE material_state_id = ?)
+                    FROM research_jobs WHERE job_id = ?""",
+                    (material.material_state_id, job.job_id),
+                ).fetchone(),
+            )
+        )
+    assert durable == ("active", "run-1", 0)
+
+
+def test_finalize_research_with_material_accepts_same_review_successor_group(
+    database: Database,
+    repository: IntelligenceWorkRepository,
+) -> None:
+    job, predecessor_group_id = _active_research_job(database, repository)
+    candidate = CandidateThesis(
+        candidate_thesis_id="candidate-1-alias",
+        subject="Instrument one alternate framing",
+        direction=ThesisDirection.LONG,
+        instrument_reference="Instrument 1",
+        instrument="TEST1",
+        theme="Alternate theme",
+        horizon_class=HorizonClass.MEDIUM_TERM,
+        discovery_basis=DiscoveryBasis(source_claim_keys=("claim:alias",)),
+        causal_mechanisms=("Mechanism 1",),
+        regime_assumptions=("Stable funding",),
+        created_at=_NOW,
+        known_at=_NOW,
+    )
+    with database.transaction(TransactionMode.WRITE) as connection:
+        _ = connection.execute(
+            """INSERT INTO candidate_theses
+            (candidate_thesis_id, status, created_at, known_at, candidate_json)
+            VALUES (?, 'open', ?, ?, ?)""",
+            (candidate.candidate_thesis_id, _NOW.isoformat(), _NOW.isoformat(), candidate.model_dump_json()),
+        )
+    semantic = SemanticIntelligenceRepository(database)
+    _ = semantic.reconcile_candidate(candidate, recorded_at=_NOW)
+    review = next(
+        review
+        for review in semantic.list_reviews()
+        if {review.subject_candidate_id, review.comparison_candidate_id}
+        == {candidate.candidate_thesis_id, job.candidate_thesis_id}
+    )
+    _ = semantic.resolve_review(
+        review.review_id,
+        decision=HypothesisReviewDecision.SAME,
+        actor="operator",
+        reason="Confirmed equivalent economic hypothesis.",
+        resolved_at=_NOW + timedelta(minutes=1),
+    )
+    successor_group_id = semantic.hypothesis_id_for_candidate(job.candidate_thesis_id)
+    assert successor_group_id is not None
+    assert successor_group_id != predecessor_group_id
+
+    repository.finalize_research_with_material(
+        job_id=job.job_id,
+        completed_at=_NOW + timedelta(minutes=2),
+        stop_reason="evidence_standard_satisfied",
+        active_claim_run_id="run-1",
+        material_state=_material_state(job_id=job.job_id, hypothesis_id=successor_group_id),
+    )
+
+    with database.read_only_transaction() as connection:
+        durable = tuple(
+            cast(
+                "sqlite3.Row",
+                connection.execute(
+                    """SELECT job.status, material.hypothesis_id
+                FROM research_jobs job
+                JOIN synthesis_material_origins origin ON origin.research_job_id = job.job_id
+                JOIN synthesis_material_states material USING (material_state_id)
+                WHERE job.job_id = ?""",
+                    (job.job_id,),
+                ).fetchone(),
+            )
+        )
+    assert durable == ("terminal", successor_group_id)
 
 
 def test_claim_research_jobs_reactivates_only_terminal_jobs_due_for_review(
@@ -614,28 +1062,62 @@ def test_claim_research_jobs_reactivates_only_terminal_jobs_due_for_review(
             "maximum_results": 2,
         }
     ]
-    repository.ensure_research_job(
+    _ensure_claimable_research_job(
+        database,
+        repository,
         _research_job(1, source_unit_id="unit-a").model_copy(
             update={"payload": {"premises": ["premise-1"], "research_tasks": immutable_tasks}}
         ),
         ("unit-a",),
     )
-    repository.ensure_research_job(_research_job(2))
+    _ensure_claimable_research_job(database, repository, _research_job(2))
     _ = repository.claim_research_jobs(
         run_id="run-1",
         claimed_at=_NOW,
         reclaim_before=_NOW - timedelta(minutes=1),
         maximum_jobs=2,
     )
+    due_review_unit = SynthesisUnitRecord(
+        unit_id="synthesis:due-review",
+        research_job_id="job-1",
+        input_fingerprint="9" * 64,
+        created_at=_NOW,
+        payload={},
+    )
+    repository.ensure_synthesis_unit(due_review_unit)
+    semantic = SemanticIntelligenceRepository(database)
+    hypothesis_id = semantic.hypothesis_id_for_candidate("candidate-1")
+    assert hypothesis_id is not None
+    _ = semantic.ensure_synthesis_material_state(
+        SynthesisMaterialState(
+            material_state_id="material:due-review",
+            hypothesis_id=hypothesis_id,
+            material_fingerprint=due_review_unit.input_fingerprint,
+            eligibility=SynthesisEligibility.ELIGIBLE,
+            created_at=_NOW,
+            assessment={"evidence_standard_satisfied": True},
+            research_job_ids=("job-1",),
+        )
+    )
+    semantic.bind_synthesis_unit(
+        unit_id=due_review_unit.unit_id,
+        material_state_id="material:due-review",
+        disposition=SynthesisDisposition.CURRENT,
+        recorded_at=_NOW,
+    )
     _ = _checkpoint_research_wave(repository, database, digest={"remaining_work": []})
     review_trigger_at = _NOW + timedelta(minutes=1)
-    repository.finalize_research_job(
+    _finalize_research_job_with_insufficient_material(
+        database,
+        repository,
         job_id="job-1",
         completed_at=_NOW,
         stop_reason="review_scheduled",
         next_review_at=review_trigger_at,
     )
-    repository.finalize_research_job(
+    _finalize_research_job_with_insufficient_material(
+        database,
+        repository,
         job_id="job-2",
         completed_at=_NOW,
         stop_reason="review_scheduled",
@@ -669,6 +1151,15 @@ def test_claim_research_jobs_reactivates_only_terminal_jobs_due_for_review(
             "sqlite3.Row",
             connection.execute("SELECT status, next_review_at FROM research_jobs WHERE job_id = 'job-2'").fetchone(),
         )
+        prior_synthesis = tuple(
+            cast(
+                "sqlite3.Row",
+                connection.execute(
+                    """SELECT disposition, successor_unit_id, successor_research_job_id
+                    FROM synthesis_unit_semantics WHERE unit_id = 'synthesis:due-review'"""
+                ).fetchone(),
+            )
+        )
 
     successor = claimed[0]
     assert (
@@ -685,6 +1176,7 @@ def test_claim_research_jobs_reactivates_only_terminal_jobs_due_for_review(
         tuple(item.job_id for item in reclaimed),
         tuple(parent),
         tuple(future),
+        prior_synthesis,
     ) == (
         True,
         "job-1",
@@ -699,6 +1191,7 @@ def test_claim_research_jobs_reactivates_only_terminal_jobs_due_for_review(
         (successor.job_id,),
         ("terminal", 1, 2, 4, None),
         ("terminal", (_NOW + timedelta(hours=1)).isoformat()),
+        ("superseded", None, successor.job_id),
     )
 
 
@@ -868,18 +1361,21 @@ def test_append_uri_admission_allows_same_job_uri_under_new_processing_identity(
 
 
 def test_complete_synthesis_unit_checkpoints_one_job_without_replaying_it(
+    database: Database,
     repository: IntelligenceWorkRepository,
 ) -> None:
     for index in (1, 2):
-        repository.ensure_research_job(_research_job(index))
-        repository.ensure_synthesis_unit(
-            SynthesisUnitRecord(
+        _ensure_claimable_synthesis_unit(
+            database,
+            repository,
+            job=_research_job(index),
+            unit=SynthesisUnitRecord(
                 unit_id=f"synthesis-{index}",
                 research_job_id=f"job-{index}",
                 input_fingerprint=f"{index}" * 64,
                 created_at=_NOW + timedelta(seconds=index),
                 payload={},
-            )
+            ),
         )
     first = repository.claim_synthesis_unit(
         run_id="run-1",
@@ -914,15 +1410,17 @@ def test_complete_synthesis_unit_rejects_dropped_required_research_context(
     repository: IntelligenceWorkRepository,
     database: Database,
 ) -> None:
-    repository.ensure_research_job(_research_job(1))
-    repository.ensure_synthesis_unit(
-        SynthesisUnitRecord(
+    _ensure_claimable_synthesis_unit(
+        database,
+        repository,
+        job=_research_job(1),
+        unit=SynthesisUnitRecord(
             unit_id="synthesis-semantic-1",
             research_job_id="job-1",
             input_fingerprint=_FINGERPRINT,
             created_at=_NOW,
             payload={"candidate_id": "candidate-1", "context": {"contexts": [{"required": True}]}},
-        )
+        ),
     )
     claimed = repository.claim_synthesis_unit(
         run_id="run-1",

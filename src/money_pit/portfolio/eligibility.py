@@ -69,6 +69,8 @@ class CandidateAdmissionInput(BaseModel):
     instrument: str = Field(min_length=1)
     instrument_kind: SupportedInstrumentKind
     held_weight: float = Field(ge=0, le=1)
+    intelligence_available: bool = False
+    synthesis_evidence_sufficient: bool = False
     thesis_active: bool
     thesis_is_bearish: bool
     thesis_valid_until: AwareDatetime | None
@@ -119,7 +121,7 @@ def evaluate_candidate_eligibility(
 
 
 def _candidate_gate_reasons(candidate: CandidateAdmissionInput, *, as_of: datetime) -> list[str]:
-    reasons: list[str] = []
+    reasons: list[str] = _semantic_intelligence_gate_reasons(candidate)
     if candidate.instrument_kind is SupportedInstrumentKind.UNSUPPORTED:
         reasons.append("instrument is not a supported US equity or ETF")
     if not candidate.tradable:
@@ -137,6 +139,16 @@ def _candidate_gate_reasons(candidate: CandidateAdmissionInput, *, as_of: dateti
     if not candidate.material_anchors:
         reasons.append("thesis has no material factual anchors")
     reasons.extend(_coverage_gate_reasons(candidate))
+    return reasons
+
+
+def _semantic_intelligence_gate_reasons(candidate: CandidateAdmissionInput) -> list[str]:
+    """Reject capital authority while semantic or evidence review is incomplete."""
+    reasons: list[str] = []
+    if not candidate.intelligence_available:
+        reasons.append("hypothesis is unavailable pending semantic review")
+    if not candidate.synthesis_evidence_sufficient:
+        reasons.append("hypothesis has insufficient evidence for synthesis")
     return reasons
 
 

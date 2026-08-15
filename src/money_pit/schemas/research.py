@@ -111,6 +111,7 @@ class CandidateThesisResearchScope(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
     kind: Literal["candidate_thesis"] = "candidate_thesis"
     candidate_thesis_id: str = Field(min_length=1)
+    research_job_id: str | None = Field(default=None, min_length=1)
 
 
 class CanonicalClaimResearchScope(BaseModel):

@@ -90,7 +90,12 @@ from money_pit.storage.intelligence_work import DiscoveryUnitKind
 from money_pit.storage.intelligence_work import DiscoveryUnitRecord
 from money_pit.storage.intelligence_work import IntelligenceWorkRepository
 from money_pit.storage.intelligence_work import IntelligenceWorkStatus
+from money_pit.storage.recovery_audit import RecoveryAuditBlockedError
+from money_pit.storage.recovery_audit import RecoveryAuditor
 from money_pit.storage.runs import RunRepository
+from money_pit.storage.semantic_intelligence import SemanticIntelligenceRepository
+from money_pit.storage.semantic_intelligence import reconcile_unbound_candidates
+from money_pit.storage.semantic_intelligence import reconcile_unbound_research_sessions
 
 
 @dataclass(frozen=True)
@@ -143,6 +148,11 @@ def execute_intelligence_update(
 ) -> IntelligenceUpdateReport:
     """Run one bounded A1-A4 update with durable lifecycle and usage reporting."""
     paths.ensure_writable_roots()
+    _ = reconcile_unbound_candidates(database, source_id)
+    _ = reconcile_unbound_research_sessions(database, source_id)
+    recovery_audit = RecoveryAuditor(database).audit(source_id=source_id)
+    if recovery_audit.blocked:
+        raise RecoveryAuditBlockedError(recovery_audit)
     pipeline_through = through.pipeline_stage()
     resolved_dependencies = dependencies or build_production_application_dependencies(
         database=database,
@@ -632,6 +642,7 @@ def build_application_runtime(
             allowed_provider_names=providers.names(),
             clock=dependencies.clock,
             work_repository=dependencies.intelligence_work,
+            semantic_repository=SemanticIntelligenceRepository(database),
         ),
         a3=None
         if research_planning_agent is None
@@ -652,6 +663,7 @@ def build_application_runtime(
                 maximum_elapsed=timedelta(seconds=config.intelligence.research_budget.maximum_elapsed_seconds),
             ),
             work_repository=dependencies.intelligence_work,
+            semantic_repository=SemanticIntelligenceRepository(database),
         ),
         a4=None
         if synthesis_agent is None

@@ -105,6 +105,31 @@ class ThesisRepository:
             raise ThesisRepositoryError("one or more requested revision identities are unknown")
         return tuple(cast("ThesisRevision", revision) for revision in revisions)
 
+    def latest_revision_for_candidates(
+        self,
+        candidate_ids: tuple[str, ...],
+        *,
+        as_of: datetime,
+    ) -> ThesisRevision | None:
+        """Return the latest thesis revision descended from any exact proposal."""
+        if not candidate_ids:
+            return None
+        with self._database.transaction() as connection:
+            row = cast(
+                "sqlite3.Row | None",
+                connection.execute(
+                    """SELECT revision.revision_id FROM thesis_revisions revision
+                    JOIN theses thesis USING (thesis_id)
+                    WHERE thesis.candidate_thesis_id IN (SELECT value FROM json_each(?))
+                      AND revision.known_at <= ?
+                    ORDER BY revision.known_at DESC, revision.revision_number DESC, revision.revision_id DESC
+                    LIMIT 1""",
+                    (json.dumps(candidate_ids), as_of.isoformat()),
+                ).fetchone(),
+            )
+            revision_id = None if row is None else cast("str", row[0])
+            return None if revision_id is None else _select_revision(connection, revision_id)
+
     def _revisions_as_of(self, *, as_of: datetime) -> tuple[ThesisRevision, ...]:
         """Return the last knowable revision of every thesis at a historical cutoff."""
         with self._database.transaction() as connection:

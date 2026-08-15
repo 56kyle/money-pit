@@ -44,6 +44,8 @@ def _candidate(anchor: MaterialEvidenceAnchor) -> CandidateAdmissionInput:
         risk_data_current=True,
         liquidity_data_current=True,
         tradable=True,
+        intelligence_available=True,
+        synthesis_evidence_sufficient=True,
     )
 
 
@@ -70,6 +72,22 @@ def test_evaluate_candidate_eligibility_allows_a_supported_nonheld_instrument() 
     decision = evaluate_candidate_eligibility(_candidate(_anchor()), as_of=_AS_OF)
 
     assert decision.action_tier is ActionTier.NEW_EXPOSURE
+
+
+def test_evaluate_candidate_eligibility_blocks_semantically_unavailable_hypothesis() -> None:
+    candidate = _candidate(_anchor()).model_copy(update={"intelligence_available": False})
+
+    decision = evaluate_candidate_eligibility(candidate, as_of=_AS_OF)
+
+    assert decision.action_tier is ActionTier.OBSERVATION_ONLY
+
+
+def test_evaluate_candidate_eligibility_blocks_insufficient_synthesis_evidence() -> None:
+    candidate = _candidate(_anchor()).model_copy(update={"synthesis_evidence_sufficient": False})
+
+    decision = evaluate_candidate_eligibility(candidate, as_of=_AS_OF)
+
+    assert decision.action_tier is ActionTier.OBSERVATION_ONLY
 
 
 def test_evaluate_candidate_eligibility_does_not_count_syndicated_copies_as_independent() -> None:

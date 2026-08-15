@@ -18,6 +18,7 @@ from money_pit.cli_reports import DoctorCheck
 from money_pit.cli_reports import DoctorReport
 from money_pit.cli_reports import ReplayReport
 from money_pit.cli_support import CliContext
+from money_pit.cli_support import RootCliGroup
 from money_pit.cli_support import configure_cli_context
 from money_pit.cli_support import run_operator_command
 from money_pit.composition import execute_portfolio_review
@@ -64,7 +65,11 @@ from money_pit.storage.database import inspect_database
 from money_pit.storage.runs import RunRepository as DurableRunRepository
 
 
-app = typer.Typer(help="Persistent point-in-time investment research.", invoke_without_command=True)
+app = typer.Typer(
+    cls=RootCliGroup,
+    help="Persistent point-in-time investment research.",
+    invoke_without_command=True,
+)
 research_app = typer.Typer(help="Inspect bounded durable research.")
 theses_app = typer.Typer(help="Inspect persistent thesis history.")
 portfolio_app = typer.Typer(help="Capture and review portfolio decisions.")

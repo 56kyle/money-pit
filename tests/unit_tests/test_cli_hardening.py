@@ -2,12 +2,14 @@ import json
 from datetime import UTC
 from datetime import datetime
 from pathlib import Path
+from typing import Never
 
 import pytest
 import typer
 from typer.testing import CliRunner
 
 import money_pit.__main__ as main_cli
+import money_pit.cli_support as cli_support
 import money_pit.sources.cli as source_cli
 from money_pit.__main__ import app
 from money_pit.cli_reports import DoctorReport
@@ -16,11 +18,17 @@ from money_pit.cli_support import OperatorFailure
 from money_pit.cli_support import configure_cli_context
 from money_pit.cli_support import emit_progress
 from money_pit.cli_support import emit_result
+from money_pit.cli_support import run_operator_command
 from money_pit.constants import APP_VERSION
 from money_pit.portfolio.snapshots import PortfolioStatePayload
 from money_pit.portfolio.snapshots import PortfolioStateSnapshot
 from money_pit.schemas.execution_policy import BrokerEnvironment
 from money_pit.sources.service import SourceIngestResult
+from money_pit.storage.recovery_audit import RecoveryAuditBlockedError
+from money_pit.storage.recovery_audit import RecoveryAuditDisposition
+from money_pit.storage.recovery_audit import RecoveryAuditFinding
+from money_pit.storage.recovery_audit import RecoveryAuditReport
+from money_pit.storage.recovery_audit import RecoveryAuditStatus
 
 
 class _IngestProvider:
@@ -41,6 +49,10 @@ def _provider_runtime(*_args: object, **_kwargs: object) -> tuple[_IngestProvide
 
 def _failing_provider_runtime(*_args: object, **_kwargs: object) -> tuple[_IngestProvider, object]:
     raise RuntimeError("authorization=top-secret provider rejected request")
+
+
+def _provider_failure(message: str) -> Never:
+    raise RuntimeError(message)
 
 
 def _write_local_sources(path: Path) -> None:
@@ -161,10 +173,10 @@ def test_operator_failure_is_sanitized_without_debug(monkeypatch: pytest.MonkeyP
     failure = OperatorFailure.model_validate_json(result.stderr)
     assert result.exit_code == 1
     assert result.stdout == ""
-    assert failure.error == "authorization=<redacted> provider rejected request"
+    assert failure.error == "authorization=<redacted>"
     assert "top-secret" not in result.stdout
     assert "top-secret" not in result.stderr
-    assert failure.next_action.startswith("Run the command again with --debug")
+    assert failure.next_action == "Add --debug anywhere before -- to include the originating traceback."
 
 
 def test_debug_adds_traceback_while_machine_failure_remains_sanitized(
@@ -180,8 +192,165 @@ def test_debug_adds_traceback_while_machine_failure_remains_sanitized(
     failure = OperatorFailure.model_validate_json(result.stderr.splitlines()[-1])
     assert result.exit_code == 1
     assert result.stdout == ""
-    assert failure.error == "authorization=<redacted> provider rejected request"
+    assert failure.error == "authorization=<redacted>"
     assert "Traceback (most recent call last)" in result.stderr
+
+
+def test_debug_is_accepted_after_a_nested_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(source_cli, "_source_runtime", _failing_provider_runtime)
+
+    result = CliRunner().invoke(
+        app,
+        ["source", "ingest", "youtube", "https://example.test/item", "--debug"],
+    )
+
+    assert result.exit_code == 1
+    assert "Traceback (most recent call last)" in result.stderr
+    assert "No such option '--debug'" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("json_output", "message", "secret"),
+    [
+        pytest.param(True, "Authorization: Bearer top-secret", "top-secret", id="json-bearer"),
+        pytest.param(False, "Authorization: Bearer top-secret", "top-secret", id="human-bearer"),
+        pytest.param(True, 'password="quoted secret with spaces"', "secret with spaces", id="json-quoted"),
+        pytest.param(False, 'password="quoted secret with spaces"', "secret with spaces", id="human-quoted"),
+    ],
+)
+def test_operator_failure_redacts_complete_sensitive_values(
+    json_output: bool,
+    message: str,
+    secret: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_runtime(*_args: object, **_kwargs: object) -> tuple[_IngestProvider, object]:
+        return _provider_failure(message)
+
+    monkeypatch.setattr(source_cli, "_source_runtime", fail_runtime)
+    arguments = ["source", "ingest", "youtube", "https://example.test/item"]
+    if json_output:
+        arguments.append("--json")
+
+    result = CliRunner().invoke(app, arguments)
+
+    assert result.exit_code == 1
+    assert secret not in result.stdout
+    assert secret not in result.stderr
+    assert "<redacted>" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        pytest.param(
+            ["--json", "intelligence", "status", "--definitely-invalid"],
+            id="json-before-command",
+        ),
+        pytest.param(
+            ["intelligence", "status", "--json", "--definitely-invalid"],
+            id="json-after-command",
+        ),
+        pytest.param(
+            ["intelligence", "status", "--source", "--json"],
+            id="missing-option-value",
+        ),
+    ],
+)
+def test_usage_failures_use_the_typed_json_error_contract(arguments: list[str]) -> None:
+    result = CliRunner().invoke(app, arguments)
+
+    failure = OperatorFailure.model_validate_json(result.stderr)
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert failure.category == "usage"
+    assert failure.failure_kind in {"BadOptionUsage", "BadParameter", "NoSuchOption", "UsageError"}
+    assert failure.error
+
+
+def test_root_flag_hoisting_preserves_literal_arguments_after_separator() -> None:
+    command_args, separator, literal_args = cli_support._split_literal_args(  # pyright: ignore[reportPrivateUsage]
+        ["source", "ingest", "youtube", "--", "--debug", "--json"]
+    )
+
+    assert command_args == ["source", "ingest", "youtube"]
+    assert separator == ["--"]
+    assert literal_args == ["--debug", "--json"]
+
+
+def test_blocked_recovery_failure_exposes_typed_findings_and_audit_action() -> None:
+    command = typer.Typer()
+
+    @command.callback()
+    def configure(context: typer.Context) -> None:  # pyright: ignore[reportUnusedFunction]
+        configure_cli_context(context, CliContext(json_output=True))
+
+    @command.command()
+    def update() -> None:  # pyright: ignore[reportUnusedFunction]
+        report = RecoveryAuditReport(
+            status=RecoveryAuditStatus.BLOCKED,
+            source_id="youtube",
+            checked_at=datetime(2026, 8, 15, tzinfo=UTC),
+            findings=(
+                RecoveryAuditFinding(
+                    code="malformed_synthesis_semantics",
+                    disposition=RecoveryAuditDisposition.BLOCKED,
+                    detail="Synthesis state conflicts with its evidence gate.",
+                    durable_ids=("synthesis-unit:one", "synthesis-unit:two"),
+                ),
+            ),
+        )
+
+        def fail() -> None:
+            raise RecoveryAuditBlockedError(report)
+
+        _ = run_operator_command(fail, heading="Intelligence update")
+
+    result = CliRunner().invoke(command, ["update"])
+
+    failure = OperatorFailure.model_validate_json(result.stderr)
+    assert result.exit_code == 1
+    assert failure.failure_kind == "RecoveryAuditBlockedError"
+    assert failure.diagnostics[0].code == "malformed_synthesis_semantics"
+    assert failure.diagnostics[0].durable_ids == ("synthesis-unit:one", "synthesis-unit:two")
+    assert failure.next_action == "Run money-pit intelligence audit --source youtube for full recovery details."
+
+
+def test_blocked_recovery_failure_renders_actionable_human_details() -> None:
+    command = typer.Typer()
+
+    @command.callback()
+    def configure(context: typer.Context) -> None:  # pyright: ignore[reportUnusedFunction]
+        configure_cli_context(context, CliContext())
+
+    @command.command()
+    def update() -> None:  # pyright: ignore[reportUnusedFunction]
+        report = RecoveryAuditReport(
+            status=RecoveryAuditStatus.BLOCKED,
+            source_id="youtube",
+            checked_at=datetime(2026, 8, 15, tzinfo=UTC),
+            findings=(
+                RecoveryAuditFinding(
+                    code="malformed_synthesis_semantics",
+                    disposition=RecoveryAuditDisposition.BLOCKED,
+                    detail="Synthesis state conflicts with its evidence gate.",
+                    durable_ids=("synthesis-unit:one",),
+                ),
+            ),
+        )
+
+        def fail() -> None:
+            raise RecoveryAuditBlockedError(report)
+
+        _ = run_operator_command(fail, heading="Intelligence update")
+
+    result = CliRunner().invoke(command, ["update"])
+
+    assert result.exit_code == 1
+    assert "Failure kind: RecoveryAuditBlockedError" in result.stderr
+    assert "malformed_synthesis_semantics" in result.stderr
+    assert "synthesis-unit:one" in result.stderr
+    assert "money-pit intelligence audit --source youtube" in result.stderr
 
 
 @pytest.mark.parametrize(

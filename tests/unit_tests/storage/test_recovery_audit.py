@@ -18,11 +18,15 @@ from money_pit.storage.database import TransactionMode
 from money_pit.storage.intelligence_work import IntelligenceWorkRepository
 from money_pit.storage.intelligence_work import ProviderResearchWaveRecord
 from money_pit.storage.intelligence_work import ResearchJobRecord
+from money_pit.storage.intelligence_work import SynthesisUnitRecord
 from money_pit.storage.recovery_audit import RecoveryAuditBlockedError
 from money_pit.storage.recovery_audit import RecoveryAuditDisposition
 from money_pit.storage.recovery_audit import RecoveryAuditor
 from money_pit.storage.recovery_audit import RecoveryAuditStatus
 from money_pit.storage.semantic_intelligence import SemanticIntelligenceRepository
+from money_pit.storage.semantic_intelligence import SynthesisDisposition
+from money_pit.storage.semantic_intelligence import SynthesisEligibility
+from money_pit.storage.semantic_intelligence import SynthesisMaterialState
 from money_pit.storage.semantic_intelligence import reconcile_unbound_research_sessions
 
 
@@ -238,6 +242,122 @@ def test_audit_blocks_malformed_execution_transition_ownership(tmp_path: Path) -
 
     assert report.status is RecoveryAuditStatus.BLOCKED
     assert any(item.code == "malformed_research_wave" for item in report.findings)
+
+
+def test_audit_accepts_synthesis_supersession_to_an_intermediate_research_job(tmp_path: Path) -> None:
+    database = _database(tmp_path / "synthesis-successor-chain.sqlite3")
+    work = IntelligenceWorkRepository(database)
+    semantic = SemanticIntelligenceRepository(database)
+    hypothesis_id = semantic.hypothesis_id_for_candidate("candidate-1")
+    assert hypothesis_id is not None
+    material = SynthesisMaterialState(
+        material_state_id="material-1",
+        hypothesis_id=hypothesis_id,
+        material_fingerprint="c" * 64,
+        eligibility=SynthesisEligibility.ELIGIBLE,
+        created_at=_NOW,
+        assessment={"evidence_standard_satisfied": True},
+        research_job_ids=("job-1",),
+    )
+    _ = semantic.ensure_synthesis_material_state(material)
+    work.ensure_synthesis_unit(
+        SynthesisUnitRecord(
+            unit_id="unit-1",
+            research_job_id="job-1",
+            input_fingerprint="d" * 64,
+            created_at=_NOW,
+            payload={},
+        )
+    )
+    semantic.bind_synthesis_unit(
+        unit_id="unit-1",
+        material_state_id=material.material_state_id,
+        disposition=SynthesisDisposition.CURRENT,
+        recorded_at=_NOW,
+    )
+    for job_id, premise_fingerprint in (("job-2", "e" * 64), ("job-3", "f" * 64)):
+        work.ensure_research_job(
+            ResearchJobRecord(
+                job_id=job_id,
+                candidate_thesis_id="candidate-1",
+                premise_fingerprint=premise_fingerprint,
+                created_at=_NOW,
+                payload={},
+            )
+        )
+        _ = semantic.ensure_research_job_semantics(
+            job_id=job_id,
+            hypothesis_id=hypothesis_id,
+            scope_fingerprint="b" * 64,
+            semantic_premise_fingerprint=premise_fingerprint,
+            task_bindings=(),
+            recorded_at=_NOW,
+        )
+
+    report = RecoveryAuditor(database).audit()
+
+    assert not any(item.code == "malformed_synthesis_semantics" for item in report.findings)
+
+
+def test_audit_blocks_synthesis_supersession_to_an_unrelated_existing_research_job(tmp_path: Path) -> None:
+    database = _database(tmp_path / "wrong-synthesis-successor.sqlite3")
+    work = IntelligenceWorkRepository(database)
+    semantic = SemanticIntelligenceRepository(database)
+    hypothesis_id = semantic.hypothesis_id_for_candidate("candidate-1")
+    assert hypothesis_id is not None
+    material = SynthesisMaterialState(
+        material_state_id="material-1",
+        hypothesis_id=hypothesis_id,
+        material_fingerprint="c" * 64,
+        eligibility=SynthesisEligibility.ELIGIBLE,
+        created_at=_NOW,
+        assessment={"evidence_standard_satisfied": True},
+        research_job_ids=("job-1",),
+    )
+    _ = semantic.ensure_synthesis_material_state(material)
+    work.ensure_synthesis_unit(
+        SynthesisUnitRecord(
+            unit_id="unit-1",
+            research_job_id="job-1",
+            input_fingerprint="d" * 64,
+            created_at=_NOW,
+            payload={},
+        )
+    )
+    semantic.bind_synthesis_unit(
+        unit_id="unit-1",
+        material_state_id=material.material_state_id,
+        disposition=SynthesisDisposition.CURRENT,
+        recorded_at=_NOW,
+    )
+    for job_id, premise_fingerprint in (("job-2", "e" * 64), ("job-3", "f" * 64)):
+        work.ensure_research_job(
+            ResearchJobRecord(
+                job_id=job_id,
+                candidate_thesis_id="candidate-1",
+                premise_fingerprint=premise_fingerprint,
+                created_at=_NOW,
+                payload={},
+            )
+        )
+        _ = semantic.ensure_research_job_semantics(
+            job_id=job_id,
+            hypothesis_id=hypothesis_id,
+            scope_fingerprint="b" * 64,
+            semantic_premise_fingerprint=premise_fingerprint,
+            task_bindings=(),
+            recorded_at=_NOW,
+        )
+    with database.transaction(TransactionMode.WRITE) as connection:
+        _ = connection.execute(
+            "UPDATE synthesis_unit_semantics SET successor_research_job_id = 'job-3' WHERE unit_id = 'unit-1'"
+        )
+
+    report = RecoveryAuditor(database).audit()
+
+    assert any(
+        item.code == "malformed_synthesis_semantics" and item.durable_ids == ("unit-1",) for item in report.findings
+    )
 
 
 def test_update_preflight_blocks_before_provider_backed_execution(

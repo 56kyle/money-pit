@@ -679,9 +679,10 @@ def _semantic_synthesis_findings(
            OR (semantic.disposition != 'superseded' AND
                (semantic.successor_unit_id IS NOT NULL OR semantic.successor_research_job_id IS NOT NULL))
            OR (semantic.successor_research_job_id IS NOT NULL AND NOT EXISTS (
-               SELECT 1 FROM research_job_semantics target
-               WHERE target.job_id = semantic.successor_research_job_id
-                 AND target.disposition = 'current'))
+               SELECT 1 FROM synthesis_material_origins origin
+               JOIN research_job_semantics predecessor ON predecessor.job_id = origin.research_job_id
+               WHERE origin.material_state_id = semantic.material_state_id
+                 AND predecessor.successor_job_id = semantic.successor_research_job_id))
         ORDER BY semantic.unit_id"""
     ).fetchall()
     _blocked_rows(

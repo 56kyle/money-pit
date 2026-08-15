@@ -17,21 +17,26 @@ import typer
 from pydantic import BaseModel
 from pydantic import JsonValue
 from rich.console import Console
+from typer.core import TyperGroup
+from typing_extensions import override
 
 from money_pit.config import ConfigurationError
 from money_pit.sources.errors import ConnectorConfigurationError
 from money_pit.sources.errors import SourceRegistryError
 from money_pit.storage.errors import StorageError
+from money_pit.storage.recovery_audit import RecoveryAuditBlockedError
 
 
 _T = TypeVar("_T")
 if TYPE_CHECKING:
     from collections.abc import Callable
-_SENSITIVE_ASSIGNMENT = re.compile(
-    r"(?i)(api[_-]?key|authorization|credential|password|secret|token)\s*[:=]\s*([^\s,;]+)",
-)
+_SENSITIVE_KEY = r"(api[_-]?key|authorization|credential|password|secret|token)"
+_SENSITIVE_VALUE = r"(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^,;\r\n]*)"
+_SENSITIVE_ASSIGNMENT = re.compile(rf"(?i)\b{_SENSITIVE_KEY}\s*[:=]\s*{_SENSITIVE_VALUE}")
 _JSON_OUTPUT_META_KEY = "money_pit_json_output"
 _DEBUG_META_KEY = "money_pit_debug"
+_JSON_FLAG = "--json"
+_DEBUG_FLAG = "--debug"
 
 
 @dataclass(frozen=True)
@@ -45,12 +50,52 @@ class CliContext:
 _CLI_SETTINGS: ContextVar[CliContext | None] = ContextVar("money_pit_cli_settings", default=None)
 
 
+class OperatorFailureDiagnostic(BaseModel):
+    """One sanitized durable-state detail associated with a command failure."""
+
+    code: str
+    detail: str
+    durable_ids: tuple[str, ...] = ()
+
+
 class OperatorFailure(BaseModel):
     """Sanitized machine-readable command failure."""
 
     category: str
+    failure_kind: str
     error: str
     next_action: str
+    diagnostics: tuple[OperatorFailureDiagnostic, ...] = ()
+
+
+class RootCliGroup(TyperGroup):
+    """Allow root presentation flags at any pre-separator CLI position."""
+
+    @override
+    def parse_args(self, ctx: object, args: list[str]) -> list[str]:
+        """Move root flags ahead of nested commands before Click parses them."""
+        typer_context = cast("typer.Context", ctx)
+        command_args, separator, literal_args = _split_literal_args(args)
+        root_flags = [argument for argument in command_args if argument in {_DEBUG_FLAG, _JSON_FLAG}]
+        nested_args = [argument for argument in command_args if argument not in {_DEBUG_FLAG, _JSON_FLAG}]
+        _publish_preparsed_context(root_flags)
+        try:
+            return super().parse_args(typer_context, [*root_flags, *nested_args, *separator, *literal_args])
+        except Exception as error:
+            if not _is_click_usage_error(error):
+                raise
+            raise typer.Exit(_emit_failure(error)) from error
+
+    @override
+    def invoke(self, ctx: object) -> object:
+        """Render nested parsing failures through the shared error contract."""
+        typer_context = cast("typer.Context", ctx)
+        try:
+            return cast("object", super().invoke(typer_context))
+        except Exception as error:
+            if not _is_click_usage_error(error):
+                raise
+            raise typer.Exit(_emit_failure(error)) from error
 
 
 def current_cli_context() -> CliContext:
@@ -114,23 +159,57 @@ def _emit_failure(error: Exception) -> int:
         traceback.print_exc()
     failure = OperatorFailure(
         category=_error_category(error),
+        failure_kind=type(error).__name__,
         error=_sanitized_error(error),
-        next_action=(
-            "Run the command again with --debug and inspect stderr."
-            if not context.debug
-            else "Use the traceback on stderr to correct the failing input or dependency."
-        ),
+        next_action=_next_action(error, debug=context.debug),
+        diagnostics=_failure_diagnostics(error),
     )
     if context.json_output:
         typer.echo(failure.model_dump_json(), err=True)
     else:
-        Console(stderr=True, highlight=False).print(
-            f"[bold red]{failure.category} error:[/bold red] {failure.error}\nNext action: {failure.next_action}",
+        summary = (
+            f"[bold red]{failure.category} error:[/bold red] {failure.error}\nFailure kind: {failure.failure_kind}"
         )
+        Console(stderr=True, highlight=False).print(summary)
+        for diagnostic in failure.diagnostics:
+            Console(stderr=True, highlight=False).print(
+                f"[bold]{diagnostic.code}:[/bold] {diagnostic.detail}",
+            )
+            for durable_id in diagnostic.durable_ids:
+                Console(stderr=True, highlight=False).print(f"  - {durable_id}")
+        Console(stderr=True, highlight=False).print(f"Next action: {failure.next_action}")
+    if failure.category == "usage":
+        return 2
     return 78 if failure.category == "configuration" else 1
 
 
+def _next_action(error: Exception, *, debug: bool) -> str:
+    if _is_click_usage_error(error):
+        return "Correct the command arguments. Run the command with --help to list valid options."
+    if isinstance(error, RecoveryAuditBlockedError):
+        source_option = "" if error.report.source_id is None else f" --source {error.report.source_id}"
+        return f"Run money-pit intelligence audit{source_option} for full recovery details."
+    if debug:
+        return "Use the traceback and failure kind above to inspect the originating boundary."
+    return "Add --debug anywhere before -- to include the originating traceback."
+
+
+def _failure_diagnostics(error: Exception) -> tuple[OperatorFailureDiagnostic, ...]:
+    if not isinstance(error, RecoveryAuditBlockedError):
+        return ()
+    return tuple(
+        OperatorFailureDiagnostic(
+            code=finding.code,
+            detail=_sanitized_text(finding.detail),
+            durable_ids=finding.durable_ids,
+        )
+        for finding in error.report.findings
+    )
+
+
 def _error_category(error: Exception) -> str:
+    if _is_click_usage_error(error):
+        return "usage"
     if isinstance(error, ConfigurationError | SourceRegistryError | ConnectorConfigurationError | ValueError):
         return "configuration"
     if isinstance(error, StorageError):
@@ -149,8 +228,38 @@ def _error_category(error: Exception) -> str:
 
 def _sanitized_error(error: Exception) -> str:
     message: str = " ".join(str(error).split()) or type(error).__name__
+    return _sanitized_text(message)
+
+
+def _sanitized_text(message: str) -> str:
     redacted: str = _SENSITIVE_ASSIGNMENT.sub(lambda match: f"{match.group(1)}=<redacted>", message)
     return redacted[:500]
+
+
+def _split_literal_args(args: list[str]) -> tuple[list[str], list[str], list[str]]:
+    try:
+        separator_index = args.index("--")
+    except ValueError:
+        return args, [], []
+    return args[:separator_index], ["--"], args[separator_index + 1 :]
+
+
+def _publish_preparsed_context(root_flags: list[str]) -> None:
+    _ = _CLI_SETTINGS.set(
+        CliContext(
+            json_output=_JSON_FLAG in root_flags,
+            debug=_DEBUG_FLAG in root_flags,
+        )
+    )
+
+
+def _is_click_usage_error(error: Exception) -> bool:
+    if isinstance(error, click.UsageError):
+        return True
+    return any(
+        error_type.__name__ == "UsageError" and error_type.__module__ == "typer._click.exceptions"
+        for error_type in type(error).__mro__
+    )
 
 
 def _json_value(value: object) -> JsonValue:

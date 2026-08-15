@@ -34,7 +34,7 @@ money-pit plan execute PLAN_ID
 
 Run `money-pit source check` before the first sync. It parses the registry without providers, credentials, or database changes. `source list` is also read-only. Use `source status SOURCE_ID` to inspect cursors.
 
-Global options precede the command. `money-pit --json intelligence status` writes one JSON value to stdout. Progress remains on stderr. Add `--debug` to include a traceback on stderr.
+Global `--json` and `--debug` options may appear anywhere before a literal `--` separator. `money-pit intelligence status --json` writes one JSON value to stdout. Progress remains on stderr. Every failure reports its typed failure kind. Durable recovery failures also list the exact finding codes and affected IDs.
 
 YouTube sync and backfill use the `youtube_discovery` credential scope. Direct ingestion accepts one canonical `https://www.youtube.com/watch?v=VIDEO_ID` or `https://youtu.be/VIDEO_ID` URL and does not require a YouTube Data API key. It retains the configured source's provenance and trust policy and does not read or update sync or backfill cursors.
 

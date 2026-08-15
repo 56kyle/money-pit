@@ -6,7 +6,7 @@
 
 ## A command fails without enough detail
 
-Run the command again with global `--debug`, for example `money-pit --debug intelligence status`. Debug mode adds the traceback to stderr.
+Add `--debug` anywhere before a literal `--` separator, for example `money-pit intelligence status --debug`. Debug mode adds the originating traceback to stderr. Normal error output still includes the failure kind, a sanitized message, durable recovery findings when available, and a concrete next command.
 
 ## SecretSpec cannot resolve a scope
 

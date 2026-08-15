@@ -47,11 +47,7 @@ def candidate_grounding_observation_ids(
         item.observation_id
         for item in observations
         if item.observation_id in eligible
-        and normalized_reference
-        in {
-            _normalized_reference(value)
-            for value in (*item.instruments, *item.themes)
-        }
+        and normalized_reference in {_normalized_reference(value) for value in (*item.instruments, *item.themes)}
     )
 
 

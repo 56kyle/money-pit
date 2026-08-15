@@ -233,11 +233,7 @@ def research_premise_semantics_from_mappings(
     claims = tuple(
         sorted(
             (
-                {
-                    key: value
-                    for key, value in claim.items()
-                    if key not in {"projected_as_of", "next_refresh_at"}
-                }
+                {key: value for key, value in claim.items() if key not in {"projected_as_of", "next_refresh_at"}}
                 for claim in material_claims
             ),
             key=lambda claim: json.dumps(claim, sort_keys=True, separators=(",", ":"), default=str),
@@ -261,9 +257,7 @@ def _candidate_capital_reference(candidate: CandidateThesis) -> tuple[CapitalRef
     if candidate.instrument is not None:
         return CapitalReferenceKind.RESOLVED_INSTRUMENT, _normalized_capital_reference(candidate.instrument)
     if candidate.instrument_reference is not None:
-        return CapitalReferenceKind.INSTRUMENT_REFERENCE, _normalized_capital_reference(
-            candidate.instrument_reference
-        )
+        return CapitalReferenceKind.INSTRUMENT_REFERENCE, _normalized_capital_reference(candidate.instrument_reference)
     if candidate.discovery_basis.universe_reference is not None:
         layer = candidate.discovery_basis.universe_layer
         if layer is None:

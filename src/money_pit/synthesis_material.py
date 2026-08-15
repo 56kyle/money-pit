@@ -142,11 +142,7 @@ def project_synthesis_material_from_components(
     claims = tuple(
         sorted(
             (
-                {
-                    key: value
-                    for key, value in claim.items()
-                    if key not in {"projected_as_of", "next_refresh_at"}
-                }
+                {key: value for key, value in claim.items() if key not in {"projected_as_of", "next_refresh_at"}}
                 for claim in material_claims
             ),
             key=lambda claim: json.dumps(claim, sort_keys=True, separators=(",", ":"), default=str),
@@ -310,5 +306,3 @@ def canonical_synthesis_context(context: ResearchCumulativeContext) -> ResearchC
             }
         ),
     )
-
-

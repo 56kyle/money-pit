@@ -436,9 +436,7 @@ class SemanticIntelligenceRepository:
             }
             requested_origins = set(origin_unit_ids)
             if requested_origins != batch_units:
-                raise SemanticTransitionError(
-                    "Candidate discovery origins must equal the complete discovery batch."
-                )
+                raise SemanticTransitionError("Candidate discovery origins must equal the complete discovery batch.")
             return _reconcile_candidate(
                 connection,
                 candidate,
